@@ -78,6 +78,10 @@ export class SecureChannel {
     }
     const flag = plain[0];
     if (flag !== FLAG_MORE && flag !== FLAG_FINAL) this.#fail("bad record flag");
+    // `seal` fills every non-final record, so the record count of a message is bounded by its size.
+    if (flag === FLAG_MORE && plain.length - 1 !== MAX_RECORD_PLAINTEXT) {
+      this.#fail("short non-final record");
+    }
     this.#partBytes += plain.length - 1;
     if (this.#partBytes > this.#maxMessageBytes) this.#fail("message too large");
     this.#parts.push(plain.subarray(1));

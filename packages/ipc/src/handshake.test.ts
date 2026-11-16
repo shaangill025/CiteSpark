@@ -1,4 +1,6 @@
+import CipherState from "noise-handshake/cipher.js";
 import { describe, expect, test } from "vitest";
+import { toBase64 } from "./bytes.ts";
 import { generateStaticKeyPair } from "./keys.ts";
 import { Handshake, HandshakeError, type HandshakePattern } from "./handshake.ts";
 import { ChannelError, MAX_RECORD_PLAINTEXT, SecureChannel } from "./records.ts";
@@ -135,6 +137,35 @@ describe("SecureChannel records", () => {
     const b = new SecureChannel(resp.result(), { maxMessageBytes: 100_000 });
     const frames = a.seal({ s: "x".repeat(150_000) });
     expect(() => frames.forEach((f) => b.open(f))).toThrow(/too large/);
+  });
+
+  test.each([
+    ["empty", 0],
+    ["one-byte", 1],
+  ])("a %s non-final record is refused, so fragments cannot pile up", (_n, len) => {
+    const { init, resp } = run("IK");
+    // A peer that holds the session keys but does not follow `seal`'s chunking.
+    const peer = new CipherState(init.result().tx);
+    const b = new SecureChannel(resp.result(), { maxMessageBytes: 4096 });
+    const more = new Uint8Array(len + 1); // flag byte 0 = more records follow
+    const rec = () => ({ type: "rec" as const, d: toBase64(peer.encrypt(more)) });
+    expect(() => {
+      for (let i = 0; i < 1000; i++) b.open(rec());
+    }).toThrow(ChannelError);
+    expect(b.failed).toBe(true);
+  });
+
+  test("a final record may be short, and a message of exactly one chunk stays one record", () => {
+    const { a, b } = pair();
+    const exact = { s: "x".repeat(MAX_RECORD_PLAINTEXT - 8) }; // {"s":"…"} adds 8 bytes
+    const frames = a.seal(exact);
+    expect(frames).toHaveLength(1);
+    expect(b.open(frames[0]!)).toEqual(exact);
+    const two = { s: "y".repeat(MAX_RECORD_PLAINTEXT) };
+    const f2 = a.seal(two);
+    expect(f2).toHaveLength(2);
+    expect(b.open(f2[0]!)).toBeUndefined();
+    expect(b.open(f2[1]!)).toEqual(two);
   });
 });
 
