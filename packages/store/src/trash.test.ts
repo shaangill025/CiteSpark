@@ -37,6 +37,7 @@ const n = (sql: string, ...args: unknown[]): number =>
 const blobFile = (hash: string): string => join(dir, "blobs", hash.slice(0, 2), hash);
 
 function seed(): void {
+  db.prepare("INSERT INTO collection (account_id, id) VALUES ('acct', 'col')").run();
   for (const [id, pid] of [
     [A, "1800000000000000001"],
     [B, "1800000000000000002"],
@@ -82,8 +83,8 @@ function seed(): void {
     "INSERT INTO derivation (media_id, kind, text) VALUES (?, 'ocr', 'synthetic ocr')",
   ).run(mA1);
   db.prepare(
-    "INSERT INTO media_download (source_id, url, state) VALUES (?, 'https://example.test/a.png', 'complete')",
-  ).run(A);
+    "INSERT INTO media_download (source_id, url, state, media_id) VALUES (?, 'https://example.test/a.png', 'complete', ?)",
+  ).run(A, mA1);
   db.prepare(
     "INSERT INTO chunk (version_id, derivation_id, text, text_hash, document_type) VALUES ((SELECT id FROM source_version WHERE source_id = ?), (SELECT id FROM derivation LIMIT 1), 'synthetic ocr', 'o', 'ocr')",
   ).run(A);
@@ -149,7 +150,8 @@ describe("trash", () => {
     const jobs = new JobStore(db);
     const capture = new CaptureStore(db, jobs);
     jobs.create({ id: "j", kind: "capture", accountId: "acct", collectionId: "col" });
-    jobs.acquire("j", "o", T0, 60_000);
+    const lease = jobs.acquire("j", "o", T0, 60_000);
+    if (!lease) throw new Error("setup could not acquire the lease");
     const t = new TrashStore(db, { mediaRoot: dir });
     t.trash(A, T0);
     const page: CapturePage = {
@@ -164,7 +166,7 @@ describe("trash", () => {
         { sourceType: "x_post", platformId: "1800000000000000009", text: "new" },
       ],
     };
-    capture.commitPage("j", "o", T0, page);
+    capture.commitPage("j", lease, T0, page);
     expect(n("SELECT 1 FROM source_version WHERE source_id = ?", A)).toBe(1);
     expect(n("SELECT 1 FROM observation WHERE job_id = 'j' AND source_id = ?", A)).toBe(0);
     expect(n("SELECT 1 FROM source WHERE id = 'x_post:1800000000000000009'")).toBe(1);

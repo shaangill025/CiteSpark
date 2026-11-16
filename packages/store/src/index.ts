@@ -1,4 +1,10 @@
-export { migrate, type BackupHook, type MigrateOptions, type MigrateResult } from "./migrate.ts";
+export {
+  migrate,
+  MigrationStateError,
+  type BackupHook,
+  type MigrateOptions,
+  type MigrateResult,
+} from "./migrate.ts";
 export { MIGRATIONS, type Migration } from "./migrations.ts";
 export {
   JobStore,
@@ -10,6 +16,7 @@ export {
   UnknownJobError,
   type CheckpointData,
   type Job,
+  type Lease,
   type JobState,
   type NewJob,
 } from "./jobs.ts";
@@ -37,6 +44,15 @@ export {
   type MediaStoreOptions,
   type StorageStatus,
 } from "./media.ts";
+export {
+  LinkedSourceStore,
+  type EnrichOptions,
+  type LinkCapture,
+  type LinkOutcome,
+  type LinkRef,
+  type LinkStatus,
+  type LinkedGap,
+} from "./linked.ts";
 export {
   TrashStore,
   NotTrashedError,

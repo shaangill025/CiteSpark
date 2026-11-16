@@ -14,6 +14,9 @@ pages, 19-digit string IDs, shared text under distinct IDs, edited text).
 - **Pages:** first (0), middle (6), last (11).
 - **Kill:** the worker blocks at the fault point and the test process kills it with `SIGKILL`. Node maps this to
   `TerminateProcess` on Windows. Killing from outside avoids racing a self-kill against the next statement.
+- **Lease:** each worker retains the `Lease` token its `acquire` returned and passes it to every commit; the
+  token is validated inside the commit transaction. A resumed worker on a `complete` job passes `null` and may only
+  have committed pages acknowledged.
 - **Resume:** after checking that an unexpired lease blocks a second owner, a new owner reclaims the expired lease and
   either starts a fresh pass from the top with new cursors (desktop restart, ADR 0005) or re-sends the unacknowledged
   page in the same pass (extension retry). 3 points × 3 pages × 2 resume modes = 18 cases.
@@ -27,6 +30,9 @@ Scope: this proves atomicity against process kills. As noted in ADR 0002, it doe
 loss or OS crash. T01 with real authorized capture samples remains an owner-run check (ADR 0005).
 
 ## Mutation check
+
+The M1–M7 table was recorded at `451a9a9`, before integrating the M1-03 retained-lease API. It has not been
+re-run since.
 
 Each mutation was applied by a throwaway script to `packages/store/src/capture.ts` or `migrations.ts`, then
 `npx vitest run packages/store/src/t01.test.ts packages/store/src/capture.test.ts` was run and the mutation was
@@ -43,3 +49,14 @@ reverted. Recorded on macOS (Apple silicon), Node 26, for M1-04.
 | M7: advance the cursor on every page attempt, before the commit | 12 / 18 | 2 |
 
 Every mutation is caught. M5 and M6 are not crash-recovery properties, so `capture.test.ts` covers them.
+
+### After integrating M1-03 leases
+
+Recorded the same way on macOS for the integrated branch (`capture.test.ts`, `jobs.test.ts`, `t01.test.ts`).
+
+| Mutation | Tests failing |
+| --- | --- |
+| L1: `withLease` runs the work without checking the lease | 2 |
+| L2: drop the same-pass replay check | 2 / 18 T01 |
+| L3: ignore the persisted source ID and dedupe observations on any constraint | 28 across T01 and `capture.test.ts` |
+| L4: do not pause the job on an account or collection mismatch | 1 |

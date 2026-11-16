@@ -90,18 +90,18 @@ export class TrashStore {
         const media = db
           .prepare("SELECT id, content_hash FROM media WHERE source_id = ?")
           .all(sourceId) as { id: number; content_hash: string }[];
+        // A complete download must reference its media (migration 5), so downloads go first.
+        db.prepare("DELETE FROM media_download WHERE source_id = ?").run(sourceId);
         for (const m of media) {
           db.prepare(
             "DELETE FROM chunk WHERE derivation_id IN (SELECT id FROM derivation WHERE media_id = ?)",
           ).run(m.id);
           db.prepare("DELETE FROM derivation WHERE media_id = ?").run(m.id);
-          db.prepare("UPDATE media_download SET media_id = NULL WHERE media_id = ?").run(m.id);
           db.prepare("DELETE FROM media WHERE id = ?").run(m.id);
           db.prepare(
             "UPDATE blob SET ref_count = ref_count - 1 WHERE content_hash = ? AND ref_count > 0",
           ).run(m.content_hash);
         }
-        db.prepare("DELETE FROM media_download WHERE source_id = ?").run(sourceId);
         db.prepare(
           "DELETE FROM annotation_revision WHERE annotation_id IN (SELECT id FROM annotation WHERE source_id = ?)",
         ).run(sourceId);
