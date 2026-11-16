@@ -108,8 +108,8 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
   write atomically under a lease. It validates the clock (non-negative safe integer) and the
   owner, generation and expiry, then runs `fn` in the same IMMEDIATE transaction (or savepoint), so
   no other connection can take over between the check and the work. `assertLease` stays private.
-  The callback is a trusted synchronous contract: its type (`SyncResult<T>`) rejects async and
-  Promise/thenable-returning callbacks at compile time; at run time an async function (any realm,
+  The callback is a trusted synchronous contract, enforced at run time (the type stays
+  `(job) => T` so generic consumer wrappers keep compiling): an async function (any realm,
   including async generators) is refused with a TypeError before it is invoked, and any other
   callback that returns a Promise or thenable has its writes rolled back and is refused (a rejected
   native Promise is marked handled; a custom `then` is never called). Work a callback schedules for

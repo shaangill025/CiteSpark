@@ -111,12 +111,6 @@ export interface CheckpointData {
   progress?: string | null;
 }
 
-/**
- * A callback result that is not a Promise or thenable (any callable `then`). Async callbacks fail to
- * type-check against it; `withLease` also refuses them at run time for untyped callers.
- */
-export type SyncResult<T> = T extends { then(...args: never[]): unknown } ? never : T;
-
 const ASYNC_WORK = "withLease work must be synchronous and cannot return a promise";
 
 /**
@@ -248,6 +242,8 @@ export class JobStore {
    * before `fn` runs. A throw from `fn` rolls back everything it wrote.
    *
    * `fn` must be synchronous and trusted: only the writes it makes before returning are fenced.
+   * This is enforced at run time, not in the type: `fn` stays `(job) => T` so generic wrappers
+   * (`<T>(work: () => T) => withLease(..., () => work())`) keep compiling.
    * - An async function (including an async generator, from any realm) is refused with a TypeError
    *   before it is invoked, so none of its code runs.
    * - Async work the check cannot recognize (for example a bound or proxied async function, or a
@@ -258,11 +254,11 @@ export class JobStore {
    *   timers, callbacks). Such work runs outside the transaction and unfenced by the lease, so a
    *   callback must not schedule database writes.
    */
-  withLease<T>(id: string, lease: Lease, nowMs: number, fn: (job: Job) => SyncResult<T>): T {
+  withLease<T>(id: string, lease: Lease, nowMs: number, fn: (job: Job) => T): T {
     checkTime(nowMs);
     if (types.isAsyncFunction(fn)) throw new TypeError(`${ASYNC_WORK}; got an async function`);
     return this.db
-      .transaction(() => refuseAsyncResult(fn(this.assertLease(id, lease, nowMs)) as T))
+      .transaction(() => refuseAsyncResult(fn(this.assertLease(id, lease, nowMs))))
       .immediate();
   }
 
