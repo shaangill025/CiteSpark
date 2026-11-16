@@ -212,7 +212,33 @@ CREATE TABLE media_download (
 ) STRICT;
 `;
 
+const V3 = `
+CREATE TABLE linked_fetch (
+  id INTEGER PRIMARY KEY,
+  original_url TEXT NOT NULL UNIQUE,
+  source_id TEXT REFERENCES source(id),
+  final_url TEXT,
+  canonical_url TEXT,
+  redirect_chain TEXT,
+  title TEXT,
+  content_hash TEXT,
+  extraction_method TEXT,
+  http_status INTEGER,
+  gap_reason TEXT,
+  gap_detail TEXT,
+  observed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  CHECK ((source_id IS NULL) = (gap_reason IS NOT NULL))
+) STRICT;
+
+CREATE TABLE link_ref (
+  source_id TEXT NOT NULL REFERENCES source(id),
+  original_url TEXT NOT NULL REFERENCES linked_fetch(original_url),
+  PRIMARY KEY (source_id, original_url)
+) STRICT;
+`;
+
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, name: "initial-schema", sql: V1 },
   { version: 2, name: "media-store", sql: V2 },
+  { version: 3, name: "linked-sources", sql: V3 },
 ];

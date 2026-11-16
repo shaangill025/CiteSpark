@@ -24,3 +24,12 @@ export {
   type MediaStoreOptions,
   type StorageStatus,
 } from "./media.ts";
+export {
+  LinkedSourceStore,
+  type EnrichOptions,
+  type LinkCapture,
+  type LinkOutcome,
+  type LinkRef,
+  type LinkStatus,
+  type LinkedGap,
+} from "./linked.ts";

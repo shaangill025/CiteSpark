@@ -17,9 +17,9 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | CAP-07 | Pause honestly when X changes; library stays usable | M1 | T02 | not started |  |
 | CAP-08 | Thread continuations: identity, order, flagged uncertainty | M1 | T02, T03 | not started |  |
 | CAP-09 | Original vs translation text kept separate | M1 | T03 | not started |  |
-| ENR-01 | Linked posts/articles as separate sources; no recursive crawl | M1 | T15 | not started |  |
-| ENR-02 | Link provenance fields; explicit gaps | M1 | T02, T03 | not started |  |
-| ENR-03 | SSRF/local-file blocking; size/time/type limits; sanitization | M1 | T02 | not started | Security review in M5 (SEC-06/07) |
+| ENR-01 | Linked posts/articles as separate sources; no recursive crawl | M1 | T15 | in progress | M1-11: link extraction, reuse of saved X posts and articles (including redirect-to-canonical), one fetch per destination, no crawl of fetched pages (`packages/core/src/links.ts`, `packages/store/src/linked.ts`); X posts not yet saved remain explicit gaps until the capture adapter handles them; not yet wired to capture jobs |
+| ENR-02 | Link provenance fields; explicit gaps | M1 | T02, T03 | in progress | M1-11: `linked_fetch` stores original/final/canonical URL, redirect chain, title, observed time, extraction method, content hash; paywall, size, type, timeout, blocked and empty results persist as gaps (`packages/store/src/linked.ts`); cross-host canonical claims ignored; no search-snippet path |
+| ENR-03 | SSRF/local-file blocking; size/time/type limits; sanitization | M1 | T02 | in progress | M1-11: IPv4/IPv6/mapped/NAT64/6to4/link-local/metadata blocking, DNS resolved once and connection pinned to the validated IP, every redirect hop re-screened, `file:` and credentials rejected, size/timeout/content-type/redirect limits, text-only sanitized extraction (`packages/core/src/ssrf.ts`, `fetcher.ts`, `links.ts`); tests use local servers and stubbed DNS; limits are PROPOSED defaults; port restriction not applied. Security review in M5 (SEC-06/07) |
 | MED-01 | Media preservation with hashes; resumable jobs | M1 | T01, T15 | in progress | M1-10: sha256 content-addressed blobs, ref counts, Range-resumable download job (`packages/store/src/media.ts`); source relationships beyond source_id, acquisition-status UI and link enrichment pending |
 | MED-02 | Opt-in OCR/transcription with provenance | M3 | T03, T15 | not started | F0 resource behaviour test |
 | MED-03 | Derived text separate from original; user corrections as versions | M3 | T03 | not started |  |
@@ -119,7 +119,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | Q13 | AI-02 | M4 | not started |
 | Q14 | AI-01, AI-07 | M4 | not started |
 | Q15 | CAP-01 | M1 | not started |
-| Q16 | ENR-01 | M1 | not started |
+| Q16 | ENR-01 | M1 | in progress |
 | Q17 | CAP-08 | M1 | not started |
 | Q18 | MED-01, MED-02 | M1, M3 | not started |
 | Q19 | MED-03 | M3 | not started |
