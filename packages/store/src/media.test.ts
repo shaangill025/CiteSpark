@@ -1,6 +1,15 @@
 import Database from "better-sqlite3";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import * as realFs from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -10,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   JobStore,
   LeaseError,
+  MIGRATIONS,
   MediaStore,
   defaultMediaBudget,
   migrate,
@@ -122,6 +132,13 @@ const setup = (opts: Partial<MediaStoreOptions> = {}) => {
   };
   return { db, media, jobs, clock, dl };
 };
+/** The part file an entry currently records; each execution attempt writes its own. */
+const partOf = (db: Database.Database, id: number): string => {
+  const { part_file } = db.prepare("SELECT part_file FROM media_download WHERE id = ?").get(id) as {
+    part_file: string;
+  };
+  return join(root, "tmp", part_file);
+};
 const files = (dir: string): string[] =>
   existsSync(dir)
     ? readdirSync(dir, { recursive: true, withFileTypes: true })
@@ -207,7 +224,7 @@ describe("content-addressed blobs and reference counts (MED-01)", () => {
 
 describe("resumable downloads (MED-01)", () => {
   it("keeps the partial file when the connection drops and resumes with a Range request", async () => {
-    const { media, dl } = setup();
+    const { media, dl, db } = setup();
     const d = media.enqueue("s1", `${base}/a`);
     dropAfter = 4_000;
     expect(await dl(d.id)).toBe("interrupted");
@@ -215,7 +232,8 @@ describe("resumable downloads (MED-01)", () => {
     expect(partial.state).toBe("pending");
     expect(partial.bytesReceived).toBeGreaterThan(0);
     expect(partial.bytesReceived).toBeLessThan(10_000);
-    expect(statSync(join(root, "tmp", `${d.id}.part`)).size).toBe(partial.bytesReceived);
+    expect(statSync(partOf(db, d.id)).size).toBe(partial.bytesReceived);
+    expect(files(join(root, "tmp"))).toHaveLength(1);
 
     expect(await dl(d.id)).toBe("complete");
     expect(ranged).toEqual([`bytes=${partial.bytesReceived}-`]);
@@ -652,8 +670,7 @@ describe("download job on the job store (CAP-04 lease)", () => {
       dropAfter = 4_000;
       expect(await dl(d.id)).toBe("interrupted");
       dropAfter = null;
-      const part = join(root, "tmp", `${d.id}.part`);
-      const kept = readFileSync(part);
+      const kept = readFileSync(partOf(db, d.id));
       expect(kept.length).toBeGreaterThan(0);
       expect(kept.length).toBeLessThan(10_000);
 
@@ -678,8 +695,9 @@ describe("download job on the job store (CAP-04 lease)", () => {
         "lease_lost",
       );
       expect(calls).toEqual([]);
-      expect(existsSync(part)).toBe(true);
-      expect(readFileSync(part).equals(kept)).toBe(true);
+      // The new owner holds the partial in its own file; the stale worker's file is gone.
+      expect(readFileSync(partOf(db, d.id)).equals(kept)).toBe(true);
+      expect(files(join(root, "tmp"))).toHaveLength(1);
       expect(
         db
           .prepare(
@@ -720,5 +738,296 @@ describe("download job on the job store (CAP-04 lease)", () => {
     );
     expect(requests).toEqual([]);
     expect(files(join(root, "tmp"))).toEqual([]);
+  });
+});
+
+// Sol review of 532a58f: each case reproduces a defect that let a download publish wrong bytes or
+// claim completion it could not prove. The fix gives every execution attempt its own part file and
+// an exclusive claim token, so stale async file I/O can only touch that attempt's own file.
+describe("download integrity (MED-01, CAP-03 fencing)", () => {
+  /** A promise gate: `arrived` resolves when the gated call is reached; `release` lets it go. */
+  const gate = () => {
+    let arrive!: () => void;
+    let release!: () => void;
+    const arrived = new Promise<void>((r) => (arrive = r));
+    const opened = new Promise<void>((r) => (release = r));
+    return { arrived, arrive, release, wait: () => opened };
+  };
+  const blobFile = (hash: string) => join(root, "blobs", hash.slice(0, 2), hash);
+
+  it("rejects a 206 whose validator changed and never joins two representations", async () => {
+    const { media, dl, db } = setup();
+    const d = media.enqueue("s1", `${base}/a`);
+    dropAfter = 4_000;
+    expect(await dl(d.id)).toBe("interrupted");
+    dropAfter = null;
+    const have = media.getDownload(d.id).bytesReceived;
+    handler = (req, res) => {
+      if (!req.headers.range) return false;
+      res
+        .writeHead(206, {
+          etag: '"v2"',
+          "content-length": 10_000 - have,
+          "content-range": `bytes ${have}-9999/10000`,
+        })
+        .end(blobB.subarray(have));
+      return true;
+    };
+    expect(await dl(d.id)).toBe("interrupted");
+    expect(media.getDownload(d.id)).toMatchObject({
+      state: "pending",
+      bytesReceived: 0,
+      error: "validator changed",
+    });
+    expect(db.prepare("SELECT COUNT(*) n FROM blob").get()).toEqual({ n: 0 });
+    handler = null;
+    expect(await dl(d.id)).toBe("complete");
+    expect(media.blob(sha(blobA))?.sizeBytes).toBe(10_000);
+  });
+
+  it("never completes from a 206 whose representation length is unknown (bytes a-b/*)", async () => {
+    const { media, dl, db } = setup();
+    const d = media.enqueue("s1", `${base}/a`);
+    let partials = 0;
+    handler = (req, res) => {
+      const m = /^bytes=(\d+)-$/.exec(req.headers.range ?? "");
+      if (!m) {
+        // No Content-Length: the representation length is never learned from the first response.
+        res.writeHead(200, { etag: '"v1"' });
+        res.write(blobA.subarray(0, 4_000));
+        setTimeout(() => res.destroy(), 20);
+        return true;
+      }
+      const start = Number(m[1]);
+      if (start >= blobA.length) {
+        res.writeHead(416, { "content-range": `bytes */${blobA.length}` }).end();
+        return true;
+      }
+      partials++;
+      const end = Math.min(start + 1_999, blobA.length - 1);
+      res
+        .writeHead(206, {
+          etag: '"v1"',
+          "content-length": end - start + 1,
+          "content-range": `bytes ${start}-${end}/*`,
+        })
+        .end(blobA.subarray(start, end + 1));
+      return true;
+    };
+    expect(await dl(d.id)).toBe("interrupted");
+    expect(media.getDownload(d.id)).toMatchObject({ totalBytes: null });
+    expect(media.getDownload(d.id).bytesReceived).toBeGreaterThan(0);
+    expect(await dl(d.id)).toBe("interrupted");
+    expect(partials).toBeGreaterThan(1); // it asked for more instead of stopping at the first range
+    expect(partials).toBeLessThanOrEqual(32);
+    expect(media.getDownload(d.id).state).toBe("pending");
+    expect(db.prepare("SELECT COUNT(*) n FROM blob").get()).toEqual({ n: 0 });
+    expect(db.prepare("SELECT COUNT(*) n FROM media").get()).toEqual({ n: 0 });
+  });
+
+  it("a stale worker's delayed open cannot truncate the new owner's partial", async () => {
+    const ttl = 1_000;
+    let t = 1_000;
+    const g = gate();
+    let first = true;
+    const { media, jobs } = setup({
+      leaseTtlMs: ttl,
+      now: () => t,
+      fs: {
+        open: async (p, f) => {
+          if (first) {
+            first = false;
+            g.arrive();
+            await g.wait();
+          }
+          return realFs.open(p, f);
+        },
+      },
+    });
+    const d = media.enqueue("s1", `${base}/b`);
+    jobs.create({ id: "j", kind: "media" });
+    const old = jobs.acquire("j", "old", t, ttl)!;
+    const stale = media.download(d.id, { jobs, jobId: "j", lease: old });
+    await g.arrived;
+    t += ttl + 1;
+    const lease = jobs.acquire("j", "new", t, 60_000)!;
+    dropAfter = 4_000;
+    expect(await media.download(d.id, { jobs, jobId: "j", lease })).toBe("interrupted");
+    const kept = media.getDownload(d.id).bytesReceived;
+    expect(kept).toBeGreaterThan(0);
+    g.release();
+    expect(await stale).toBe("lease_lost");
+    dropAfter = null;
+    ranged = [];
+    expect(await media.download(d.id, { jobs, jobId: "j", lease })).toBe("complete");
+    expect(ranged).toEqual([`bytes=${kept}-`]);
+    expect(readFileSync(blobFile(sha(blobB))).equals(blobB)).toBe(true);
+  });
+
+  it("a stale in-flight write cannot change the new owner's committed blob", async () => {
+    const ttl = 1_000;
+    let t = 1_000;
+    const g = gate();
+    let first = true;
+    const { media, jobs, db } = setup({
+      leaseTtlMs: ttl,
+      now: () => t,
+      fs: {
+        write: async (h, c) => {
+          if (first) {
+            first = false;
+            g.arrive();
+            await g.wait();
+          }
+          return h.write(c);
+        },
+      },
+    });
+    const d = media.enqueue("s1", `${base}/a`);
+    jobs.create({ id: "j", kind: "media" });
+    const old = jobs.acquire("j", "old", t, ttl)!;
+    const stale = media.download(d.id, { jobs, jobId: "j", lease: old });
+    await g.arrived;
+    t += ttl + 1;
+    const lease = jobs.acquire("j", "new", t, 60_000)!;
+    handler = (req, res) => {
+      if (req.url !== "/a") return false;
+      res.writeHead(200, { "content-length": 10_000, etag: '"v2"' }).end(blobB);
+      return true;
+    };
+    expect(await media.download(d.id, { jobs, jobId: "j", lease })).toBe("complete");
+    expect(readFileSync(blobFile(sha(blobB))).equals(blobB)).toBe(true);
+    g.release();
+    expect(await stale).toBe("lease_lost");
+    expect(readFileSync(blobFile(sha(blobB))).equals(blobB)).toBe(true);
+    expect(db.prepare("SELECT content_hash h, ref_count r FROM blob").all()).toEqual([
+      { h: sha(blobB), r: 1 },
+    ]);
+    expect(files(join(root, "tmp"))).toEqual([]);
+  });
+
+  it("excludes a second concurrent attempt under the same retained lease", async () => {
+    const g = gate();
+    let opens = 0;
+    const { media, jobs, clock } = setup({
+      fs: {
+        open: async (p, f) => {
+          opens++;
+          if (opens === 1) {
+            g.arrive();
+            await g.wait();
+          }
+          return realFs.open(p, f);
+        },
+      },
+    });
+    const d = media.enqueue("s1", `${base}/a`);
+    jobs.create({ id: "j", kind: "media" });
+    const ctx = { jobs, jobId: "j", lease: jobs.acquire("j", "w", clock.now(), 60_000)! };
+    const first = media.download(d.id, ctx);
+    await g.arrived;
+    expect(await media.download(d.id, ctx)).toBe("claimed");
+    g.release();
+    expect(await first).toBe("complete");
+    expect(opens).toBe(1);
+    expect(requests).toEqual(["/a"]);
+    // The claim is released when the attempt ends, so the same lease can run the entry again.
+    const e = media.enqueue("s1", `${base}/b`);
+    expect(await media.download(e.id, ctx)).toBe("complete");
+  });
+
+  it("verifies an existing blob before deduplicating and repairs a corrupt one", async () => {
+    const { media, dl } = setup();
+    const dest = blobFile(sha(blobA));
+    mkdirSync(join(dest, ".."), { recursive: true });
+    writeFileSync(dest, Buffer.alloc(10_000, 1)); // same size, wrong bytes
+    const d = media.enqueue("s1", `${base}/a`);
+    expect(await dl(d.id)).toBe("complete");
+    expect(readFileSync(dest).equals(blobA)).toBe(true);
+    expect(media.blob(sha(blobA))).toMatchObject({ sizeBytes: 10_000, refCount: 1 });
+    expect(files(join(root, "tmp"))).toEqual([]);
+  });
+
+  it("finishes short file writes by honoring bytesWritten", async () => {
+    const { media, dl } = setup({
+      fs: {
+        write: (h, c) => (h as realFs.FileHandle).write(c.subarray(0, Math.ceil(c.length / 2))),
+      },
+    });
+    handler = (_req, res) => {
+      res.writeHead(200, { etag: '"v1"' }); // unknown length: only the write count can catch it
+      res.end(blobA);
+      return true;
+    };
+    const d = media.enqueue("s1", `${base}/x`);
+    expect(await dl(d.id)).toBe("complete");
+    expect(media.blob(sha(blobA))?.sizeBytes).toBe(10_000);
+  });
+
+  it.each([
+    ["reports zero progress", (h: realFs.FileHandle, c: Uint8Array) => h.write(c.subarray(0, 0))],
+    [
+      "silently writes half",
+      async (h: realFs.FileHandle, c: Uint8Array) => {
+        await h.write(c.subarray(0, Math.ceil(c.length / 2)));
+      },
+    ],
+  ])("never completes when a file write %s", async (_why, write) => {
+    const { media, dl, db } = setup({
+      fs: { write: (h, c) => write(h as realFs.FileHandle, c) },
+    });
+    handler = (_req, res) => {
+      res.writeHead(200, { etag: '"v1"' });
+      res.end(blobA);
+      return true;
+    };
+    const d = media.enqueue("s1", `${base}/x`);
+    expect(await dl(d.id)).toBe("interrupted");
+    expect(media.getDownload(d.id)).toMatchObject({ state: "pending", bytesReceived: 0 });
+    expect(db.prepare("SELECT COUNT(*) n FROM blob").get()).toEqual({ n: 0 });
+  });
+
+  it("counts legacy media rows as references and links the download to the legacy row", async () => {
+    const db = new Database(":memory:");
+    migrate(db, { migrations: MIGRATIONS.slice(0, 4) });
+    db.prepare("INSERT INTO source (id, source_type) VALUES ('s1', 'post'), ('s2', 'post')").run();
+    const insert = db.prepare(
+      "INSERT INTO media (source_id, content_hash, blob_path) VALUES (?, ?, ?)",
+    );
+    const h = sha(blobA);
+    insert.run("s1", h, "legacy/a");
+    insert.run("s1", h, "legacy/a-copy"); // a legacy duplicate is kept
+    insert.run("s2", h, null); // another source shares the content
+    let backup: Buffer | undefined;
+    expect(migrate(db, { backup: () => void (backup = db.serialize()) })).toEqual({
+      applied: [5],
+      version: 5,
+    });
+    expect(backup?.length).toBeGreaterThan(0);
+    const media = new MediaStore(db, {
+      root,
+      budgetBytes: 1_000_000,
+      minFreeBytes: 0,
+      freeBytes: () => 10_000_000,
+      fetch: testFetch,
+      now: () => 1_000,
+    });
+    const jobs = new JobStore(db);
+    jobs.create({ id: "j", kind: "media" });
+    const lease = jobs.acquire("j", "w", 1_000, 60_000)!;
+    const d = media.enqueue("s1", `${base}/a`);
+    expect(await media.download(d.id, { jobs, jobId: "j", lease })).toBe("complete");
+    expect(media.blob(h)).toMatchObject({ sizeBytes: 10_000, refCount: 3 });
+    const rows = db.prepare("SELECT id, source_id, blob_path FROM media ORDER BY id").all();
+    expect(rows).toEqual([
+      { id: 1, source_id: "s1", blob_path: `blobs/${h.slice(0, 2)}/${h}` },
+      { id: 2, source_id: "s1", blob_path: "legacy/a-copy" },
+      { id: 3, source_id: "s2", blob_path: null },
+    ]);
+    expect(media.getDownload(d.id).mediaId).toBe(1);
+    media.release(h);
+    media.release(h);
+    media.release(h);
+    expect(media.unreferenced()).toEqual([h]);
   });
 });

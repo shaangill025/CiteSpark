@@ -304,7 +304,12 @@ CREATE TABLE media_download (
   error TEXT,
   claim_job_id TEXT REFERENCES job(id),
   claim_generation INTEGER,
+  -- Exclusive token of the execution attempt running this entry; NULL once it has ended.
+  claim_token TEXT,
+  -- This entry's partial file under tmp/, owned by one attempt at a time.
+  part_file TEXT,
   CHECK ((claim_job_id IS NULL) = (claim_generation IS NULL)),
+  CHECK (claim_token IS NULL OR claim_job_id IS NOT NULL),
   CHECK (state <> 'complete' OR media_id IS NOT NULL),
   UNIQUE (source_id, url)
 ) STRICT;
