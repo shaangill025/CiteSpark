@@ -84,7 +84,10 @@ beforeEach(async () => {
       ...(range ? { "content-range": `bytes ${start}-${body.length - 1}/${body.length}` } : {}),
     });
     if (dropAfter !== null && !range) {
-      res.write(slice.subarray(0, dropAfter));
+      // Test-only fixture: a node:http server on 127.0.0.1 writes a prefix of fixed synthetic PNG
+      // bytes from `bodies`; the request picks only the offset, nothing is echoed and no HTML is
+      // served, so the Guardrails "tainted input to Express response" finding is a false positive.
+      res.write(slice.subarray(0, dropAfter)); // guardrails-disable-line
       setTimeout(() => res.destroy(), 20);
       return;
     }
