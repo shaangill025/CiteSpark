@@ -8,7 +8,7 @@ This is the planned launch matrix. Each cell states what F0 established. **Measu
 |---|---|---|---|---|---|
 | macOS 13 or later | arm64 | Electron, dmg | `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/` and Edge equivalent | Unix socket, 0700 dir | Store, FTS5, vector, backup prototypes **measured** on M1 8 GB. Packaging planned (M2). |
 | macOS 13 or later | x64 | Electron, dmg | same | same | Planned (CI macos-13). |
-| Windows 10 22H2, Windows 11 | x64 | Electron, NSIS | `HKCU\Software\Google\Chrome\NativeMessagingHosts\…` and `…\Microsoft\Edge\NativeMessagingHosts\…` | Named pipe, user DACL | Planned (CI windows-2022, clean VM for T14). |
+| Windows 10 22H2, Windows 11 | x64 | Electron, NSIS | `HKCU\Software\Google\Chrome\NativeMessagingHosts\…` and `…\Microsoft\Edge\NativeMessagingHosts\…` | Named pipe, user DACL | Planned (CI windows-2022, clean VM for T14). An 8 GB x64 laptop is a T11 reference machine (owner decision Q5). |
 | Ubuntu 22.04 and 24.04, Fedora 40 or later | x64 | Electron, AppImage + deb + rpm | `~/.config/google-chrome/NativeMessagingHosts/`, `~/.config/microsoft-edge/NativeMessagingHosts/` | Unix socket, 0700 dir | Planned (CI ubuntu-24.04, VMs). |
 | Windows arm64, Linux arm64 | arm64 | | | | Not in the launch matrix (PROPOSED). Electron supports them; add if CI and test hardware exist. |
 
