@@ -12,10 +12,10 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | --- | --- | --- | --- | --- | --- | --- |
 | CAP-01 | Versioned capture adapters; audited collector evaluation | F0, M1 | T01, T02 | M1-07, M1-08 | in progress | M1-07: versioned `CaptureAdapter` in `packages/capture-x` (passive parse, ADR 0005; synthetic fixtures); real-session capture unvalidated. F0 licence/dependency audit of xarchive and twitter-web-exporter. F0: ADR 0005; collector licence, dependency, and network audit in `docs/f0/license-inventory.md` |
 | CAP-02 | String platform IDs; account-bound membership; account-switch pause | M1 | T01, T02 | M1-02, M1-04 | in progress | M1-02: string IDs and account-scoped membership schema (`packages/store`); account-switch pause pending. F0: `prototypes/capture-commit` (account-bound page refused; distinct platform IDs) |
-| CAP-03 | Atomic record+cursor commit; idempotent replay; lease | M1 | T01 | M1-03, M1-04 | not started | F0: `prototypes/capture-commit` (atomic page + cursor commit, replay no-op, leases) |
-| CAP-04 | Pause/resume/cancel and failure outcomes; loop, schema, disk detection | M1 | T02, T15 | M1-03, M2-02, M2-11, M2-12 | not started |  |
+| CAP-03 | Atomic record+cursor commit; idempotent replay; lease | M1 | T01 | M1-03, M1-04 | in progress | M1-03: exclusive per-collection leases, acquisition-generation fencing and durable checkpoints (`packages/store/src/jobs.ts`, `jobs.test.ts`); 50 seeded operation sequences. Atomic page commit remains M1-04. |
+| CAP-04 | Pause/resume/cancel and failure outcomes; loop, schema, disk detection | M1 | T02, T15 | M1-03, M2-02, M2-11, M2-12 | in progress | M1-03: pause/resume/retry and cooperative cancellation preserve committed records; pending cancel wins over resumable/complete outcomes and resume cannot revoke a running lease. Loop/schema/disk detection pending. |
 | CAP-05 | Retry-After, bounded backoff, no auth bypass | M1 | T02 | M1-08, M2-11 | not started |  |
-| CAP-06 | Honest 'complete' definition and termination evidence | M1 | T02 | M1-03, M1-04 | not started | F0: `prototypes/capture-commit` (continuation mismatch rejected) |
+| CAP-06 | Honest 'complete' definition and termination evidence | M1 | T02 | M1-03, M1-04 | in progress | M1-03: complete is a distinct terminal state with stop reason; exact termination evidence remains M1-04. |
 | CAP-07 | Pause honestly when X changes; library stays usable | M1 | T02 | M1-07, M1-08 | in progress | M1-07: unsupported X schema and control-only pages return `paused`, never ok/complete; job-level pause and UI pending. F0: ADR 0005 (passive capture; real-session check owner-run, Q6) |
 | CAP-08 | Thread continuations: identity, order, flagged uncertainty | M1 | T02, T03 | M1-07 | in progress | M1-07: confirmed vs uncertain thread membership, other authors excluded, unavailable ancestry and gaps flagged (synthetic fixtures); end-to-end T02/T03 pending |
 | CAP-09 | Original vs translation text kept separate | M1 | T03 | M1-07, M3-11 | in progress | M1-07: original text and translation kept as separate fields (synthetic fixtures); storage and citation attribution pending |
@@ -66,10 +66,37 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | BKP-02 | Password-encrypted backups with maintained AEAD | M2 | T08 | M2-08 | not started | F0 encryption format decision. F0: ADR 0008; `prototypes/backup-age`; scrypt accepted (Q3) |
 | BKP-03 | Full portable backups; manifests; media-excluded disclosure | M2 | T08 | M2-08 | not started | F0: ADR 0008 (hashed manifest) |
 | MIG-01 | Import native backups, owner vault, xarchive; dry-run | M1 | T09, T15 | M1-09, M2-02, M2-07, M5-03 | not started | F0: xarchive = `sytelus/xarchive` (Q2); version pinning in M1-09 |
-| MIG-02 | Pre-migration backup; candidate indexes; no destructive generator | M2 | T08, T09 | M1-02, M2-07, M2-10, M3-01, M5-03 | in progress | M1-02: numbered transactional migrations and pre-migration backup hook; candidate indexes pending. Migration trials in M5 |
+| MIG-02 | Pre-migration backup; candidate indexes; no destructive generator | M2 | T08, T09 | M1-02, M2-07, M2-10, M3-01, M5-03 | in progress | M1-02: numbered transactional migrations and pre-migration backup hook; every recorded migration ID and name is validated, and a recorded gap (jobs-only databases at [1, 3]) receives the order-independent sync-core migration 2 exactly once after backup (`migrate.test.ts` upgrade matrix); candidate indexes pending. Migration trials in M5 |
 | ACC-01 | Keyboard, screen reader, contrast, reduced motion (WCAG 2.2 AA) | M5 | T13 | M2-02, M2-06, M3-02, M3-09, M5-01 | not started | Incremental from M2 onward |
 | ACC-02 | Names, focus order, announcements, scalable text | M5 | T13 | M2-02, M5-01 | not started | Assistive-technology testing |
 | LAN-01 | English UI/AI quality; Unicode preserved; documented limits | M5 | T10, T13 | M3-01, M5-05 | not started |  |
+
+## M1-03 integration notes
+
+- CAP-03/CAP-04: worker renew, checkpoint, and transition calls now require a retained
+  `{ owner, generation }` lease, not just an owner string. `acquire` returns this token atomically
+  (or null on exclusion), replacing its former boolean result. Dependent capture/media layers must
+  retain that token rather than rereading the generation for delayed work.
+- CAP-03/CAP-04: timed `JobStore` calls (`acquire`, `renew`, `checkpoint`, `transition`, `cancel`,
+  `findExpired`) throw `RangeError` before any change unless time is a non-negative safe integer
+  (epoch ms), TTL is a positive safe integer, and the computed expiry is a safe integer, so NaN
+  clocks cannot bypass expiry and non-positive TTLs cannot open same-scope overlaps.
+- MIG-02: existing databases, including unmarked ones that already have tables, require a
+  successful recovery backup hook before pending migrations. `migrate` inspects existing state
+  read-only; the hook completes before the first schema-changing statement, including creation of
+  the `schema_migration` bookkeeping table, so a refused or failed backup leaves the database
+  byte-identical. Only a truly empty database is initialised without a backup. Unknown or renamed
+  recorded migrations, and gaps for migrations not declared order-independent, are refused before
+  backup or SQL.
+  The hook is synchronous; one that returns a Promise or other thenable (for example an un-awaited
+  `db.backup()`) is rejected before any migration runs, so callers finish async backups first.
+  A rejected native Promise is marked handled; a custom thenable's `then` is never called.
+- Published migration numbers are stable and never renumbered: version 1 `initial-schema` (with
+  its main-branch foreign-key constraints unchanged), version 2 `sync-core` (PR #18) and version 3
+  `job-lease-generation`. The runner validates every recorded ID and name, not only the maximum.
+  Version 2 is declared order-independent, so a jobs-only database recorded as [1, 3] receives it
+  exactly once after backup ([1, 3] -> [1, 2, 3]); upgrades from [], [1], [1, 2], [1, 3] and
+  [1, 2, 3] are covered by the `migrate.test.ts` upgrade matrix.
 
 ## Acceptance tests
 
