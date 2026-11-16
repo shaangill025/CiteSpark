@@ -866,6 +866,40 @@ describe("download integrity (MED-01, CAP-03 fencing)", () => {
     expect(db.prepare("SELECT COUNT(*) n FROM media").get()).toEqual({ n: 0 });
   });
 
+  it("rejects a 206 range end that is not a safe integer before any file I/O", async () => {
+    const appends: string[] = [];
+    const { media, dl } = setup({
+      fs: {
+        open: (p, flags) => {
+          if (flags === "a") appends.push(String(p));
+          return realFs.open(p, flags);
+        },
+      },
+    });
+    const d = media.enqueue("s1", `${base}/x`);
+    handler = (req, res) => {
+      if (!req.headers.range) {
+        res.writeHead(200, { etag: '"v1"' }); // unknown length: no saved total to bound the range
+        res.write("AAAA");
+        setTimeout(() => res.destroy(), 20);
+        return true;
+      }
+      res
+        .writeHead(206, { etag: '"v1"', "content-range": "bytes 4-9007199254740993/*" })
+        .end("BBBB");
+      return true;
+    };
+    expect(await dl(d.id)).toBe("interrupted");
+    expect(media.getDownload(d.id)).toMatchObject({ bytesReceived: 4, totalBytes: null });
+    expect(await dl(d.id)).toBe("interrupted");
+    expect(appends).toEqual([]);
+    expect(media.getDownload(d.id)).toMatchObject({
+      state: "pending",
+      bytesReceived: 0,
+      error: "invalid content-range",
+    });
+  });
+
   it("a stale worker's delayed open cannot truncate the new owner's partial", async () => {
     const ttl = 1_000;
     let t = 1_000;

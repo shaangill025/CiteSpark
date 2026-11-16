@@ -700,6 +700,7 @@ export class MediaStore {
         const known = size ?? d.total_bytes;
         if (
           !m ||
+          !Number.isSafeInteger(last) ||
           have === 0 ||
           start !== have ||
           last < start ||
