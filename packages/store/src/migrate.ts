@@ -32,6 +32,20 @@ export function migrate(db: Database.Database, options: MigrateOptions = {}): Mi
       `Database schema version ${current} is newer than this build supports (${latest})`,
     );
   }
+  // A database stamped by a sibling branch that numbered its migrations differently must not be
+  // silently treated as up to date.
+  const recorded = db.prepare("SELECT version, name FROM schema_migration").all() as {
+    version: number;
+    name: string;
+  }[];
+  for (const r of recorded) {
+    const known = migrations.find((m) => m.version === r.version);
+    if (known && known.name !== r.name) {
+      throw new Error(
+        `Database migration ${r.version} is "${r.name}" but this build defines "${known.name}"`,
+      );
+    }
+  }
   const pending = migrations
     .filter((m) => m.version > current)
     .sort((a, b) => a.version - b.version);

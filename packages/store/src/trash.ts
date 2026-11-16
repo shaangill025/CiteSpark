@@ -91,6 +91,9 @@ export class TrashStore {
           .prepare("SELECT id, content_hash FROM media WHERE source_id = ?")
           .all(sourceId) as { id: number; content_hash: string }[];
         for (const m of media) {
+          db.prepare(
+            "DELETE FROM chunk WHERE derivation_id IN (SELECT id FROM derivation WHERE media_id = ?)",
+          ).run(m.id);
           db.prepare("DELETE FROM derivation WHERE media_id = ?").run(m.id);
           db.prepare("UPDATE media_download SET media_id = NULL WHERE media_id = ?").run(m.id);
           db.prepare("DELETE FROM media WHERE id = ?").run(m.id);
@@ -109,6 +112,10 @@ export class TrashStore {
         );
         db.prepare(
           "DELETE FROM chunk WHERE version_id IN (SELECT id FROM source_version WHERE source_id = ?)",
+        ).run(sourceId);
+        // The binding stays so vault import remains suppressed; its content hash is dropped.
+        db.prepare(
+          "UPDATE sync_binding SET suppression = 'deleted', last_common_hash = NULL WHERE source_id = ?",
         ).run(sourceId);
         db.prepare("DELETE FROM observation WHERE source_id = ?").run(sourceId);
         db.prepare("DELETE FROM membership WHERE source_id = ?").run(sourceId);

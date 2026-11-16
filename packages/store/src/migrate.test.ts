@@ -147,4 +147,14 @@ describe("schema contracts", () => {
     m.run("acct-b", "x:1");
     expect(() => m.run("acct-a", "x:missing")).toThrow();
   });
+
+  it("refuses a database whose recorded migration name differs from this build", () => {
+    const db = new Database(":memory:");
+    migrate(db, {
+      migrations: [{ version: 1, name: "a", sql: "CREATE TABLE a (x TEXT) STRICT;" }],
+    });
+    expect(() =>
+      migrate(db, { migrations: [{ version: 1, name: "other", sql: "SELECT 1;" }] }),
+    ).toThrow(/"a" but this build defines "other"/);
+  });
 });

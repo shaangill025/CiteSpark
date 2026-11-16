@@ -84,6 +84,12 @@ function seed(): void {
   db.prepare(
     "INSERT INTO media_download (source_id, url, state) VALUES (?, 'https://example.test/a.png', 'complete')",
   ).run(A);
+  db.prepare(
+    "INSERT INTO chunk (version_id, derivation_id, text, text_hash, document_type) VALUES ((SELECT id FROM source_version WHERE source_id = ?), (SELECT id FROM derivation LIMIT 1), 'synthetic ocr', 'o', 'ocr')",
+  ).run(A);
+  db.prepare(
+    "INSERT INTO sync_binding (library_id, vault_id, note_id, source_id, path, last_common_hash) VALUES ('l', 'v', 'n', ?, 'Notes/a.md', 'h')",
+  ).run(A);
   db.prepare("INSERT INTO annotation (id, source_id, text) VALUES ('n1', ?, 'note')").run(A);
   db.prepare(
     "INSERT INTO annotation_revision (annotation_id, revision, text) VALUES ('n1', 1, 'note')",
@@ -111,13 +117,13 @@ afterEach(() => {
 describe("trash", () => {
   it("excludes a trashed source from active views at once and restores it", () => {
     const t = new TrashStore(db, { mediaRoot: dir });
-    expect(n("SELECT 1 FROM active_chunk")).toBe(2);
+    expect(n("SELECT 1 FROM active_chunk")).toBe(3);
     t.trash(A, T0);
     expect(n("SELECT 1 FROM active_chunk")).toBe(1);
     expect(n("SELECT 1 FROM active_source WHERE id = ?", A)).toBe(0);
     expect(t.list().map((r) => r.sourceId)).toEqual([A]);
     t.restore(A);
-    expect(n("SELECT 1 FROM active_chunk")).toBe(2);
+    expect(n("SELECT 1 FROM active_chunk")).toBe(3);
     expect(t.list()).toEqual([]);
     expect(t.status(A)).toBe("available");
   });
@@ -201,6 +207,10 @@ describe("purge", () => {
       if (where) expect(n(`SELECT 1 FROM ${table} WHERE ${where} = ?`, A)).toBe(0);
     }
     expect(n("SELECT 1 FROM derivation")).toBe(0);
+    expect(db.prepare("SELECT suppression, last_common_hash FROM sync_binding").get()).toEqual({
+      suppression: "deleted",
+      last_common_hash: null,
+    });
     expect(n("SELECT 1 FROM annotation_revision")).toBe(0);
     expect(n("SELECT 1 FROM relationship")).toBe(0);
     expect(n("SELECT 1 FROM source_version WHERE source_id = ?", A)).toBe(0);
