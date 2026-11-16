@@ -9,7 +9,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | ID | Summary | Milestone | Acceptance tests | Status | Notes |
 | --- | --- | --- | --- | --- | --- |
 | CAP-01 | Versioned capture adapters; audited collector evaluation | F0, M1 | T01, T02 | not started | F0 licence/dependency audit of xarchive and twitter-web-exporter |
-| CAP-02 | String platform IDs; account-bound membership; account-switch pause | M1 | T01, T02 | not started |  |
+| CAP-02 | String platform IDs; account-bound membership; account-switch pause | M1 | T01, T02 | in progress | M1-02: string IDs, account-scoped membership schema (`packages/store`); account-switch pause pending |
 | CAP-03 | Atomic record+cursor commit; idempotent replay; lease | M1 | T01 | not started |  |
 | CAP-04 | Pause/resume/cancel and failure outcomes; loop, schema, disk detection | M1 | T02, T15 | not started |  |
 | CAP-05 | Retry-After, bounded backoff, no auth bypass | M1 | T02 | not started |  |
@@ -56,7 +56,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | SEC-06 | Escaping, CSV neutralization, path traversal, quotas, isolation | M1, M5 | T09 | not started | M1-01 adds CI dependency audit and license allowlist; signed updates in M5 |
 | SEC-07 | Threat model | F0, M5 | T05, T06 | not started | Security review in M5 |
 | SEC-08 | No at-rest encryption promise; documented | M5 | T08 | not started | Documentation check |
-| DAT-01 | 100,000-post capacity target; incremental indexing | M1, M3 | T11 | not started | F0 100k-post search test |
+| DAT-01 | 100,000-post capacity target; incremental indexing | M1, M3 | T11 | in progress | M1-02: schema and 19-digit ID round-trip (`packages/store`); capacity and incremental indexing pending. F0 100k-post search test |
 | DAT-02 | 8 GB RAM target for core; bounded batches | M1, M3 | T11 | not started |  |
 | DAT-03 | Recoverable trash; immediate exclusion; recapture suppression; purge | M1 | T07 | not started |  |
 | DAT-04 | Unavailable-evidence reporting after deletion | M1, M3 | T07 | not started |  |
@@ -64,7 +64,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | BKP-02 | Password-encrypted backups with maintained AEAD | M2 | T08 | not started | F0 encryption format decision |
 | BKP-03 | Full portable backups; manifests; media-excluded disclosure | M2 | T08 | not started |  |
 | MIG-01 | Import native backups, owner vault, xarchive; dry-run | M1 | T09, T15 | not started |  |
-| MIG-02 | Pre-migration backup; candidate indexes; no destructive generator | M2 | T08, T09 | not started | Migration trials in M5 |
+| MIG-02 | Pre-migration backup; candidate indexes; no destructive generator | M2 | T08, T09 | in progress | M1-02: numbered transactional migrations and pre-migration backup hook; candidate indexes pending. Migration trials in M5 |
 | ACC-01 | Keyboard, screen reader, contrast, reduced motion (WCAG 2.2 AA) | M5 | T13 | not started | Incremental from M2 onward |
 | ACC-02 | Names, focus order, announcements, scalable text | M5 | T13 | not started | Assistive-technology testing |
 | LAN-01 | English UI/AI quality; Unicode preserved; documented limits | M5 | T10, T13 | not started |  |
@@ -113,7 +113,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | Q07 | SYN-01 | M2 | not started |
 | Q08 | SYN-01 | M2 | not started |
 | Q09 | T14 | M5 | not started |
-| Q10 | SEC-01, DAT-01 | M1 | not started |
+| Q10 | SEC-01, DAT-01 | M1 | in progress |
 | Q11 | AI-01, SEC-01 | M4 | not started |
 | Q12 | AI-01, AI-04 | M4 | not started |
 | Q13 | AI-02 | M4 | not started |
@@ -129,7 +129,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | Q23 | T14 | M2, M5 | not started |
 | Q24 | AI-01, MED-05 | M4 | not started |
 | Q25 | SEC-01, SEC-02 | M3, M4 | not started |
-| Q26 | DAT-01 | M1, M3 | not started |
+| Q26 | DAT-01 | M1, M3 | in progress |
 | Q27 | DAT-02 | M1, M3 | not started |
 | Q28 | MED-04 | M1 | not started |
 | Q29 | BKP-01 | M2 | not started |
@@ -142,7 +142,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | Q36 | SEC-05 | M5 | not started |
 | Q37 | MIG-01 | M1 | not started |
 | Q38 | MIG-01 | M1 | not started |
-| Q39 | Section 7 identity rules | M1 | not started |
+| Q39 | Section 7 identity rules | M1 | in progress |
 | Q40 | Scope: read-only X | M1 | not started |
 | Q41 | AI-02 | M4 | not started |
 | Q42 | AI-07 | M4 | not started |
