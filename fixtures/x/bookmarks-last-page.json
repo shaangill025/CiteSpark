@@ -1,0 +1,9 @@
+{
+  "data": {
+    "bookmark_timeline_v2": {
+      "timeline": {
+        "instructions": [{ "type": "TimelineAddEntries", "entries": [] }]
+      }
+    }
+  }
+}

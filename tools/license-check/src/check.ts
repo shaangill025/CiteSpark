@@ -27,16 +27,48 @@ export interface Violation {
   license: string;
 }
 
-// Evaluates an SPDX expression: OR needs one allowed branch, AND needs all.
+// Evaluates an SPDX expression with parentheses; AND binds tighter than OR.
+// Anything the parser cannot handle is rejected.
 export function isAllowed(
   expression: string,
   allowed: ReadonlySet<string> = ALLOWED_LICENSES,
 ): boolean {
-  const cleaned = expression.replace(/[()]/g, " ").trim();
-  if (cleaned === "") return false;
-  return cleaned
-    .split(/\s+OR\s+/i)
-    .some((alt) => alt.split(/\s+AND\s+/i).every((id) => allowed.has(id.trim())));
+  const tokens = expression.match(/\(|\)|[^\s()]+/g) ?? [];
+  let pos = 0;
+  const parseOr = (): boolean => {
+    let result = parseAnd();
+    while (tokens[pos]?.toUpperCase() === "OR") {
+      pos++;
+      const rhs = parseAnd();
+      result = result || rhs;
+    }
+    return result;
+  };
+  const parseAnd = (): boolean => {
+    let result = parseAtom();
+    while (tokens[pos]?.toUpperCase() === "AND") {
+      pos++;
+      const rhs = parseAtom();
+      result = result && rhs;
+    }
+    return result;
+  };
+  const parseAtom = (): boolean => {
+    const token = tokens[pos++];
+    if (token === undefined || token === ")" || /^(AND|OR)$/i.test(token)) throw new Error("bad");
+    if (token === "(") {
+      const inner = parseOr();
+      if (tokens[pos++] !== ")") throw new Error("bad");
+      return inner;
+    }
+    return allowed.has(token);
+  };
+  try {
+    const result = parseOr();
+    return pos === tokens.length && result;
+  } catch {
+    return false;
+  }
 }
 
 export function findViolations(
@@ -48,7 +80,20 @@ export function findViolations(
     .map(({ name, versions, license }) => ({ name, versions, license }));
 }
 
-// `pnpm licenses list --json` groups packages by license name.
-export function flattenPnpmLicenses(raw: Record<string, LicenseEntry[]>): LicenseEntry[] {
-  return Object.entries(raw).flatMap(([license, pkgs]) => pkgs.map((p) => ({ ...p, license })));
+// `pnpm licenses list --json` groups packages by license name. Versions may be
+// plain strings or "name@version" specifiers depending on the pnpm version.
+export function flattenPnpmLicenses(
+  raw: Record<string, (Partial<LicenseEntry> | string)[]>,
+): LicenseEntry[] {
+  return Object.entries(raw).flatMap(([license, pkgs]) =>
+    pkgs.map((p): LicenseEntry => {
+      if (typeof p === "string") {
+        const at = p.lastIndexOf("@");
+        return at > 0
+          ? { name: p.slice(0, at), versions: [p.slice(at + 1)], license }
+          : { name: p, versions: [], license };
+      }
+      return { name: p.name ?? "unknown", versions: p.versions ?? [], license };
+    }),
+  );
 }

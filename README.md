@@ -15,7 +15,7 @@ labeled alpha/beta previews; version 1.0 waits until every required capability p
 | Milestone | Scope | Status |
 | --- | --- | --- |
 | F0/M0 | Feasibility prototypes, license inventory, architecture decisions | not started |
-| M1 | Data foundation: archive, capture, import, media, recoverable storage | not started |
+| M1 | Data foundation: archive, capture, import, media, recoverable storage | in progress |
 | M2 | Desktop app, pairing, two-way vault sync, backups | not started |
 | M3 | Search, OCR/transcripts, organization, graph, exact citations | not started |
 | M4 | Local and cloud answers, bounded research, plugin research UI | not started |
@@ -23,7 +23,7 @@ labeled alpha/beta previews; version 1.0 waits until every required capability p
 
 ## Documents
 
-- [Specification v1.0](docs/spec/citspark-spec-v1.0.md)
+- [Specification v1.0](docs/spec/citspark-spec-v1.0.md): authoritative in-repo transcription of the owner-approved PDF
 - [Traceability matrix](docs/spec/traceability.md): requirement, milestone, acceptance test, status
 - [Contributing](CONTRIBUTING.md), [Security policy](SECURITY.md), [Agent conventions](AGENTS.md)
 
