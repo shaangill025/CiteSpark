@@ -1,0 +1,213 @@
+{
+  "date": "2026-11-16T17:12:52.242Z",
+  "environment": {
+    "cpu": "Apple M1",
+    "logicalCores": 8,
+    "ramBytes": 8589934592,
+    "os": "darwin 27.3.0",
+    "node": "v26.10.0",
+    "sqlite": "3.53.4",
+    "binding": "node:sqlite (DatabaseSync)",
+    "pragmas": "WAL, mmap_size=256MiB, cache_size=64MiB, read-only connection",
+    "loadAvgStart": [
+      5.91,
+      8.65,
+      7.87
+    ],
+    "loadAvgEnd": [
+      5.29,
+      8.28,
+      7.75
+    ]
+  },
+  "corpus": {
+    "spec": {
+      "posts": 100000,
+      "articles": 15000,
+      "seed": 20261116
+    },
+    "sources": 115000,
+    "chunks": 216283,
+    "postChunks": 100000,
+    "articleChunks": 116283,
+    "textBytes": 147591803,
+    "loadMs": 3482.51,
+    "ftsBuildMs": 5446.64,
+    "trigramBuildMs": 44689.56,
+    "dbFileBytes": 629022720,
+    "sizes": {
+      "chunk": 190484480,
+      "fts_trigram": 360611840,
+      "fts_unicode61": 52998144,
+      "source_membership_other": 15704064
+    }
+  },
+  "correctness": {
+    "plantedVisible": 32,
+    "plantedExpected": 32,
+    "plantedTopRows": 20,
+    "trashedInTop": 0
+  },
+  "cold": {
+    "note": "fresh process per sample; OS page cache not purged (no sudo)",
+    "openMs": {
+      "n": 21,
+      "p50": 0.92,
+      "p95": 1.62,
+      "p99": 2.05,
+      "max": 2.05
+    },
+    "firstQueryMs": {
+      "n": 21,
+      "p50": 8.03,
+      "p95": 90.81,
+      "p99": 466.98,
+      "max": 466.98
+    }
+  },
+  "warm": {
+    "queries": 320,
+    "runs": 5,
+    "errors": 0,
+    "zeroResult": 170,
+    "zeroByKind": {
+      "rare": 40,
+      "and2": 65,
+      "phrase": 65
+    },
+    "rowsReturned": 20835,
+    "peakRssBytes": 122556112,
+    "perRun": [
+      {
+        "p50": 0.37,
+        "p95": 51.85
+      },
+      {
+        "p50": 0.42,
+        "p95": 53.06
+      },
+      {
+        "p50": 1.03,
+        "p95": 63.94
+      },
+      {
+        "p50": 0.52,
+        "p95": 53.05
+      },
+      {
+        "p50": 0.36,
+        "p95": 53.44
+      }
+    ],
+    "byKind": {
+      "rare": {
+        "n": 200,
+        "p50": 0.28,
+        "p95": 0.6,
+        "p99": 1.1,
+        "max": 3.01
+      },
+      "mid": {
+        "n": 200,
+        "p50": 1.39,
+        "p95": 3.66,
+        "p99": 4.56,
+        "max": 6.54
+      },
+      "common": {
+        "n": 200,
+        "p50": 40.27,
+        "p95": 72.62,
+        "p99": 107.93,
+        "max": 175.2
+      },
+      "and2": {
+        "n": 200,
+        "p50": 0.24,
+        "p95": 1.23,
+        "p99": 2.38,
+        "max": 3.2
+      },
+      "phrase": {
+        "n": 200,
+        "p50": 1.57,
+        "p95": 107.24,
+        "p99": 159.99,
+        "max": 277.32
+      },
+      "prefix": {
+        "n": 200,
+        "p50": 21.24,
+        "p95": 60.95,
+        "p99": 96,
+        "max": 212.97
+      },
+      "exact-id": {
+        "n": 200,
+        "p50": 0.05,
+        "p95": 0.08,
+        "p99": 0.13,
+        "max": 0.28
+      },
+      "substring": {
+        "n": 200,
+        "p50": 0.07,
+        "p95": 0.16,
+        "p99": 0.98,
+        "max": 5.44
+      },
+      "all": {
+        "n": 1600,
+        "p50": 0.53,
+        "p95": 56.38,
+        "p99": 102.68,
+        "max": 277.32
+      }
+    },
+    "rankedUnfiltered": {
+      "n": 675,
+      "p50": 2.49,
+      "p95": 66.55,
+      "p99": 139.51,
+      "max": 277.32
+    },
+    "rankedFiltered": {
+      "n": 525,
+      "p50": 1.04,
+      "p95": 46.34,
+      "p99": 66.08,
+      "max": 175.2
+    }
+  },
+  "limiter": {
+    "n": 135,
+    "pearsonMatchesVsMedianMs": 0.94,
+    "topByMatches": [
+      {
+        "kind": "phrase",
+        "matches": 91385,
+        "ms": 139.96
+      },
+      {
+        "kind": "common",
+        "matches": 76728,
+        "ms": 66.55
+      },
+      {
+        "kind": "prefix",
+        "matches": 75321,
+        "ms": 79.88
+      },
+      {
+        "kind": "common",
+        "matches": 73106,
+        "ms": 63.21
+      },
+      {
+        "kind": "common",
+        "matches": 67589,
+        "ms": 60.76
+      }
+    ]
+  }
+}

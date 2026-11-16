@@ -1,0 +1,58 @@
+{
+  "date": "2026-11-16T17:14:34.544Z",
+  "environment": {
+    "cpu": "Apple M1",
+    "logicalCores": 8,
+    "ramBytes": 8589934592,
+    "os": "darwin 27.3.0",
+    "node": "v26.10.0",
+    "loadAvg": [
+      23.5068359375,
+      12.4033203125,
+      9.31884765625
+    ]
+  },
+  "method": "exact brute-force top-20 dot product, single JS thread, synthetic random unit vectors; measures scan cost only, not retrieval quality",
+  "results": [
+    {
+      "vectors": 100000,
+      "dim": 384,
+      "f32Bytes": 153600000,
+      "i8Bytes": 38800000,
+      "f32Ms": {
+        "n": 200,
+        "p50": 38.22,
+        "p95": 42.95,
+        "max": 72.3
+      },
+      "i8Ms": {
+        "n": 200,
+        "p50": 39.73,
+        "p95": 43.48,
+        "max": 91.68
+      },
+      "i8Top20OverlapWithExact": 0.99,
+      "checksum": 19522460
+    },
+    {
+      "vectors": 216283,
+      "dim": 384,
+      "f32Bytes": 332210688,
+      "i8Bytes": 83917804,
+      "f32Ms": {
+        "n": 200,
+        "p50": 87.23,
+        "p95": 144.48,
+        "max": 312.51
+      },
+      "i8Ms": {
+        "n": 200,
+        "p50": 84.93,
+        "p95": 125.21,
+        "max": 252.69
+      },
+      "i8Top20OverlapWithExact": 0.98,
+      "checksum": 40964265
+    }
+  ]
+}
