@@ -9,7 +9,8 @@ F0 (spec §14, milestone M0) produces measured prototypes, a license inventory, 
 | [`license-inventory.md`](license-inventory.md) | Dependencies, models, reuse candidates, Apache-2.0 compatibility |
 | [`capability-matrix.md`](capability-matrix.md) | Platforms, browsers, local model configurations, cloud providers, plugin |
 | [`resolved-engineering-details.md`](resolved-engineering-details.md) | §16 open items resolved, with PROPOSED markers |
-| [`blockers.md`](blockers.md) | What F0 could not validate, the revised plan, owner decisions requested |
+| [`blockers.md`](blockers.md) | What F0 could not validate and the revised plan |
+| [`owner-decisions.md`](owner-decisions.md) | Owner decisions Q1–Q9, accepted 2026-11-16 (M0 exit) |
 | [`implementation-plan.md`](implementation-plan.md) | M1 to M5 as a stack of small PR layers with requirements and acceptance tests |
 
 ## Status of the §14 F0 tests
