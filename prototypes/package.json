@@ -7,7 +7,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "test": "node --test --experimental-strip-types capture-commit/ backup-age/",
+    "test": "node --test --experimental-strip-types capture-commit/ backup-age/ fts5-bench/",
     "bench:fts5": "node --experimental-strip-types --no-warnings fts5-bench/run.ts",
     "bench:vector": "node --experimental-strip-types --no-warnings vector-scan/bench.ts"
   },
