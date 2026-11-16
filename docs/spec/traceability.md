@@ -10,15 +10,15 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 
 | ID | Summary | Milestone | Acceptance tests | Plan layers | Status | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| CAP-01 | Versioned capture adapters; audited collector evaluation | F0, M1 | T01, T02 | M1-07, M1-08 | not started | F0 licence/dependency audit of xarchive and twitter-web-exporter. F0: ADR 0005; collector licence, dependency, and network audit in `docs/f0/license-inventory.md` |
+| CAP-01 | Versioned capture adapters; audited collector evaluation | F0, M1 | T01, T02 | M1-07, M1-08 | in progress | M1-07: versioned `CaptureAdapter` in `packages/capture-x` (passive parse, ADR 0005; synthetic fixtures); real-session capture unvalidated. F0 licence/dependency audit of xarchive and twitter-web-exporter. F0: ADR 0005; collector licence, dependency, and network audit in `docs/f0/license-inventory.md` |
 | CAP-02 | String platform IDs; account-bound membership; account-switch pause | M1 | T01, T02 | M1-02, M1-04 | in progress | M1-02: string IDs and account-scoped membership schema (`packages/store`). M1-04: `CaptureStore.commitPage` refuses a page bound to another account or collection before any capture write and pauses the job in the same lease-checked transaction; records attach to the persisted ID of their `(source_type, platform_id)` identity, never to another identity's row (`packages/store/src/capture.ts`, `capture.test.ts`). Account detection in the extension pending (M1-08). F0: `prototypes/capture-commit` |
 | CAP-03 | Atomic record+cursor commit; idempotent replay; lease | M1 | T01 | M1-03, M1-04 | implemented | M1-03: exclusive per-collection leases, acquisition-generation fencing and durable checkpoints (`packages/store/src/jobs.ts`, `jobs.test.ts`); 50 seeded operation sequences. M1-04: records, page, pass cursor and job cursor commit in one IMMEDIATE transaction fenced by the retained `acquire` token through `JobStore.withLease` (check and work share the transaction); replay keyed on pass and cursor, a fresh pass with new cursors adds no canonical rows (ADR 0005); cursor-mismatch, skip and stale-generation rejection (`packages/store/src/capture.ts`); T01 in `packages/store/src/t01.test.ts`. |
 | CAP-04 | Pause/resume/cancel and failure outcomes; loop, schema, disk detection | M1 | T02, T15 | M1-03, M2-02, M2-11, M2-12 | in progress | M1-03: pause/resume/retry and cooperative cancellation preserve committed records; pending cancel wins over resumable/complete outcomes and resume cannot revoke a running lease. Loop/schema/disk detection pending. |
 | CAP-05 | Retry-After, bounded backoff, no auth bypass | M1 | T02 | M1-08, M2-11 | not started |  |
 | CAP-06 | Honest 'complete' definition and termination evidence | M1 | T02 | M1-03, M1-04 | in progress | M1-03: complete is a distinct terminal state with stop reason. M1-04: a page without a continuation completes the job in the same transaction; committed pages, passes, distinct IDs, adapter versions and the terminating page are recorded (`CaptureStore.summary`). T02 coverage-honesty cases pending (M1-08). |
-| CAP-07 | Pause honestly when X changes; library stays usable | M1 | T02 | M1-07, M1-08 | not started | F0: ADR 0005 (passive capture; real-session check owner-run, Q6) |
-| CAP-08 | Thread continuations: identity, order, flagged uncertainty | M1 | T02, T03 | M1-07 | not started |  |
-| CAP-09 | Original vs translation text kept separate | M1 | T03 | M1-07, M3-11 | not started |  |
+| CAP-07 | Pause honestly when X changes; library stays usable | M1 | T02 | M1-07, M1-08 | in progress | M1-07: unsupported X schema and control-only pages return `paused`, never ok/complete; job-level pause and UI pending. F0: ADR 0005 (passive capture; real-session check owner-run, Q6) |
+| CAP-08 | Thread continuations: identity, order, flagged uncertainty | M1 | T02, T03 | M1-07 | in progress | M1-07: confirmed vs uncertain thread membership, other authors excluded, unavailable ancestry and gaps flagged (synthetic fixtures); end-to-end T02/T03 pending |
+| CAP-09 | Original vs translation text kept separate | M1 | T03 | M1-07, M3-11 | in progress | M1-07: original text and translation kept as separate fields (synthetic fixtures); storage and citation attribution pending |
 | ENR-01 | Linked posts/articles as separate sources; no recursive crawl | M1 | T15 | M1-11 | not started |  |
 | ENR-02 | Link provenance fields; explicit gaps | M1 | T02, T03 | M1-11 | not started |  |
 | ENR-03 | SSRF/local-file blocking; size/time/type limits; sanitization | M1 | T02 | M1-11 | not started | Security review in M5 (SEC-06/07) |
@@ -34,7 +34,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | SYN-05 | Watcher events as hints; atomic writes; no feedback loops; symlink policy | M2 | T04 | M2-05 | not started | F0: ADR 0007 |
 | SYN-06 | Portable Markdown with versioned frontmatter | M2 | T04 | M2-04 | in progress | M2-04: `citspark.schema` version check (newer schema is a conflict, never rewritten; invalid mappings, sequences and null return safe diagnostics without object coercion), section markers, reversible marker escaping documented in ADR 0007. Written-file portability checks pending (M2-05). F0: ADR 0007 (frontmatter schema) |
 | PLG-01 | Optional Obsidian companion plugin | M2, M4 | T06, T14, T15 | M2-09, M4-07 | not started | Research UI lands in M4. F0: ADR 0006 |
-| PLG-02 | Plugin connection states; no independent DB or policy engine | M2 | T06, T14 | M2-09 | not started | F0: ADR 0006 |
+| PLG-02 | Plugin connection states; no independent DB or policy engine | M2 | T06, T14 | M2-09 | in progress | F0: ADR 0006. M1-05: `packages/protocol` hello negotiation with structured `incompatible` error (unit tests only); handshake, scopes and UI pending |
 | RET-01 | Unified search; exact-ID, keyword, semantic; visible mode | M3 | T10, T11, T12 | M3-02, M3-03 | not started | F0: ADR 0002, ADR 0003; keyword and vector cost measured (`docs/f0/benchmarks.md`) |
 | RET-02 | Filters; trashed sources excluded at query time | M3 | T07 | M3-02 | not started | F0: FTS5 benchmark excludes trashed sources at query time |
 | RET-03 | Exact excerpt/version/offset results; atomic index generations | M3 | T10, T11 | M3-01, M3-07 | not started | F0: ADR 0002 (index generations) |
@@ -55,7 +55,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | SEC-03 | Local-only limitation explanation and explicit local rerun | M4 | T05 | M3-04 | not started |  |
 | SEC-04 | OS credential storage; credentials excluded from logs/backups | M2 | T05, T08 | M1-06, M1-08, M2-03, M2-12 | not started | F0: ADR 0006 (key storage), ADR 0008 |
 | SEC-05 | No telemetry; redacted previewable support bundle | M5 | T05 | M2-03 | not started |  |
-| SEC-06 | Escaping, CSV neutralization, path traversal, quotas, isolation | M1, M5 | T09 | M1-01, M1-09, M2-01, M2-12, M5-02, M5-04 | not started | M1-01 adds CI dependency audit and license allowlist; signed updates in M5 |
+| SEC-06 | Escaping, CSV neutralization, path traversal, quotas, isolation | M1, M5 | T09 | M1-01, M1-09, M2-01, M2-12, M5-02, M5-04 | not started | M1-01 adds CI dependency audit and license allowlist; signed updates in M5. CI maintenance: `actions/checkout` bumped to v7.0.1, still pinned to an immutable commit SHA |
 | SEC-07 | Threat model | F0, M5 | T05, T06 | M1-06, M5-04 | not started | Security review in M5. F0: ADR 0006 IPC threat analysis; full threat model in M5-04 |
 | SEC-08 | No at-rest encryption promise; documented | M5 | T08 | M2-08, M5-05 | not started | Documentation check |
 | DAT-01 | 100,000-post capacity target; incremental indexing | M1, M3 | T11 | M1-02, M3-01 | in progress | M1-02: schema and 19-digit ID round-trip (`packages/store`); capacity and incremental indexing pending. F0 100k-post search test. F0: 100k-post FTS5 benchmark on macOS (`docs/f0/benchmarks.md`); Windows run pending (B3) |
@@ -108,6 +108,13 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
   write atomically under a lease. It validates the clock (non-negative safe integer) and the
   owner, generation and expiry, then runs `fn` in the same IMMEDIATE transaction (or savepoint), so
   no other connection can take over between the check and the work. `assertLease` stays private.
+  The callback is a trusted synchronous contract, enforced at run time (the type stays
+  `(job) => T` so generic consumer wrappers keep compiling): an async function (any realm,
+  including async generators) is refused with a TypeError before it is invoked, and any other
+  callback that returns a Promise or thenable has its writes rolled back and is refused (a rejected
+  native Promise is marked handled; a custom `then` is never called). Work a callback schedules for
+  later (after an `await` in a bound or proxied async function, timers, callbacks) runs outside the
+  transaction and is not fenced, so callbacks must not schedule database writes.
 - MIG-02: capture bookkeeping is migration 4 (`capture-commit`). The unmerged preview numbered it 2;
   a database that recorded that preview is refused by name before backup or SQL.
 
@@ -129,10 +136,10 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | --- | --- | --- | --- | --- | --- |
 | T01 | Capture replay | M1 | M1-04 | implemented | M1-04: 18 child-process kill cases (mid-page, before-commit, after-commit × pages 0, 6, 11 × fresh or same-pass resume) in `packages/store/src/t01.test.ts`; see `docs/testing/t01-capture-replay.md`. Verified locally on macOS; CI matrix run pending. F0 prototype: `prototypes/capture-commit` |
 | T02 | Coverage honesty | M1 | M1-08 | not started | — |
-| T03 | Attribution | M1, M3 | M1-07, M3-11, M4-05 | not started | ADR 0010 |
+| T03 | Attribution | M1, M3 | M1-07, M3-11, M4-05 | in progress | ADR 0010 |
 | T04 | Sync | M2 | M2-04, M2-05 | in progress | M2-04: seeded fast-check property tests (`packages/sync/src/t04.property.test.ts`): random concurrent edit sequences never lose user text; same-key metadata changes conflict. Filesystem harness pending (M2-05) |
 | T05 | Privacy | M3, M4 | M3-04 | not started | — |
-| T06 | Pairing | M2 | M1-06, M2-09 | not started | ADR 0006 |
+| T06 | Pairing | M2 | M1-06, M2-09 | in progress | ADR 0006 |
 | T07 | Deletion | M1, M2 | M1-12, M3-02 | not started | — |
 | T08 | Backup | M2 | M2-08 | not started | F0 prototype: 5 passing tests in `prototypes/backup-age` |
 | T09 | Import | M1 | M1-09, M5-03 | not started | — |
@@ -172,9 +179,9 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | Q12 | AI-01, AI-04 | M4 | M4-04 | not started |
 | Q13 | AI-02 | M4 | M4-03 | not started |
 | Q14 | AI-01, AI-07 | M4 | whole plan | not started |
-| Q15 | CAP-01 | M1 | M1-07, M2-12 | not started |
+| Q15 | CAP-01 | M1 | M1-07, M2-12 | in progress |
 | Q16 | ENR-01 | M1 | M1-11 | not started |
-| Q17 | CAP-08 | M1 | M1-07 | not started |
+| Q17 | CAP-08 | M1 | M1-07 | in progress |
 | Q18 | MED-01, MED-02 | M1, M3 | M3-05, M3-06 | not started |
 | Q19 | MED-03 | M3 | M3-05 | not started |
 | Q20 | T14 | M5 | M1-08, M5-02 | not started |
@@ -212,10 +219,14 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | Q52 | SYN-01, PLG-01 | M2, M4 | M2-09 | not started |
 | Q53 | PLG-01 | M4 | M4-07 | not started |
 | Q54 | PLG-02, Section 4 | M2 | M1-06, M2-09 | not started |
-| Q55 | Section 4, MIG-02 | M2 | M1-05, M2-10 | not started |
+| Q55 | Section 4, MIG-02 | M2 | M1-05, M2-10 | in progress |
 | Q56 | SEC-01, SEC-02 | M3, M4 | M3-04 | not started |
 | Q57 | SEC-03 | M4 | M3-04 | not started |
 | Q58 | AI-01 | M4 | M4-02 | not started |
 | Q59 | AI-09 | F0 | M4-08 | not started |
 | Q60 | AI-01 | M4 | M4-06 | not started |
 | Q61 | Release policy | M5 | whole plan | not started |
+
+## Implementation notes
+
+- **§14 API contract (M1-05, `packages/protocol`)**: zod schemas, length-prefixed framing with oversize rejection and linear-time reassembly of fragmented frames, `hello` negotiation, request IDs with an idempotency ledger, structured errors and stream sequence numbers are implemented with unit tests. The ledger never forgets an accepted request ID; when full it rejects new IDs with `idempotency_exhausted` instead of evicting, so a late retry cannot repeat a mutation. A durable outcome store, scope checks, the Noise handshake (ADR 0006) and transport wiring are M1-06; the T06 suite is not yet written. Frame limits (1 MB toward the extension, 8 MB toward the core) remain PROPOSED.

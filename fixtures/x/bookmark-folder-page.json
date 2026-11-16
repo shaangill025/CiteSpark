@@ -1,0 +1,52 @@
+{
+  "data": {
+    "bookmark_collection_timeline": {
+      "timeline": {
+        "instructions": [
+          {
+            "type": "TimelineAddEntries",
+            "entries": [
+              {
+                "entryId": "tweet-1900000000000000401",
+                "content": {
+                  "entryType": "TimelineTimelineItem",
+                  "itemContent": {
+                    "itemType": "TimelineTweet",
+                    "tweet_results": {
+                      "result": {
+                        "__typename": "Tweet",
+                        "rest_id": "1900000000000000401",
+                        "core": {
+                          "user_results": {
+                            "result": {
+                              "rest_id": "7000000000000000002",
+                              "legacy": { "screen_name": "synth_bob" }
+                            }
+                          }
+                        },
+                        "legacy": {
+                          "full_text": "A post filed in a synthetic folder.",
+                          "lang": "en",
+                          "created_at": "Thu Jan 08 12:00:00 +0000 2026",
+                          "conversation_id_str": "1900000000000000401"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "entryId": "cursor-bottom-folder",
+                "content": {
+                  "entryType": "TimelineTimelineCursor",
+                  "cursorType": "Bottom",
+                  "value": "SYNTHETIC_FOLDER_CURSOR_1"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

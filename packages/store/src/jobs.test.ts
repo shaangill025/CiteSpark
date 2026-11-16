@@ -1,7 +1,9 @@
 import Database from "better-sqlite3";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 import {
   InvalidTransitionError,
@@ -14,6 +16,8 @@ import {
   type JobState,
   type Lease,
 } from "./index.ts";
+
+const ASYNC_LEASE_CHILD = join(import.meta.dirname, "testing", "async-lease-child.ts");
 
 const setup = () => {
   const db = new Database(":memory:");
@@ -450,8 +454,117 @@ describe("withLease (atomic lease-checked work for consumers such as capture)", 
       }),
     ).toThrow("boom");
     expect(jobs.get("j1").cursor).toBeNull();
-    expect(() => jobs.withLease("j1", lease, 1, async () => undefined)).toThrow(/promise/i);
     expect(db.inTransaction).toBe(false);
+  });
+
+  // Untyped consumers can still pass async work; these cases bypass the compile-time check.
+  const untyped = (fn: unknown) => fn as (job: unknown) => void;
+
+  it("refuses a recognized async function before invoking it", () => {
+    const { db, jobs } = setup();
+    mk(jobs, "j1");
+    const lease = acquired(jobs, "j1", "A", 0, 1000);
+    let invoked = 0;
+    const counter = { n: 0 };
+    const asyncCallbacks = [
+      async () => void invoked++,
+      async function named() {
+        invoked++;
+      },
+      // eslint-disable-next-line require-yield
+      async function* generator() {
+        invoked++;
+      },
+      // Another realm's async function is still recognized.
+      runInNewContext("(async () => { counter.n++; })", { counter }),
+    ];
+    for (const fn of asyncCallbacks) {
+      expect(() => jobs.withLease("j1", lease, 1, untyped(fn))).toThrow(TypeError);
+      expect(() => jobs.withLease("j1", lease, 1, untyped(fn))).toThrow(/synchronous.*promise/i);
+    }
+    expect(invoked + counter.n).toBe(0);
+    expect(db.inTransaction).toBe(false);
+    expect(jobs.get("j1")).toMatchObject({ cursor: null, leaseGeneration: lease.generation });
+  });
+
+  it("refuses rejected async work before it can write after a takeover", async () => {
+    const { db, jobs } = setup();
+    mk(jobs, "j1");
+    const lease = acquired(jobs, "j1", "A", 0, 100);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let resumed = false;
+    expect(() =>
+      jobs.withLease(
+        "j1",
+        lease,
+        1,
+        untyped(async () => {
+          await gate;
+          resumed = true;
+          db.prepare("UPDATE job SET cursor = 'stale-async-write' WHERE id = 'j1'").run();
+        }),
+      ),
+    ).toThrow(/promise/i);
+    expect(acquired(jobs, "j1", "B", 100, 100)).toEqual({ owner: "B", generation: 2 });
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(resumed).toBe(false);
+    expect(jobs.get("j1")).toMatchObject({ cursor: null, leaseOwner: "B", leaseGeneration: 2 });
+  });
+
+  it("rolls back a synchronous callback that returns a Promise or thenable without calling then", () => {
+    const { db, jobs } = setup();
+    mk(jobs, "j1");
+    const lease = acquired(jobs, "j1", "A", 0, 1000);
+    let thenCalls = 0;
+    const results: (() => unknown)[] = [
+      () => Promise.resolve(1),
+      () => runInNewContext("Promise.resolve(1)"),
+      () => ({ then: () => void thenCalls++ }),
+      () => Object.assign(() => undefined, { then: () => void thenCalls++ }),
+      () =>
+        Object.defineProperty({}, "then", {
+          get() {
+            throw new Error("then accessor");
+          },
+        }),
+    ];
+    for (const result of results) {
+      expect(() =>
+        jobs.withLease(
+          "j1",
+          lease,
+          1,
+          untyped(() => {
+            db.prepare("UPDATE job SET cursor = 'lost' WHERE id = 'j1'").run();
+            return result();
+          }),
+        ),
+      ).toThrow(TypeError);
+      expect(db.inTransaction).toBe(false);
+      expect(jobs.get("j1").cursor).toBeNull();
+    }
+    expect(thenCalls).toBe(0);
+    // Plain objects and functions without a callable `then` are ordinary results.
+    expect(jobs.withLease("j1", lease, 1, () => ({ then: 1 }))).toEqual({ then: 1 });
+  });
+
+  it("does not leave an unhandled rejection when refusing async work (strict mode)", () => {
+    const run = spawnSync(
+      process.execPath,
+      ["--unhandled-rejections=strict", "--no-warnings", ASYNC_LEASE_CHILD],
+      { encoding: "utf8", timeout: 30_000 },
+    );
+    expect(run.stderr).toBe("");
+    expect(run.stdout.trim().split("\n")).toEqual([
+      "async function: not invoked",
+      "bound async function: refused",
+      "returned rejected promise: refused",
+      "other-realm rejected promise: refused",
+      "survived",
+    ]);
+    expect(run.status).toBe(0);
   });
 
   it("holds the write lock from the check to the end of the work (no time-of-check race)", () => {

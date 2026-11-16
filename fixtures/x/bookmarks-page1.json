@@ -1,0 +1,331 @@
+{
+  "data": {
+    "bookmark_timeline_v2": {
+      "timeline": {
+        "instructions": [
+          {
+            "type": "TimelineAddEntries",
+            "entries": [
+              {
+                "entryId": "tweet-1900000000000000101",
+                "sortIndex": "9000000000000000300",
+                "content": {
+                  "entryType": "TimelineTimelineItem",
+                  "itemContent": {
+                    "itemType": "TimelineTweet",
+                    "tweet_results": {
+                      "result": {
+                        "__typename": "Tweet",
+                        "rest_id": "1900000000000000101",
+                        "core": {
+                          "user_results": {
+                            "result": {
+                              "rest_id": "7000000000000000001",
+                              "legacy": { "screen_name": "synth_alice", "name": "Synthetic Alice" }
+                            }
+                          }
+                        },
+                        "note_tweet": {
+                          "note_tweet_results": {
+                            "result": {
+                              "text": "Synthetic long-form post body that is longer than the short legacy text."
+                            }
+                          }
+                        },
+                        "legacy": {
+                          "full_text": "Synthetic long-form post body that is lon…",
+                          "lang": "en",
+                          "created_at": "Mon Jan 05 10:00:00 +0000 2026",
+                          "conversation_id_str": "1900000000000000101"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "entryId": "tweet-1900000000000000102",
+                "sortIndex": "9000000000000000299",
+                "content": {
+                  "entryType": "TimelineTimelineItem",
+                  "itemContent": {
+                    "itemType": "TimelineTweet",
+                    "tweet_results": {
+                      "result": {
+                        "__typename": "Tweet",
+                        "rest_id": "1900000000000000102",
+                        "core": {
+                          "user_results": {
+                            "result": {
+                              "rest_id": "7000000000000000001",
+                              "legacy": { "screen_name": "synth_alice" }
+                            }
+                          }
+                        },
+                        "legacy": {
+                          "full_text": "Alice's commentary on Bob's post.",
+                          "lang": "en",
+                          "created_at": "Mon Jan 05 11:00:00 +0000 2026",
+                          "conversation_id_str": "1900000000000000102",
+                          "quoted_status_id_str": "1900000000000000103"
+                        },
+                        "quoted_status_result": {
+                          "result": {
+                            "__typename": "Tweet",
+                            "rest_id": "1900000000000000103",
+                            "core": {
+                              "user_results": {
+                                "result": {
+                                  "rest_id": "7000000000000000002",
+                                  "legacy": { "screen_name": "synth_bob" }
+                                }
+                              }
+                            },
+                            "legacy": {
+                              "full_text": "Bob's original quoted statement.",
+                              "lang": "en",
+                              "created_at": "Sun Jan 04 09:00:00 +0000 2026",
+                              "conversation_id_str": "1900000000000000103"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "entryId": "tweet-1900000000000000104",
+                "sortIndex": "9000000000000000298",
+                "content": {
+                  "entryType": "TimelineTimelineItem",
+                  "itemContent": {
+                    "itemType": "TimelineTweet",
+                    "tweet_results": {
+                      "result": {
+                        "__typename": "TweetWithVisibilityResults",
+                        "tweet": {
+                          "__typename": "Tweet",
+                          "rest_id": "1900000000000000104",
+                          "core": {
+                            "user_results": {
+                              "result": {
+                                "rest_id": "7000000000000000003",
+                                "legacy": { "screen_name": "synth_kenji" }
+                              }
+                            }
+                          },
+                          "legacy": {
+                            "full_text": "これは合成データのテスト投稿です。",
+                            "lang": "ja",
+                            "created_at": "Tue Jan 06 08:00:00 +0000 2026",
+                            "conversation_id_str": "1900000000000000104"
+                          },
+                          "translation": {
+                            "text": "This is a synthetic test post.",
+                            "source_lang": "ja",
+                            "target_lang": "en"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "entryId": "conversationthread-1900000000000000201",
+                "sortIndex": "9000000000000000297",
+                "content": {
+                  "entryType": "TimelineTimelineModule",
+                  "displayType": "VerticalConversation",
+                  "items": [
+                    {
+                      "entryId": "conversationthread-1900000000000000201-tweet-1900000000000000201",
+                      "item": {
+                        "itemContent": {
+                          "itemType": "TimelineTweet",
+                          "tweet_results": {
+                            "result": {
+                              "__typename": "Tweet",
+                              "rest_id": "1900000000000000201",
+                              "core": {
+                                "user_results": {
+                                  "result": {
+                                    "rest_id": "7000000000000000001",
+                                    "legacy": { "screen_name": "synth_alice" }
+                                  }
+                                }
+                              },
+                              "legacy": {
+                                "full_text": "Thread 1/3: synthetic opening.",
+                                "lang": "en",
+                                "created_at": "Wed Jan 07 10:00:00 +0000 2026",
+                                "conversation_id_str": "1900000000000000201"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "entryId": "conversationthread-1900000000000000201-tweet-1900000000000000202",
+                      "item": {
+                        "itemContent": {
+                          "itemType": "TimelineTweet",
+                          "tweet_results": {
+                            "result": {
+                              "__typename": "Tweet",
+                              "rest_id": "1900000000000000202",
+                              "core": {
+                                "user_results": {
+                                  "result": {
+                                    "rest_id": "7000000000000000001",
+                                    "legacy": { "screen_name": "synth_alice" }
+                                  }
+                                }
+                              },
+                              "legacy": {
+                                "full_text": "Thread 2/3: synthetic middle.",
+                                "lang": "en",
+                                "created_at": "Wed Jan 07 10:01:00 +0000 2026",
+                                "conversation_id_str": "1900000000000000201",
+                                "in_reply_to_status_id_str": "1900000000000000201",
+                                "in_reply_to_user_id_str": "7000000000000000001"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "entryId": "conversationthread-1900000000000000201-tweet-1900000000000000203",
+                      "item": {
+                        "itemContent": {
+                          "itemType": "TimelineTweet",
+                          "tweet_results": {
+                            "result": {
+                              "__typename": "Tweet",
+                              "rest_id": "1900000000000000203",
+                              "core": {
+                                "user_results": {
+                                  "result": {
+                                    "rest_id": "7000000000000000009",
+                                    "legacy": { "screen_name": "synth_carol" }
+                                  }
+                                }
+                              },
+                              "legacy": {
+                                "full_text": "Unrelated reply from another account.",
+                                "lang": "en",
+                                "created_at": "Wed Jan 07 10:02:00 +0000 2026",
+                                "conversation_id_str": "1900000000000000201",
+                                "in_reply_to_status_id_str": "1900000000000000202",
+                                "in_reply_to_user_id_str": "7000000000000000001"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "entryId": "conversationthread-1900000000000000201-tweet-1900000000000000204",
+                      "item": {
+                        "itemContent": {
+                          "itemType": "TimelineTweet",
+                          "tweet_results": {
+                            "result": {
+                              "__typename": "Tweet",
+                              "rest_id": "1900000000000000204",
+                              "core": {
+                                "user_results": {
+                                  "result": {
+                                    "rest_id": "7000000000000000001",
+                                    "legacy": { "screen_name": "synth_alice" }
+                                  }
+                                }
+                              },
+                              "legacy": {
+                                "full_text": "Thread 3/3: synthetic ending.",
+                                "lang": "en",
+                                "created_at": "Wed Jan 07 10:03:00 +0000 2026",
+                                "conversation_id_str": "1900000000000000201",
+                                "in_reply_to_status_id_str": "1900000000000000202",
+                                "in_reply_to_user_id_str": "7000000000000000001"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "entryId": "conversationthread-1900000000000000201-tweet-1900000000000000205",
+                      "item": {
+                        "itemContent": {
+                          "itemType": "TimelineTweet",
+                          "tweet_results": {
+                            "result": {
+                              "__typename": "Tweet",
+                              "rest_id": "1900000000000000205",
+                              "core": {
+                                "user_results": {
+                                  "result": {
+                                    "rest_id": "7000000000000000001",
+                                    "legacy": { "screen_name": "synth_alice" }
+                                  }
+                                }
+                              },
+                              "legacy": {
+                                "full_text": "Same author, but replies to a post that was not delivered.",
+                                "lang": "en",
+                                "created_at": "Wed Jan 07 10:05:00 +0000 2026",
+                                "conversation_id_str": "1900000000000000201",
+                                "in_reply_to_status_id_str": "1900000000000000999",
+                                "in_reply_to_user_id_str": "7000000000000000001"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "entryId": "tweet-1900000000000000301",
+                "sortIndex": "9000000000000000296",
+                "content": {
+                  "entryType": "TimelineTimelineItem",
+                  "itemContent": {
+                    "itemType": "TimelineTweet",
+                    "tweet_results": {
+                      "result": {
+                        "__typename": "TweetTombstone",
+                        "tombstone": { "text": { "text": "This post is unavailable." } }
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "entryId": "cursor-top-synthetic",
+                "content": {
+                  "entryType": "TimelineTimelineCursor",
+                  "cursorType": "Top",
+                  "value": "SYNTHETIC_TOP_CURSOR_1"
+                }
+              },
+              {
+                "entryId": "cursor-bottom-synthetic",
+                "content": {
+                  "entryType": "TimelineTimelineCursor",
+                  "cursorType": "Bottom",
+                  "value": "SYNTHETIC_BOTTOM_CURSOR_1"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}
