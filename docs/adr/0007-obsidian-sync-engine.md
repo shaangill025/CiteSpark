@@ -39,7 +39,7 @@ Body sections are delimited by HTML comments, which render invisibly in Obsidian
 <!-- citspark:generated:begin -->  labeled AI output  <!-- citspark:generated:end -->
 ```
 
-Text outside the markers belongs to the user. Edits inside the source section never change the captured original (SYN-02). They become a user-authored version for review.
+Text outside the markers belongs to the user. Edits inside the source section never change the captured original (SYN-02). They become a user-authored version for review. The library always renders the immutable capture named by the `v=` marker, so a merge keeps the vault's source text across rounds and never reads the capture as a deletion of earlier user edits (M2-04). A new `v=` applies cleanly only when the capture text is unchanged or already matches the vault; otherwise base, vault, and library are kept as a conflict.
 
 Escaping (SYN-06, M2-04): text Citspark writes into a section never contains a marker. `<!-- citspark:` is written as `&lt;!-- citspark:`, which Markdown renders as the original characters. Text that already contains `&lt;!-- citspark:` gains one `amp;` (`&amp;lt;!-- citspark:`), and so on, so reading back reverses it exactly. If markers are unbalanced, nested, repeated, or differ in order between versions, the body merges as a whole instead of per section. A `citspark.schema` newer than the build supports is a conflict, and the file is not rewritten.
 

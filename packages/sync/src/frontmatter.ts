@@ -202,7 +202,6 @@ export function mergeFrontmatter(
   const conflicts: MetadataConflict[] = [];
   mergeMaps([], pb.map, pv.map, pl.map, merged, conflicts);
   if (conflicts.length > 0) return { clean: false, conflicts };
-  if (isDeepStrictEqual(merged, pv.map)) return { clean: true, frontmatter: vault };
   const vaultComments = comments(pv.doc);
   const baseComments = comments(pb.doc);
   const addedLibraryComments = comments(pl.doc).filter((comment) => {
@@ -211,6 +210,13 @@ export function mergeFrontmatter(
     baseComments.splice(at, 1);
     return false;
   });
+  // `merged` is a null-prototype dictionary; compare values only. New library comments still need
+  // the rendered path, which refuses to drop them.
+  if (
+    addedLibraryComments.length === 0 &&
+    isDeepStrictEqual(merged, pv.map, { skipPrototype: true })
+  )
+    return { clean: true, frontmatter: vault };
   try {
     const frontmatter = applyToVault(pv, merged);
     const rendered = parse(frontmatter);

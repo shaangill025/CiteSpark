@@ -168,12 +168,10 @@ function mergeBody(base: string, vault: string, library: string): BodyMerge {
   if (merged.body === undefined) return merged;
   const mine = sourceText(merged.body);
   const theirs = sourceText(library);
-  if (
-    sources[1] !== null &&
-    mine !== sources[1] &&
-    sources[1] !== theirs &&
-    sources[0] === sources[1]
-  ) {
+  // The library renders the immutable capture, so a merge never changes the vault's source text
+  // (see mergeSegments). The whole-body fallback cannot tell a stale capture from a deletion of
+  // earlier user text, so any change it makes there is kept for review instead.
+  if (sources[1] !== null && mine !== sources[1]) {
     return {
       conflicts: [
         { kind: "content", section: "source", hunks: [{ baseLine: 0, base, vault, library }] },
@@ -196,6 +194,8 @@ function wholeBody(base: string, vault: string, library: string): BodyMerge {
     : { conflicts: [{ kind: "content", section: "body", hunks: r.hunks }] };
 }
 
+type SectionSeg = Extract<Segment, { type: "section" }>;
+
 function mergeSegments(b: Segment[], v: Segment[], l: Segment[]): BodyMerge {
   const out: Segment[] = [];
   const conflicts: NoteConflict[] = [];
@@ -215,6 +215,21 @@ function mergeSegments(b: Segment[], v: Segment[], l: Segment[]): BodyMerge {
     });
     return y;
   };
+  // SYN-02: the library always renders the immutable capture named by the begin marker. Once a
+  // user version of the source becomes the base, the library's text differs from the base only
+  // because the base holds earlier user text, so diff3 would read the capture as a deletion of
+  // it. With a stable marker the library proposes no source change and the vault's text stands.
+  // A new capture version applies cleanly only when it leaves the vault's text intact (same text
+  // as base or vault); otherwise the base may hold user text, so all three are kept for review.
+  const source = (sb: SectionSeg, sv: SectionSeg, sl: SectionSeg): string => {
+    if (sb.begin === sl.begin || sl.text === sb.text || sl.text === sv.text) return sv.text;
+    conflicts.push({
+      kind: "content",
+      section: "source",
+      hunks: [{ baseLine: 0, base: sb.text, vault: sv.text, library: sl.text }],
+    });
+    return sv.text;
+  };
   for (let i = 0; i < v.length; i++) {
     const [sb, sv, sl] = [b[i], v[i], l[i]];
     if (sb?.type === "section" && sv?.type === "section" && sl?.type === "section") {
@@ -222,15 +237,7 @@ function mergeSegments(b: Segment[], v: Segment[], l: Segment[]): BodyMerge {
         type: "section",
         name: sv.name,
         begin: marker(sv.name, sb.begin, sv.begin, sl.begin),
-        // The library still renders the immutable capture after a user-version became the base.
-        // A stable capture marker must not turn that rendering into an instruction to revert it.
-        text:
-          sv.name === "source" &&
-          sb.begin === sv.begin &&
-          sv.begin === sl.begin &&
-          sb.text === sv.text
-            ? sv.text
-            : text(sv.name, sb.text, sv.text, sl.text),
+        text: sv.name === "source" ? source(sb, sv, sl) : text(sv.name, sb.text, sv.text, sl.text),
         end: marker(sv.name, sb.end, sv.end, sl.end),
       });
     } else if (sb?.type === "text" && sv?.type === "text" && sl?.type === "text") {

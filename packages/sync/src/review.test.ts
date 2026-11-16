@@ -1,7 +1,7 @@
-import { expect, it } from "vitest";
-import { joinNote, mergeFrontmatter, readNamespace } from "./frontmatter.ts";
+import { describe, expect, it } from "vitest";
+import { joinNote, mergeFrontmatter, readNamespace, splitNote } from "./frontmatter.ts";
 import { mergeNote } from "./merge-note.ts";
-import { renderSections } from "./sections.ts";
+import { parseBody, renderSections, sectionText } from "./sections.ts";
 
 import { identify } from "./identity.ts";
 
@@ -282,4 +282,98 @@ it("reports alias resource-limit failures as metadata conflicts, never throws", 
     expect(mergeNote(notes).status).toBe("conflict");
     expect(mergeFrontmatter(versions.base, versions.vault, versions.library).clean).toBe(false);
   }
+});
+
+describe("source section across sync rounds (SYN-02 immutable library rendering)", () => {
+  const fm =
+    "citspark:\n  schema: 1\n  id: 01J9Z3S7M8Q4V6X2B5N0C1D7EF\n  kind: source\n  managed: true\n";
+  const original = { text: "l1\nl2\nl3\nl4\nl5\n", version: "v1" };
+  const library = joinNote(fm, renderSections({ source: original, user: "u\n", generated: "g\n" }));
+  const round1 = (): string => {
+    const r = mergeNote({ base: library, vault: library.replace("l1\n", "l1\nmine1\n"), library });
+    if (r.status !== "clean") throw new Error("round 1 must merge cleanly");
+    return r.text;
+  };
+  const sourceOf = (text: string): string | null =>
+    sectionText(parseBody(splitNote(text).body), "source");
+
+  it("keeps an earlier source edit when the vault edits the source section again", () => {
+    const base = round1();
+    for (const vault of [
+      base.replace("l4\n", "l4\nmine2\n"),
+      base.replace("l4\n", ""),
+      base.replace("l1\nmine1\n", "l1\nmine1 reworded\n"),
+      base.replace("u\n", "u\nmore\n"),
+    ]) {
+      const r = mergeNote({ base, vault, library });
+      expect(r.status).toBe("clean");
+      if (r.status !== "clean") continue;
+      expect(r.text).toBe(vault);
+      expect(r.changed).toBe(false);
+      expect(r.sourceEdit).toEqual({ text: sourceOf(vault), libraryText: sourceOf(library) });
+    }
+  });
+
+  it("applies library changes elsewhere while keeping both rounds of source edits", () => {
+    const base = round1();
+    const vault = base.replace("l4\n", "l4\nmine2\n");
+    const lib = library.replace("g\n", "g2\n");
+    const r = mergeNote({ base, vault, library: lib });
+    expect(r).toMatchObject({ status: "clean", text: vault.replace("g\n", "g2\n") });
+  });
+
+  it("honors the user's own removal of an earlier source edit", () => {
+    const base = round1();
+    const r = mergeNote({ base, vault: library, library });
+    expect(r).toMatchObject({ status: "clean", text: library, changed: false });
+    expect(r.status === "clean" && r.sourceEdit).toBeFalsy();
+  });
+
+  it("never drops an earlier source edit through the whole-body fallback", () => {
+    const base = round1();
+    const vault = base
+      .replace("l4\n", "l4\nmine2\n")
+      .replace("<!-- citspark:generated:end -->\n", "");
+    for (const lib of [library, library.replace("g\n", "g2\n")]) {
+      const r = mergeNote({ base, vault, library: lib });
+      // Losing either round of user text is never acceptable; a conflict keeps all raw variants.
+      if (r.status === "clean") {
+        expect(r.text).toContain("mine1");
+        expect(r.text).toContain("mine2");
+      }
+    }
+  });
+
+  it("conflicts when a new capture version meets a vault source edit, keeping all raw text", () => {
+    const base = round1();
+    const vault = base.replace("l4\n", "l4\nmine2\n");
+    const recaptured = joinNote(
+      fm,
+      renderSections({
+        source: { text: "n1\nn2\n", version: "v2" },
+        user: "u\n",
+        generated: "g\n",
+      }),
+    );
+    const r = mergeNote({ base, vault, library: recaptured });
+    expect(r).toMatchObject({
+      status: "conflict",
+      conflicts: [{ kind: "content", section: "source" }],
+    });
+  });
+
+  it("applies a capture-version relabel with unchanged original text and keeps vault edits", () => {
+    const vault = library.replace("l1\n", "l1\nmine1\n");
+    const relabeled = library.replace("v=v1", "v=v2");
+    const r = mergeNote({ base: library, vault, library: relabeled });
+    expect(r).toMatchObject({ status: "clean", text: vault.replace("v=v1", "v=v2") });
+  });
+});
+
+it("keeps the vault frontmatter text verbatim when the merge equals the vault values", () => {
+  const vault = "tags: [a]\nx: 2\n";
+  expect(mergeFrontmatter("tags: [a]\nx: 1\n", vault, "tags:   [a]\nx: 2\n")).toEqual({
+    clean: true,
+    frontmatter: vault,
+  });
 });

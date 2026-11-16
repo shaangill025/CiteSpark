@@ -1,5 +1,6 @@
 // T04 property tests (M2-04): random concurrent edit sequences never lose user text, and the same
-// metadata key changed on both sides is always a conflict. Seeded so every CI OS runs the same
+// metadata key changed on both sides is always a conflict. Vault edits reach the source section
+// across rounds while the library keeps rendering the immutable original. Seeded so every CI OS runs the same
 // cases. Set T04_RUNS to run more cases locally.
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
@@ -7,7 +8,7 @@ import YAML from "yaml";
 import { joinNote, splitNote } from "./frontmatter.ts";
 import { mergeNote } from "./merge-note.ts";
 import { merge3 } from "./merge-text.ts";
-import { parseBody, renderSections } from "./sections.ts";
+import { parseBody, renderSections, sectionText } from "./sections.ts";
 import { splitLines } from "./text.ts";
 
 const RUNS = Number(process.env["T04_RUNS"] ?? 400);
@@ -134,7 +135,16 @@ describe("T04 line-level diff3 properties", () => {
 
 const KEYS = ["m0", "m1", "m2"] as const;
 type VaultOp = {
-  kind: "user-ins" | "user-del" | "user-rep" | "outside" | "meta";
+  kind:
+    | "user-ins"
+    | "user-del"
+    | "user-rep"
+    | "src-ins"
+    | "src-del"
+    | "src-rep"
+    | "src-orig"
+    | "outside"
+    | "meta";
   pos: number;
   key: number;
   drop: boolean;
@@ -147,7 +157,17 @@ type LibOp = {
 };
 const common = { pos: fc.nat(1000), key: fc.nat(KEYS.length - 1), drop: fc.boolean() };
 const vaultOp = fc.record({
-  kind: fc.constantFrom("user-ins", "user-del", "user-rep", "outside", "meta"),
+  kind: fc.constantFrom(
+    "user-ins",
+    "user-del",
+    "user-rep",
+    "src-ins",
+    "src-del",
+    "src-rep",
+    "src-orig",
+    "outside",
+    "meta",
+  ),
   ...common,
 }) as fc.Arbitrary<VaultOp>;
 const libOp = fc.record({
@@ -221,11 +241,25 @@ const meta = (text: string): Record<string, unknown> =>
 const tokens = (text: string): Set<string> =>
   new Set(splitLines(text).filter((l) => TOKEN.test(l)));
 
+const ORIGINAL = "captured original\n";
+
+/** The library always renders the immutable captured original in the source section (SYN-02). */
+function libraryRendering(text: string): string {
+  const lines = splitLines(text);
+  const b = lines.findIndex((l) => l.includes("citspark:source:begin"));
+  const e = lines.findIndex((l) => l.includes("citspark:source:end"));
+  lines.splice(b + 1, e - b - 1, ORIGINAL);
+  return lines.join("");
+}
+
+const sourceOf = (text: string): string | null =>
+  sectionText(parseBody(splitNote(text).body), "source");
+
 function initialNote(): string {
   const fm =
     "citspark:\n  schema: 1\n  id: 01J9Z3S7M8Q4V6X2B5N0C1D7EF\n  kind: source\n  managed: true\nm0: a\nm1: b\nm2: c\n";
   const body = renderSections({
-    source: { text: "captured original\n", version: "01J9" },
+    source: { text: ORIGINAL, version: "01J9" },
     user: "",
     generated: "",
   });
@@ -249,6 +283,10 @@ describe("T04 note-level concurrent edit sequences", () => {
             if (op.kind === "user-ins") vault = vs.insert(vault, "user", op.pos);
             else if (op.kind === "user-del" || op.kind === "user-rep")
               vault = vs.remove(vault, "user", op.pos, op.kind === "user-rep");
+            else if (op.kind === "src-ins") vault = vs.insert(vault, "source", op.pos);
+            else if (op.kind === "src-del" || op.kind === "src-rep")
+              vault = vs.remove(vault, "source", op.pos, op.kind === "src-rep");
+            else if (op.kind === "src-orig") vault = vault.replace(ORIGINAL, "");
             else if (op.kind === "outside") vault = vs.append(vault);
             else vault = vs.meta(vault, KEYS[op.key] ?? "m0", op.drop);
           }
@@ -275,7 +313,8 @@ describe("T04 note-level concurrent edit sequences", () => {
             for (const t of tokens(r.keepVault ? library : vault))
               if (!keptTokens.has(t)) deleted.add(t);
             for (const t of keptTokens) deleted.delete(t);
-            base = vault = library = kept;
+            base = vault = kept;
+            library = libraryRendering(kept);
           } else {
             const merged = result.text;
             expect(parseBody(splitNote(merged).body)).not.toBeNull();
@@ -283,7 +322,13 @@ describe("T04 note-level concurrent edit sequences", () => {
             expect(tokens(merged)).toEqual(live);
             const mm = meta(merged);
             for (const k of KEYS) expect(mm[k]).toEqual(mv[k] !== mb[k] ? mv[k] : ml[k]);
-            base = vault = library = merged;
+            // The library never proposes source changes, so the merged source is the vault's,
+            // reported as a user-authored version whenever it differs from the original.
+            const mine = sourceOf(vault);
+            expect(sourceOf(merged)).toBe(mine);
+            expect(result.sourceEdit?.text).toBe(mine === sourceOf(library) ? undefined : mine);
+            base = vault = merged;
+            library = libraryRendering(merged);
           }
         }
       }),
