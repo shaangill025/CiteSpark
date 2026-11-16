@@ -96,6 +96,66 @@ describe("idempotency", () => {
     await expect(ledger.execute("r", "h", boom)).rejects.toThrow("sync");
     expect(runs).toBe(1);
   });
+
+  test("a mutation that re-enters with its own ID shares the reserved execution", async () => {
+    const ledger = new IdempotencyLedger({ capacity: 1 });
+    let runs = 0;
+    let inner: Promise<string> | undefined;
+    const outer = ledger.execute("a", "h", async () => {
+      runs++;
+      inner = ledger.execute("a", "h", async () => {
+        runs++;
+        return "inner";
+      });
+      return "outer";
+    });
+    expect(inner).toBe(outer);
+    await expect(outer).resolves.toBe("outer");
+    await expect(inner).resolves.toBe("outer");
+    await expect(ledger.execute("a", "h", async () => "retry")).resolves.toBe("outer");
+    expect(runs).toBe(1);
+  });
+
+  test("a mutation that re-enters with its own ID and another payload is a conflict", async () => {
+    const ledger = new IdempotencyLedger();
+    let inner: Promise<number> | undefined;
+    await ledger.execute("a", "h1", async () => {
+      inner = ledger.execute("a", "h2", async () => 2);
+      inner.catch(() => undefined);
+      return 1;
+    });
+    await expect(inner).rejects.toMatchObject({ code: "idempotency_conflict" });
+  });
+
+  test("a mutation that re-enters with a new ID cannot exceed capacity", async () => {
+    const ledger = new IdempotencyLedger({ capacity: 1 });
+    let runs = 0;
+    let inner: Promise<number> | undefined;
+    await ledger.execute("a", "h", async () => {
+      inner = ledger.execute("b", "h", async () => ++runs);
+      inner.catch(() => undefined);
+      return 1;
+    });
+    await expect(inner).rejects.toMatchObject({ code: "idempotency_exhausted" });
+    expect(ledger.has("b")).toBe(false);
+    expect(runs).toBe(0);
+  });
+
+  test("a synchronous throw after re-entry is retained for the reserved ID", async () => {
+    const ledger = new IdempotencyLedger({ capacity: 1 });
+    let runs = 0;
+    let inner: Promise<never> | undefined;
+    const boom = (): Promise<never> => {
+      runs++;
+      inner = ledger.execute("r", "h", boom);
+      inner.catch(() => undefined);
+      throw new Error("sync");
+    };
+    await expect(ledger.execute("r", "h", boom)).rejects.toThrow("sync");
+    await expect(inner).rejects.toThrow("sync");
+    await expect(ledger.execute("r", "h", boom)).rejects.toThrow("sync");
+    expect(runs).toBe(1);
+  });
 });
 
 describe("streams", () => {

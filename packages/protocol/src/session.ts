@@ -50,11 +50,22 @@ export class IdempotencyLedger {
         ),
       );
     }
-    // The async wrapper turns a synchronous throw from `run` into a remembered rejection too.
-    const entry: Entry = { fingerprint, promise: (async () => run())() };
-    entry.promise.catch(() => undefined);
-    this.#entries.set(requestId, entry);
-    return entry.promise as Promise<T>;
+    // Reserve the ID (and its capacity slot) before invoking `run`, so a callback that re-enters
+    // `execute` sees this request as in flight. A synchronous throw becomes a remembered rejection too.
+    let settle!: (outcome: T | Promise<T>) => void;
+    let fail!: (reason: unknown) => void;
+    const promise = new Promise<T>((resolve, reject) => {
+      settle = resolve;
+      fail = reject;
+    });
+    promise.catch(() => undefined);
+    this.#entries.set(requestId, { fingerprint, promise });
+    try {
+      settle(run());
+    } catch (error) {
+      fail(error);
+    }
+    return promise;
   }
 }
 
