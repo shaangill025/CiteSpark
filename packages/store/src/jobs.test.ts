@@ -1,4 +1,9 @@
 import Database from "better-sqlite3";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 import {
   InvalidTransitionError,
@@ -11,6 +16,8 @@ import {
   type JobState,
   type Lease,
 } from "./index.ts";
+
+const ASYNC_LEASE_CHILD = join(import.meta.dirname, "testing", "async-lease-child.ts");
 
 const setup = () => {
   const db = new Database(":memory:");
@@ -376,4 +383,216 @@ describe("property: random operation sequences", () => {
       }
     }
   }, 30_000);
+});
+
+describe("withLease (atomic lease-checked work for consumers such as capture)", () => {
+  const job = (db: Database.Database) =>
+    db
+      .prepare("SELECT state, cursor, lease_owner, lease_generation FROM job WHERE id = 'j1'")
+      .get();
+
+  it("runs work with the validated job inside the same transaction", () => {
+    const { db, jobs } = setup();
+    mk(jobs, "j1");
+    const lease = acquired(jobs, "j1", "A", 0, 1000);
+    const seen = jobs.withLease("j1", lease, 999, (j) => {
+      expect(db.inTransaction).toBe(true);
+      db.prepare("UPDATE job SET cursor = 'c1' WHERE id = ?").run(j.id);
+      return j.leaseGeneration;
+    });
+    expect(seen).toBe(lease.generation);
+    expect(jobs.get("j1").cursor).toBe("c1");
+  });
+
+  it.each([Number.NaN, -1, 0.5, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects clock %s with RangeError before running work",
+    (bad) => {
+      const { jobs } = setup();
+      mk(jobs, "j1");
+      const lease = acquired(jobs, "j1", "A", 0, 1000);
+      let ran = false;
+      expect(() => jobs.withLease("j1", lease, bad, () => (ran = true))).toThrow(RangeError);
+      expect(ran).toBe(false);
+    },
+  );
+
+  it("rejects stale generations, other owners, expiry and non-running jobs before running work", () => {
+    const { db, jobs } = setup();
+    mk(jobs, "j1");
+    const stale = acquired(jobs, "j1", "A", 0, 1000);
+    let ran = 0;
+    const work = () => void ran++;
+    expect(() => jobs.withLease("j1", stale, 1000, work)).toThrow(LeaseError); // exact expiry
+    const fresh = acquired(jobs, "j1", "A", 1000, 1000);
+    expect(() => jobs.withLease("j1", stale, 1001, work)).toThrow(LeaseError);
+    expect(() =>
+      jobs.withLease("j1", { owner: "B", generation: fresh.generation }, 1001, work),
+    ).toThrow(LeaseError);
+    expect(() =>
+      jobs.withLease(
+        "j1",
+        { owner: "A", generation: String(fresh.generation) } as unknown as Lease,
+        1001,
+        work,
+      ),
+    ).toThrow(LeaseError);
+    expect(() => jobs.withLease("j1", null as unknown as Lease, 1001, work)).toThrow(LeaseError);
+    jobs.transition("j1", fresh, 1001, "paused");
+    expect(() => jobs.withLease("j1", fresh, 1002, work)).toThrow(LeaseError);
+    expect(ran).toBe(0);
+    expect(job(db)).toMatchObject({ state: "paused", lease_owner: null, lease_generation: 2 });
+  });
+
+  it("rolls back the work if it throws and refuses asynchronous work", () => {
+    const { db, jobs } = setup();
+    mk(jobs, "j1");
+    const lease = acquired(jobs, "j1", "A", 0, 1000);
+    expect(() =>
+      jobs.withLease("j1", lease, 1, () => {
+        db.prepare("UPDATE job SET cursor = 'lost' WHERE id = 'j1'").run();
+        throw new Error("boom");
+      }),
+    ).toThrow("boom");
+    expect(jobs.get("j1").cursor).toBeNull();
+    expect(db.inTransaction).toBe(false);
+  });
+
+  // Untyped consumers can still pass async work; these cases bypass the compile-time check.
+  const untyped = (fn: unknown) => fn as (job: unknown) => void;
+
+  it("refuses a recognized async function before invoking it", () => {
+    const { db, jobs } = setup();
+    mk(jobs, "j1");
+    const lease = acquired(jobs, "j1", "A", 0, 1000);
+    let invoked = 0;
+    const counter = { n: 0 };
+    const asyncCallbacks = [
+      async () => void invoked++,
+      async function named() {
+        invoked++;
+      },
+      // eslint-disable-next-line require-yield
+      async function* generator() {
+        invoked++;
+      },
+      // Another realm's async function is still recognized.
+      runInNewContext("(async () => { counter.n++; })", { counter }),
+    ];
+    for (const fn of asyncCallbacks) {
+      expect(() => jobs.withLease("j1", lease, 1, untyped(fn))).toThrow(TypeError);
+      expect(() => jobs.withLease("j1", lease, 1, untyped(fn))).toThrow(/synchronous.*promise/i);
+    }
+    expect(invoked + counter.n).toBe(0);
+    expect(db.inTransaction).toBe(false);
+    expect(jobs.get("j1")).toMatchObject({ cursor: null, leaseGeneration: lease.generation });
+  });
+
+  it("refuses rejected async work before it can write after a takeover", async () => {
+    const { db, jobs } = setup();
+    mk(jobs, "j1");
+    const lease = acquired(jobs, "j1", "A", 0, 100);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let resumed = false;
+    expect(() =>
+      jobs.withLease(
+        "j1",
+        lease,
+        1,
+        untyped(async () => {
+          await gate;
+          resumed = true;
+          db.prepare("UPDATE job SET cursor = 'stale-async-write' WHERE id = 'j1'").run();
+        }),
+      ),
+    ).toThrow(/promise/i);
+    expect(acquired(jobs, "j1", "B", 100, 100)).toEqual({ owner: "B", generation: 2 });
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(resumed).toBe(false);
+    expect(jobs.get("j1")).toMatchObject({ cursor: null, leaseOwner: "B", leaseGeneration: 2 });
+  });
+
+  it("rolls back a synchronous callback that returns a Promise or thenable without calling then", () => {
+    const { db, jobs } = setup();
+    mk(jobs, "j1");
+    const lease = acquired(jobs, "j1", "A", 0, 1000);
+    let thenCalls = 0;
+    const results: (() => unknown)[] = [
+      () => Promise.resolve(1),
+      () => runInNewContext("Promise.resolve(1)"),
+      () => ({ then: () => void thenCalls++ }),
+      () => Object.assign(() => undefined, { then: () => void thenCalls++ }),
+      () =>
+        Object.defineProperty({}, "then", {
+          get() {
+            throw new Error("then accessor");
+          },
+        }),
+    ];
+    for (const result of results) {
+      expect(() =>
+        jobs.withLease(
+          "j1",
+          lease,
+          1,
+          untyped(() => {
+            db.prepare("UPDATE job SET cursor = 'lost' WHERE id = 'j1'").run();
+            return result();
+          }),
+        ),
+      ).toThrow(TypeError);
+      expect(db.inTransaction).toBe(false);
+      expect(jobs.get("j1").cursor).toBeNull();
+    }
+    expect(thenCalls).toBe(0);
+    // Plain objects and functions without a callable `then` are ordinary results.
+    expect(jobs.withLease("j1", lease, 1, () => ({ then: 1 }))).toEqual({ then: 1 });
+  });
+
+  it("does not leave an unhandled rejection when refusing async work (strict mode)", () => {
+    const run = spawnSync(
+      process.execPath,
+      ["--unhandled-rejections=strict", "--no-warnings", ASYNC_LEASE_CHILD],
+      { encoding: "utf8", timeout: 30_000 },
+    );
+    expect(run.stderr).toBe("");
+    expect(run.stdout.trim().split("\n")).toEqual([
+      "async function: not invoked",
+      "bound async function: refused",
+      "returned rejected promise: refused",
+      "other-realm rejected promise: refused",
+      "survived",
+    ]);
+    expect(run.status).toBe(0);
+  });
+
+  it("holds the write lock from the check to the end of the work (no time-of-check race)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "citspark-lease-"));
+    try {
+      const path = join(dir, "lib.db");
+      const a = new Database(path);
+      a.pragma("journal_mode = WAL");
+      migrate(a);
+      const jobsA = new JobStore(a);
+      mk(jobsA, "j1");
+      const lease = acquired(jobsA, "j1", "A", 0, 1000);
+      const b = new Database(path);
+      b.pragma("busy_timeout = 0");
+      const jobsB = new JobStore(b);
+      jobsA.withLease("j1", lease, 999, () => {
+        // Another process whose clock already passed expiry cannot take over mid-work.
+        expect(() => jobsB.acquire("j1", "B", 5000, 1000)).toThrow(/locked|busy/i);
+        a.prepare("UPDATE job SET cursor = 'c' WHERE id = 'j1'").run();
+      });
+      // Afterwards the takeover proceeds and fences the earlier token.
+      expect(jobsB.acquire("j1", "B", 5000, 1000)).toEqual({ owner: "B", generation: 2 });
+      expect(() => jobsA.withLease("j1", lease, 5001, () => undefined)).toThrow(LeaseError);
+      expect(jobsA.get("j1").cursor).toBe("c");
+      a.close();
+      b.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

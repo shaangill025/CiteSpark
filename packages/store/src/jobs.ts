@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { types } from "node:util";
 
 export const JOB_STATES = [
   "queued",
@@ -110,6 +111,35 @@ export interface CheckpointData {
   progress?: string | null;
 }
 
+const ASYNC_WORK = "withLease work must be synchronous and cannot return a promise";
+
+/**
+ * Throws a TypeError (rolling back the enclosing transaction) if `result` is a Promise or thenable.
+ * Never calls `then`: a native Promise (any realm) is only marked handled so its rejection cannot
+ * surface as an unhandled rejection; a custom thenable's `then` is read once.
+ */
+function refuseAsyncResult<T>(result: T): T {
+  if (types.isPromise(result)) {
+    try {
+      Promise.prototype.then.call(result, undefined, () => undefined);
+    } catch {
+      // A hostile Promise subclass species constructor; nothing else to suppress.
+    }
+    throw new TypeError(`${ASYNC_WORK}; it returned a Promise`);
+  }
+  if ((typeof result !== "object" && typeof result !== "function") || result === null) {
+    return result;
+  }
+  let then: unknown;
+  try {
+    then = (result as { then?: unknown }).then;
+  } catch (cause) {
+    throw new TypeError(`${ASYNC_WORK}; reading \`then\` on its result failed`, { cause });
+  }
+  if (typeof then === "function") throw new TypeError(`${ASYNC_WORK}; it returned a thenable`);
+  return result;
+}
+
 /** Time is epoch ms: a non-negative safe integer. Invalid values throw before any read or write. */
 function checkTime(nowMs: number): void {
   if (!Number.isSafeInteger(nowMs) || nowMs < 0) {
@@ -135,7 +165,11 @@ function checkExpiry(nowMs: number, ttlMs: number): number {
  * epoch ms; every timed method throws RangeError for invalid time or TTL before changing anything.
  */
 export class JobStore {
-  constructor(private readonly db: Database.Database) {}
+  private readonly db: Database.Database;
+
+  constructor(db: Database.Database) {
+    this.db = db;
+  }
 
   create(job: NewJob): Job {
     this.db
@@ -197,6 +231,34 @@ export class JobStore {
         this.assertLease(id, owner, nowMs);
         this.db.prepare("UPDATE job SET lease_expires_at = ? WHERE id = ?").run(expiresAt, id);
       })
+      .immediate();
+  }
+
+  /**
+   * Run `fn` atomically under the retained `lease`. Validation and `fn` share one IMMEDIATE
+   * transaction (a savepoint when already inside one), so the lease cannot expire, be taken over or
+   * change generation between the check and the work: `fn` sees exactly the validated job. Throws
+   * RangeError for an invalid clock and LeaseError for a stale owner, generation or expired lease
+   * before `fn` runs. A throw from `fn` rolls back everything it wrote.
+   *
+   * `fn` must be synchronous and trusted: only the writes it makes before returning are fenced.
+   * This is enforced at run time, not in the type: `fn` stays `(job) => T` so generic wrappers
+   * (`<T>(work: () => T) => withLease(..., () => work())`) keep compiling.
+   * - An async function (including an async generator, from any realm) is refused with a TypeError
+   *   before it is invoked, so none of its code runs.
+   * - Async work the check cannot recognize (for example a bound or proxied async function, or a
+   *   plain function returning a Promise or thenable) has already run up to its first `await`;
+   *   withLease rolls back those writes and throws a TypeError. A rejected native Promise is marked
+   *   handled; a custom thenable's `then` is read once but never called.
+   * - withLease cannot stop work that `fn` schedules to run later (continuations after `await`,
+   *   timers, callbacks). Such work runs outside the transaction and unfenced by the lease, so a
+   *   callback must not schedule database writes.
+   */
+  withLease<T>(id: string, lease: Lease, nowMs: number, fn: (job: Job) => T): T {
+    checkTime(nowMs);
+    if (types.isAsyncFunction(fn)) throw new TypeError(`${ASYNC_WORK}; got an async function`);
+    return this.db
+      .transaction(() => refuseAsyncResult(fn(this.assertLease(id, lease, nowMs))))
       .immediate();
   }
 
@@ -303,12 +365,14 @@ export class JobStore {
     const job = this.get(id);
     if (
       job.state !== "running" ||
-      job.leaseOwner !== owner.owner ||
-      job.leaseGeneration !== owner.generation ||
+      job.leaseOwner !== owner?.owner ||
+      job.leaseGeneration !== owner?.generation ||
       job.leaseExpiresAt === null ||
       job.leaseExpiresAt <= nowMs
     ) {
-      throw new LeaseError(`${owner} does not hold a live lease on ${id}`);
+      throw new LeaseError(
+        `lease ${String(owner?.owner)}#${String(owner?.generation)} is not the live lease on ${id}`,
+      );
     }
     return job;
   }
