@@ -12,6 +12,16 @@ export interface CaptureRecord {
   authorHandle?: string | null;
   canonicalUrl?: string | null;
   publishedAt?: string | null;
+  /** Availability reported with this observation; defaults to `available`. */
+  availability?: "available" | "unavailable";
+  /**
+   * Never let weaker content displace a fuller stored copy (MIG-01, T09). Decided inside the commit
+   * transaction against the persisted versions of this identity: text that is empty, or a
+   * truncation of a longer stored version, adds no version or observation, but account membership
+   * is still recorded. An empty text for an identity with no stored source writes nothing.
+   * Importers set this; live capture adapters leave it unset.
+   */
+  retainFuller?: boolean;
 }
 
 /** One page handed over for commit. Adapter-agnostic: cursors are opaque strings. */
@@ -43,6 +53,10 @@ export interface CommitResult {
   newRecords: number;
   newSources: number;
   newVersions: number;
+  /** `retainFuller` records whose text was weaker than a stored version: membership only. */
+  weakerSkipped: number;
+  /** `retainFuller` records with no text and no stored source: nothing written. */
+  noContentSkipped: number;
   cancelRequested: boolean;
 }
 
@@ -108,25 +122,58 @@ function validate(page: CapturePage): void {
     for (const f of [r.authorId, r.authorHandle, r.canonicalUrl, r.publishedAt]) {
       if (!optionalString(f)) fail(`record ${i}`);
     }
+    if (
+      r.availability !== undefined &&
+      r.availability !== "available" &&
+      r.availability !== "unavailable"
+    ) {
+      fail(`record ${i}`);
+    }
+    if (r.retainFuller !== undefined && typeof r.retainFuller !== "boolean") fail(`record ${i}`);
   });
 }
 
 const sha256 = (s: string): string => createHash("sha256").update(s, "utf8").digest("hex");
 
+/**
+ * Page fingerprint for replay detection. Optional fields are appended only when they differ from
+ * their defaults, so fingerprints already persisted for capture pages stay valid.
+ */
 const contentHash = (records: readonly CaptureRecord[]): string =>
   sha256(
     JSON.stringify(
-      records.map((r) => [
-        r.sourceType,
-        r.platformId,
-        r.text,
-        r.authorId ?? null,
-        r.authorHandle ?? null,
-        r.canonicalUrl ?? null,
-        r.publishedAt ?? null,
-      ]),
+      records.map((r) => {
+        const fields: unknown[] = [
+          r.sourceType,
+          r.platformId,
+          r.text,
+          r.authorId ?? null,
+          r.authorHandle ?? null,
+          r.canonicalUrl ?? null,
+          r.publishedAt ?? null,
+        ];
+        if (r.availability === "unavailable" || r.retainFuller === true) {
+          fields.push(r.availability ?? "available", r.retainFuller === true);
+        }
+        return fields;
+      }),
     ),
   );
+
+const TRUNCATION = /(…|\.\.\.)$/;
+
+/**
+ * Whether `incoming` is weaker than one of the `stored` texts of the same source: empty while a
+ * stored text is not, or a truncation (optionally ellipsis-terminated) of a longer stored text. A
+ * stored copy that is itself ellipsis-terminated is not treated as fuller than anything it prefixes.
+ */
+export function isWeakerText(incoming: string, stored: readonly string[]): boolean {
+  if (incoming === "") return stored.some((t) => t !== "");
+  const head = incoming.trimEnd().replace(TRUNCATION, "");
+  return stored.some(
+    (t) => !TRUNCATION.test(t.trimEnd()) && t.length > incoming.length && t.startsWith(head),
+  );
+}
 
 /**
  * Commits capture pages: records, observations, membership, and the continuation cursor in one
@@ -279,6 +326,8 @@ export class CaptureStore {
       newRecords: 0,
       newSources: 0,
       newVersions: 0,
+      weakerSkipped: 0,
+      noContentSkipped: 0,
       cancelRequested: job.cancelRequested,
     };
   }
@@ -356,8 +405,8 @@ export class CaptureStore {
       "SELECT id FROM source_version WHERE source_id = ? AND content_hash = ?",
     );
     const insObservation = this.db.prepare(
-      `INSERT INTO observation (source_id, version_id, job_id, observed_at, method, adapter_version, capture_page_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO observation (source_id, version_id, job_id, observed_at, method, adapter_version, availability, capture_page_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (job_id, version_id) WHERE capture_page_id IS NOT NULL DO NOTHING`,
     );
     /**
@@ -392,12 +441,31 @@ export class CaptureStore {
          WHERE membership.last_job_id IS NOT excluded.last_job_id`,
     );
 
+    const storedTexts = this.db.prepare("SELECT text FROM source_version WHERE source_id = ?");
+
     let newSources = 0;
     let newVersions = 0;
     let newRecords = 0;
+    let weakerSkipped = 0;
+    let noContentSkipped = 0;
     const half = Math.floor(page.records.length / 2);
     page.records.forEach((r, i) => {
       if (i === half) fault("mid-page");
+      if (r.retainFuller === true) {
+        const stored = findSource.get(r.sourceType, r.platformId) as { id: string } | undefined;
+        if (!stored && r.text === "") {
+          noContentSkipped++;
+          return;
+        }
+        if (stored) {
+          const texts = (storedTexts.all(stored.id) as { text: string }[]).map((v) => v.text);
+          if (isWeakerText(r.text, texts)) {
+            weakerSkipped++;
+            upMembership.run(page.accountId, page.collectionId, stored.id, iso, iso, jobId, jobId);
+            return;
+          }
+        }
+      }
       const { id: sourceId, created } = sourceIdFor(r);
       if (created) newSources++;
       const textHash = sha256(r.text);
@@ -410,6 +478,7 @@ export class CaptureStore {
         iso,
         method,
         adapter,
+        r.availability ?? "available",
         pageId,
       ).changes;
       upMembership.run(page.accountId, page.collectionId, sourceId, iso, iso, jobId, jobId);
@@ -443,6 +512,8 @@ export class CaptureStore {
       newRecords,
       newSources,
       newVersions,
+      weakerSkipped,
+      noContentSkipped,
       cancelRequested,
     };
   }

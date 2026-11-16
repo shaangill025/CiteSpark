@@ -1,7 +1,9 @@
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { crc32, deflateRawSync } from "node:zlib";
 import Database from "better-sqlite3";
 import { afterAll, describe, expect, it } from "vitest";
 import {
@@ -9,6 +11,7 @@ import {
   ImportBlockedError,
   ImportLimitError,
   JobStore,
+  LeaseError,
   UnsafeImportPathError,
   XArchiveFormatError,
   commitXArchive,
@@ -34,7 +37,7 @@ const setup = () => {
 };
 type Ctx = ReturnType<typeof setup>;
 const run = (c: Ctx, parsed: ParsedExport, owner = "A", nowMs = T0) =>
-  commitXArchive(c.db, c.jobs, c.capture, parsed, { owner, nowMs });
+  commitXArchive(c.db, c.jobs, c.capture, parsed, { owner, clock: () => nowMs });
 const n = (db: Database.Database, sql: string): number =>
   (db.prepare(sql).get() as { n: number }).n;
 const canonical = (db: Database.Database) =>
@@ -292,7 +295,7 @@ describe("xarchive preview and commit", () => {
     expect(() =>
       commitXArchive(c.db, c.jobs, c.capture, parsed, {
         owner: "A",
-        nowMs: T0,
+        clock: () => T0,
         commitOptions: {
           onFaultPoint: (p) => {
             if (p === "before-commit" && ++pages === 2) throw new Error("crash");
@@ -305,5 +308,280 @@ describe("xarchive preview and commit", () => {
     expect(r.status).toBe("imported");
     expect(n(c.db, "SELECT COUNT(*) n FROM source")).toBe(250);
     expect(n(c.db, "SELECT COUNT(*) n FROM observation")).toBe(250);
+  });
+});
+
+const READ_CHILD = fileURLToPath(new URL("./testing/xarchive-read-child.ts", import.meta.url));
+const synthetic = (count: number, prefix = "19") =>
+  Array.from({ length: count }, (_, i) => ({
+    tweet_id: `${prefix}${String(i).padStart(17, "0")}`,
+    full_text: `Synthetic ${i}`,
+  }));
+
+/** A real ZIP container (stored central directory, deflated entries) built in memory. */
+function zipOf(entries: { name: string; data: Buffer }[]): Buffer {
+  const locals: Buffer[] = [];
+  const centrals: Buffer[] = [];
+  let offset = 0;
+  for (const e of entries) {
+    const name = Buffer.from(e.name, "utf8");
+    const packed = deflateRawSync(e.data);
+    const crc = crc32(e.data);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(8, 8);
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(packed.length, 18);
+    local.writeUInt32LE(e.data.length, 22);
+    local.writeUInt16LE(name.length, 26);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(8, 10);
+    central.writeUInt32LE(crc, 16);
+    central.writeUInt32LE(packed.length, 20);
+    central.writeUInt32LE(e.data.length, 24);
+    central.writeUInt16LE(name.length, 28);
+    central.writeUInt32LE(offset, 42);
+    locals.push(local, name, packed);
+    centrals.push(central, name);
+    offset += local.length + name.length + packed.length;
+  }
+  const dir = Buffer.concat(centrals);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(dir.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...locals, dir, end]);
+}
+
+describe("xarchive review regressions (SEC-06, T09)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "citspark-xa-review-"));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  it.skipIf(process.platform === "win32")(
+    "refuses a named pipe without opening it (no hang waiting for a writer)",
+    () => {
+      const fifo = join(dir, "pipe.json");
+      expect(spawnSync("mkfifo", [fifo]).status).toBe(0);
+      const child = spawnSync(process.execPath, ["--no-warnings", READ_CHILD, fifo], {
+        encoding: "utf8",
+        timeout: 15_000,
+      });
+      expect(child.signal).toBeNull();
+      expect(child.stdout.trim()).toBe("threw UnsafeImportPathError");
+    },
+  );
+
+  it("rejects a real ZIP archive, including a bomb entry with a traversal path, without extracting", () => {
+    const zip = zipOf([
+      { name: "../../escape.json", data: Buffer.from(exportOf(synthetic(2))) },
+      { name: "bomb.json", data: Buffer.alloc(8 * 1024 * 1024, 0x20) },
+    ]);
+    expect(zip.length).toBeLessThan(64 * 1024);
+    const asZip = join(dir, "export.zip");
+    const asJson = join(dir, "renamed.json");
+    writeFileSync(asZip, zip);
+    writeFileSync(asJson, zip);
+    const before = readdirSync(dir).sort();
+    expect(() => readXArchiveFile(asZip)).toThrow(UnsafeImportPathError);
+    expect(() => parseXArchive(readXArchiveFile(asJson))).toThrow(XArchiveFormatError);
+    expect(readdirSync(dir).sort()).toEqual(before);
+    expect(existsSync(join(dir, "..", "..", "escape.json"))).toBe(false);
+  });
+
+  it("rejects invalid UTF-8 instead of silently replacing bytes", () => {
+    const bad = join(dir, "bad-utf8.json");
+    const json = Buffer.from(exportOf([{ tweet_id: "1", full_text: "AB" }]), "utf8");
+    const at = json.indexOf("AB");
+    json[at] = 0xff;
+    writeFileSync(bad, json);
+    expect(() => readXArchiveFile(bad)).toThrow(XArchiveFormatError);
+  });
+
+  it("reports no false warnings for a clean export", () => {
+    const codes = parseXArchive(
+      exportOf([{ tweet_id: "1", full_text: "ok", created_at: "2026-01-01T00:00:00Z" }], {
+        collection: { bookmarks: "complete" },
+      }),
+    ).warnings.map((w) => w.code);
+    for (const c of ["invalid-date", "invalid-handle", "invalid-author-id", "duplicate-in-file"]) {
+      expect(codes).not.toContain(c);
+    }
+  });
+
+  it("keeps an available post with no text available rather than guessing it is gone", () => {
+    const p = parseXArchive(exportOf([{ tweet_id: "3", status: "available", full_text: "" }]));
+    expect(p.bookmarks[0]?.status).toBe("available");
+  });
+
+  it("carries unavailable status through to the imported observation", () => {
+    const c = setup();
+    run(
+      c,
+      parseXArchive(exportOf([{ tweet_id: "41", status: "unavailable", full_text: "kept text" }])),
+    );
+    expect(c.db.prepare("SELECT method, availability FROM observation").all()).toEqual([
+      { method: "import", availability: "unavailable" },
+    ]);
+  });
+
+  it("records account membership even when the incoming text is weaker than a stored copy", () => {
+    const c = setup();
+    const full = "A complete synthetic post that a later export only has truncated.";
+    run(c, parseXArchive(exportOf([{ tweet_id: "51", full_text: full }])));
+    const other = { user_id: "1000000000000000009" };
+    run(
+      c,
+      parseXArchive(
+        exportOf([{ tweet_id: "51", full_text: "A complete synthetic post that…" }], other),
+      ),
+      "A",
+      T0 + 1,
+    );
+    run(
+      c,
+      parseXArchive(
+        exportOf([{ tweet_id: "51", status: "unavailable" }], { user_id: "1000000000000000010" }),
+      ),
+      "A",
+      T0 + 2,
+    );
+    expect(c.db.prepare("SELECT account_id FROM membership ORDER BY account_id").all()).toEqual([
+      { account_id: ACCOUNT },
+      { account_id: "x:account:1000000000000000009" },
+      { account_id: "x:account:1000000000000000010" },
+    ]);
+    expect(
+      (c.db.prepare("SELECT text FROM source_version").all() as { text: string }[]).map(
+        (r) => r.text,
+      ),
+    ).toEqual([full]);
+  });
+
+  it("reuses a source persisted under an older ID scheme", () => {
+    const c = setup();
+    c.db
+      .prepare(
+        "INSERT INTO source (id, source_type, platform_id, created_at) VALUES ('legacy/x_post/61', 'x_post', '61', '2026-01-01T00:00:00.000Z')",
+      )
+      .run();
+    run(c, parseXArchive(exportOf([{ tweet_id: "61", full_text: "text" }])));
+    expect(c.db.prepare("SELECT id FROM source").all()).toEqual([{ id: "legacy/x_post/61" }]);
+    expect(c.db.prepare("SELECT source_id FROM membership").all()).toEqual([
+      { source_id: "legacy/x_post/61" },
+    ]);
+  });
+
+  it("resumes after another job stores fuller text for a record not yet committed", () => {
+    const c = setup();
+    const records = synthetic(101);
+    const last = records[100]!;
+    last.full_text = "Synthetic last record, cut short…";
+    const parsed = parseXArchive(exportOf(records));
+    let pages = 0;
+    expect(() =>
+      commitXArchive(c.db, c.jobs, c.capture, parsed, {
+        owner: "A",
+        clock: () => T0,
+        commitOptions: {
+          onFaultPoint: (p) => {
+            if (p === "before-commit" && ++pages === 2) throw new Error("crash");
+          },
+        },
+      }),
+    ).toThrow("crash");
+    const fuller = "Synthetic last record, cut short of nothing: this is the complete text.";
+    run(
+      c,
+      parseXArchive(
+        exportOf([{ tweet_id: last.tweet_id, full_text: fuller }], {
+          user_id: "1000000000000000009",
+        }),
+      ),
+      "C",
+      T0 + 1,
+    );
+    const r = run(c, parsed, "B", T0 + 120_000);
+    expect(r.status).toBe("imported");
+    expect(c.jobs.get(r.jobId).state).toBe("complete");
+    expect(n(c.db, "SELECT COUNT(*) n FROM source")).toBe(101);
+    expect(
+      c.db
+        .prepare(
+          "SELECT sv.text FROM source_version sv JOIN source s ON s.id = sv.source_id WHERE s.platform_id = ?",
+        )
+        .all(last.tweet_id),
+    ).toEqual([{ text: fuller }]);
+    expect(n(c.db, `SELECT COUNT(*) n FROM membership WHERE account_id = '${ACCOUNT}'`)).toBe(101);
+  });
+
+  it("stops at the page boundary when cancellation is requested, keeping committed pages", () => {
+    const c = setup();
+    const parsed = parseXArchive(exportOf(synthetic(250)));
+    let jobId = "";
+    let page = 0;
+    const r = commitXArchive(c.db, c.jobs, c.capture, parsed, {
+      owner: "A",
+      clock: () => T0,
+      commitOptions: {
+        onFaultPoint: (p) => {
+          if (p === "after-commit" && ++page === 1) {
+            jobId = (c.db.prepare("SELECT id FROM job").get() as { id: string }).id;
+            c.jobs.cancel(jobId, T0);
+          }
+        },
+      },
+    });
+    expect(r.status).toBe("cancelled");
+    expect(c.jobs.get(jobId).state).toBe("cancelled");
+    expect(n(c.db, "SELECT COUNT(*) n FROM source")).toBe(100);
+    expect(() => run(c, parsed, "A", T0 + 1)).toThrow(/cancelled/);
+  });
+
+  it("refreshes time and renews the lease between pages", () => {
+    const c = setup();
+    const parsed = parseXArchive(exportOf(synthetic(350)));
+    let t = T0;
+    const r = commitXArchive(c.db, c.jobs, c.capture, parsed, {
+      owner: "A",
+      leaseTtlMs: 60_000,
+      clock: () => (t += 40_000),
+    });
+    expect(r.status).toBe("imported");
+    expect(c.jobs.get(r.jobId).state).toBe("complete");
+  });
+
+  it("stops writing once its lease has expired and another job owns the collection (CAP-03)", () => {
+    const c = setup();
+    const parsed = parseXArchive(exportOf(synthetic(250)));
+    let t = T0;
+    let page = 0;
+    c.jobs.create({
+      id: "capture-1",
+      kind: "capture",
+      accountId: ACCOUNT,
+      collectionId: "x:bookmarks",
+    });
+    expect(() =>
+      commitXArchive(c.db, c.jobs, c.capture, parsed, {
+        owner: "A",
+        leaseTtlMs: 60_000,
+        clock: () => t,
+        commitOptions: {
+          onFaultPoint: (p) => {
+            if (p !== "after-commit" || ++page !== 1) return;
+            t = T0 + 61_000;
+            expect(c.jobs.acquire("capture-1", "B", t, 60_000)).not.toBeNull();
+          },
+        },
+      }),
+    ).toThrow(LeaseError);
+    expect(n(c.db, "SELECT COUNT(*) n FROM source")).toBe(100);
+    expect(n(c.db, "SELECT COUNT(*) n FROM capture_page")).toBe(1);
   });
 });

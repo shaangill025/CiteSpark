@@ -1,8 +1,14 @@
 import { createHash } from "node:crypto";
-import { closeSync, fstatSync, lstatSync, openSync, readSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import { extname } from "node:path";
 import type Database from "better-sqlite3";
-import type { CapturePage, CaptureRecord, CaptureStore, CommitOptions } from "./capture.ts";
+import {
+  isWeakerText,
+  type CapturePage,
+  type CaptureRecord,
+  type CaptureStore,
+  type CommitOptions,
+} from "./capture.ts";
 import type { JobStore } from "./jobs.ts";
 
 /**
@@ -88,9 +94,16 @@ const ID = /^\d{1,25}$/;
 const HANDLE = /^[A-Za-z0-9_]{1,15}$/;
 const sha256 = (s: string): string => createHash("sha256").update(s, "utf8").digest("hex");
 
+/** Open flags: never follow a final symlink, never block on a FIFO. Unsupported flags are 0. */
+const OPEN_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
+const UTF8 = new TextDecoder("utf-8", { fatal: true });
+
 /**
  * Read an export file with bounded memory. Only regular `.json` files are accepted: symlinks,
- * devices, directories, and NUL-bearing or non-JSON paths are refused (SEC-06).
+ * FIFOs, devices, directories, and NUL-bearing or non-JSON paths are refused before the file is
+ * opened, and the opened descriptor must be the same regular file (SEC-06). Archives (for example
+ * ZIP) are never expanded: xarchive exports are single JSON files. Invalid UTF-8 is rejected rather
+ * than replaced.
  */
 export function readXArchiveFile(
   path: string,
@@ -102,13 +115,26 @@ export function readXArchiveFile(
   if (extname(path).toLowerCase() !== ".json") {
     throw new UnsafeImportPathError("an xarchive export is a .json file");
   }
-  if (lstatSync(path).isSymbolicLink()) {
-    throw new UnsafeImportPathError("symbolic links are not followed");
+  const pre = lstatSync(path);
+  if (pre.isSymbolicLink()) throw new UnsafeImportPathError("symbolic links are not followed");
+  if (!pre.isFile()) throw new UnsafeImportPathError("import source is not a regular file");
+  if (pre.size > limits.maxBytes) {
+    throw new ImportLimitError(`file is ${pre.size} bytes; the limit is ${limits.maxBytes}`);
   }
-  const fd = openSync(path, "r");
+  let fd: number;
+  try {
+    fd = openSync(path, OPEN_FLAGS);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ELOOP") {
+      throw new UnsafeImportPathError("symbolic links are not followed");
+    }
+    throw e;
+  }
   try {
     const st = fstatSync(fd);
-    if (!st.isFile()) throw new UnsafeImportPathError("import source is not a regular file");
+    if (!st.isFile() || st.dev !== pre.dev || st.ino !== pre.ino) {
+      throw new UnsafeImportPathError("import source changed or is not a regular file");
+    }
     if (st.size > limits.maxBytes) {
       throw new ImportLimitError(`file is ${st.size} bytes; the limit is ${limits.maxBytes}`);
     }
@@ -119,7 +145,11 @@ export function readXArchiveFile(
       if (n === 0) break;
       off += n;
     }
-    return buf.subarray(0, off).toString("utf8");
+    try {
+      return UTF8.decode(buf.subarray(0, off));
+    } catch {
+      throw new XArchiveFormatError("export is not valid UTF-8");
+    }
   } finally {
     closeSync(fd);
   }
@@ -255,7 +285,7 @@ export function parseXArchive(
 
     const next: Bookmark = {
       platformId: b.tweet_id,
-      status: b.status === "unavailable" || text === "" ? "unavailable" : "available",
+      status: b.status === "unavailable" ? "unavailable" : "available",
       text,
       authorId,
       authorHandle,
@@ -282,22 +312,22 @@ export function parseXArchive(
   warn(
     "invalid-date",
     "unparseable created_at; published date left unknown",
-    counts["invalid-date"],
+    counts["invalid-date"] ?? 0,
   );
   warn(
     "invalid-handle",
     "author handle failed validation and was dropped",
-    counts["invalid-handle"],
+    counts["invalid-handle"] ?? 0,
   );
   warn(
     "invalid-author-id",
     "author id was not numeric and was dropped",
-    counts["invalid-author-id"],
+    counts["invalid-author-id"] ?? 0,
   );
   warn(
     "duplicate-in-file",
     "tweet_id repeated in file; fullest record kept",
-    counts["duplicate-in-file"],
+    counts["duplicate-in-file"] ?? 0,
   );
   const folderCount = Array.isArray(data.folders) ? data.folders.length : 0;
   if (
@@ -352,10 +382,11 @@ export interface ImportPreview {
     duplicates: number;
     /** Differing text from a stored version, kept alongside it as a new version. */
     newVersions: number;
-    /** Incoming content is weaker than a stored version and is not imported. */
+    /** Incoming content is weaker than a stored version: no version is added; membership is kept. */
     weakerSkipped: number;
-    /** Unavailable with no retained text: nothing to store. */
+    /** No retained text and no stored copy: nothing to store. */
     noContentSkipped: number;
+    /** Records expected to add or re-observe content (new + duplicates + newVersions). */
     toCommit: number;
   };
   conflicts: ImportConflict[];
@@ -365,21 +396,12 @@ export interface ImportPreview {
   /** The same file was already imported to completion; commit would be a no-op. */
   alreadyImported: boolean;
   jobId: string | null;
-  /** Records that commit will send through the shared capture commit path. */
+  /**
+   * The page plan commit sends through the shared capture commit path: every record in the file,
+   * in file order. It depends only on the file, so an interrupted import resumes with the same
+   * pages; whether a record is weaker than stored content is decided again inside each commit.
+   */
   records: CaptureRecord[];
-}
-
-const TRUNCATION = /(…|\.\.\.)$/;
-const stripEllipsis = (s: string): string => s.trimEnd().replace(TRUNCATION, "");
-
-/** Incoming content is weaker when it is empty or a truncation of a longer stored text. */
-function isWeaker(incoming: string, stored: readonly string[]): boolean {
-  if (incoming === "") return stored.some((t) => t !== "");
-  const head = stripEllipsis(incoming);
-  // A stored copy that is itself truncated is not fuller than anything it prefixes.
-  return stored.some(
-    (t) => !TRUNCATION.test(t.trimEnd()) && t.length > incoming.length && t.startsWith(head),
-  );
 }
 
 export const importJobId = (parsed: ParsedExport): string =>
@@ -393,6 +415,8 @@ const toRecord = (b: Bookmark): CaptureRecord => ({
   authorHandle: b.authorHandle,
   canonicalUrl: b.authorHandle ? `https://x.com/${b.authorHandle}/status/${b.platformId}` : null,
   publishedAt: b.publishedAt,
+  availability: b.status,
+  retainFuller: true,
 });
 
 /** Dry run: classifies every record against the store without writing (MIG-01). */
@@ -407,7 +431,6 @@ export function previewXArchive(db: Database.Database, parsed: ParsedExport): Im
     toCommit: 0,
   };
   const conflicts: ImportConflict[] = [];
-  const records: CaptureRecord[] = [];
   const stored = db.prepare(
     `SELECT sv.text FROM source s JOIN source_version sv ON sv.source_id = s.id
      WHERE s.source_type = 'x_post' AND s.platform_id = ?`,
@@ -418,29 +441,25 @@ export function previewXArchive(db: Database.Database, parsed: ParsedExport): Im
     const exists = known.get(b.platformId) !== undefined;
     if (b.text === "" && !exists) {
       counts.noContentSkipped++;
-      continue;
-    }
-    if (exists && versions.includes(b.text) && b.text !== "") {
+    } else if (exists && versions.includes(b.text) && b.text !== "") {
       counts.duplicates++;
-    } else if (exists && isWeaker(b.text, versions)) {
+    } else if (exists && isWeakerText(b.text, versions)) {
       counts.weakerSkipped++;
       conflicts.push({ platformId: b.platformId, kind: "weaker-skipped" });
-      continue;
     } else if (exists) {
       counts.newVersions++;
       conflicts.push({ platformId: b.platformId, kind: "new-version" });
     } else {
       counts.new++;
     }
-    records.push(toRecord(b));
   }
-  counts.toCommit = records.length;
+  counts.toCommit = counts.new + counts.duplicates + counts.newVersions;
 
   const warnings = [...parsed.warnings];
   if (counts.noContentSkipped > 0) {
     warnings.push({
       code: "unavailable-no-text",
-      message: "unavailable bookmarks with no retained text and no stored copy",
+      message: "bookmarks with no retained text and no stored copy",
       count: counts.noContentSkipped,
     });
   }
@@ -452,6 +471,9 @@ export function previewXArchive(db: Database.Database, parsed: ParsedExport): Im
   const prior = jobId
     ? (db.prepare("SELECT state FROM job WHERE id = ?").get(jobId) as { state: string } | undefined)
     : undefined;
+  if (prior?.state === "cancelled") {
+    blockers.push("an import of this file was cancelled; committed records are kept");
+  }
   return {
     writes: false,
     accountId: parsed.accountId,
@@ -463,23 +485,29 @@ export function previewXArchive(db: Database.Database, parsed: ParsedExport): Im
     blockers,
     alreadyImported: prior?.state === "complete",
     jobId,
-    records,
+    records: parsed.bookmarks.map(toRecord),
   };
 }
 
 export interface ImportReceipt {
-  status: "imported" | "already-imported";
+  /** `cancelled`: a user cancel was honored at a page boundary; committed pages are kept (CAP-04). */
+  status: "imported" | "already-imported" | "cancelled";
   jobId: string;
   pages: number;
   newRecords: number;
   newSources: number;
   newVersions: number;
+  /** Records whose text was weaker than stored content at commit time: membership only. */
+  weakerSkipped: number;
+  /** Records with no text and no stored copy at commit time: nothing written. */
+  noContentSkipped: number;
   preview: ImportPreview;
 }
 
 export interface CommitImportOptions {
   owner: string;
-  nowMs: number;
+  /** Epoch-ms clock, read afresh before acquiring and before every page. Defaults to `Date.now`. */
+  clock?: () => number;
   leaseTtlMs?: number;
   /** Passed to every page commit; test seam for crash injection (T01, T09). */
   commitOptions?: CommitOptions;
@@ -488,6 +516,11 @@ export interface CommitImportOptions {
 /**
  * Commit a previewed import through the shared capture commit path (CAP-03). One deterministic job
  * per file content makes a repeated import a no-op and lets an interrupted import resume.
+ *
+ * The lease token `JobStore.acquire` returns is retained for every page. Before each page the clock
+ * is read again and the lease renewed, so an import that outlives its lease stops with
+ * `LeaseError` instead of writing under a stale time. A cancel request is honored at the next page
+ * boundary: the job becomes `cancelled` and pages already committed are kept (CAP-04).
  */
 export function commitXArchive(
   db: Database.Database,
@@ -496,18 +529,25 @@ export function commitXArchive(
   parsed: ParsedExport,
   options: CommitImportOptions,
 ): ImportReceipt {
+  const clock = options.clock ?? Date.now;
+  const ttl = options.leaseTtlMs ?? 60_000;
   const preview = previewXArchive(db, parsed);
   if (preview.blockers.length > 0 || preview.jobId === null || parsed.accountId === null) {
     throw new ImportBlockedError(preview.blockers.join("; "));
   }
   const jobId = preview.jobId;
-  const receipt = (status: ImportReceipt["status"], pages = 0, n = [0, 0, 0]): ImportReceipt => ({
+  const totals = {
+    pages: 0,
+    newRecords: 0,
+    newSources: 0,
+    newVersions: 0,
+    weakerSkipped: 0,
+    noContentSkipped: 0,
+  };
+  const receipt = (status: ImportReceipt["status"]): ImportReceipt => ({
     status,
     jobId,
-    pages,
-    newRecords: n[0] ?? 0,
-    newSources: n[1] ?? 0,
-    newVersions: n[2] ?? 0,
+    ...totals,
     preview,
   });
   const existing = db.prepare("SELECT state FROM job WHERE id = ?").get(jobId) as
@@ -525,8 +565,11 @@ export function commitXArchive(
   ) {
     jobs.resume(jobId);
   }
-  const lease = jobs.acquire(jobId, options.owner, options.nowMs, options.leaseTtlMs ?? 60_000);
+  const lease = jobs.acquire(jobId, options.owner, clock(), ttl);
   if (lease === null) {
+    if (jobs.get(jobId).state === "cancelled") {
+      throw new ImportBlockedError(`import job ${jobId} was cancelled`);
+    }
     throw new ImportBlockedError(`import job ${jobId} is held by another owner`);
   }
 
@@ -536,10 +579,9 @@ export function commitXArchive(
     version: `xarchive-schema-${parsed.schemaVersion ?? "legacy"}`,
   };
   const pageCount = Math.max(1, Math.ceil(preview.records.length / PAGE_SIZE));
-  let newRecords = 0;
-  let newSources = 0;
-  let newVersions = 0;
   for (let i = 0; i < pageCount; i++) {
+    const nowMs = clock();
+    jobs.renew(jobId, lease, nowMs, ttl);
     const page: CapturePage = {
       passId,
       accountId: parsed.accountId,
@@ -550,10 +592,18 @@ export function commitXArchive(
       method: "import",
       records: preview.records.slice(i * PAGE_SIZE, (i + 1) * PAGE_SIZE),
     };
-    const r = capture.commitPage(jobId, lease, options.nowMs, page, options.commitOptions);
-    newRecords += r.newRecords;
-    newSources += r.newSources;
-    newVersions += r.newVersions;
+    const r = capture.commitPage(jobId, lease, nowMs, page, options.commitOptions);
+    totals.pages++;
+    totals.newRecords += r.newRecords;
+    totals.newSources += r.newSources;
+    totals.newVersions += r.newVersions;
+    totals.weakerSkipped += r.weakerSkipped;
+    totals.noContentSkipped += r.noContentSkipped;
+    if (r.ended) break;
+    if (r.cancelRequested || jobs.get(jobId).cancelRequested) {
+      jobs.transition(jobId, lease, clock(), "cancelled", "cancelled by user");
+      return receipt("cancelled");
+    }
   }
-  return receipt("imported", pageCount, [newRecords, newSources, newVersions]);
+  return receipt(jobs.get(jobId).state === "cancelled" ? "cancelled" : "imported");
 }

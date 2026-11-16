@@ -55,7 +55,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | SEC-03 | Local-only limitation explanation and explicit local rerun | M4 | T05 | M3-04 | not started |  |
 | SEC-04 | OS credential storage; credentials excluded from logs/backups | M2 | T05, T08 | M1-06, M1-08, M2-03, M2-12 | not started | F0: ADR 0006 (key storage), ADR 0008 |
 | SEC-05 | No telemetry; redacted previewable support bundle | M5 | T05 | M2-03 | not started |  |
-| SEC-06 | Escaping, CSV neutralization, path traversal, quotas, isolation | M1, M5 | T09 | M1-01, M1-09, M2-01, M2-12, M5-02, M5-04 | in progress | M1-01 adds CI dependency audit and license allowlist; signed updates in M5. CI maintenance: `actions/checkout` bumped to v7.0.1, still pinned to an immutable commit SHA. M1-09: see MIG-01 for the xarchive import source and quota checks. CSV neutralization and renderer escaping pending |
+| SEC-06 | Escaping, CSV neutralization, path traversal, quotas, isolation | M1, M5 | T09 | M1-01, M1-09, M2-01, M2-12, M5-02, M5-04 | in progress | M1-01 adds CI dependency audit and license allowlist; signed updates in M5. CI maintenance: `actions/checkout` bumped to v7.0.1, still pinned to an immutable commit SHA. M1-09: an xarchive import source must be a regular `.json` file checked with `lstat` before opening (symlinks, FIFOs, devices and directories refused without blocking), opened with no-follow/non-blocking flags and re-checked by device and inode; size (default 128 MiB), record-count (500,000), text-length (200,000 characters) and nesting (64) limits reject oversized input; invalid UTF-8 is rejected; ZIP or other archives are never expanded (a real ZIP with a traversal entry and an 8 MiB bomb entry is rejected, `xarchive.test.ts`); handles and IDs are validated before URLs are built. CSV neutralization and renderer escaping pending |
 | SEC-07 | Threat model | F0, M5 | T05, T06 | M1-06, M5-04 | not started | Security review in M5. F0: ADR 0006 IPC threat analysis; full threat model in M5-04 |
 | SEC-08 | No at-rest encryption promise; documented | M5 | T08 | M2-08, M5-05 | not started | Documentation check |
 | DAT-01 | 100,000-post capacity target; incremental indexing | M1, M3 | T11 | M1-02, M3-01 | in progress | M1-02: schema and 19-digit ID round-trip (`packages/store`); capacity and incremental indexing pending. F0 100k-post search test. F0: 100k-post FTS5 benchmark on macOS (`docs/f0/benchmarks.md`); Windows run pending (B3) |
@@ -65,7 +65,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | BKP-01 | Manual and scheduled backups; verification; restore | M2 | T08, T15 | M2-08 | not started | F0: ADR 0008 |
 | BKP-02 | Password-encrypted backups with maintained AEAD | M2 | T08 | M2-08 | not started | F0 encryption format decision. F0: ADR 0008; `prototypes/backup-age`; scrypt accepted (Q3) |
 | BKP-03 | Full portable backups; manifests; media-excluded disclosure | M2 | T08 | M2-08 | not started | F0: ADR 0008 (hashed manifest) |
-| MIG-01 | Import native backups, owner vault, xarchive; dry-run | M1 | T09, T15 | M1-09, M2-02, M2-07, M5-03 | in progress | F0: xarchive = `sytelus/xarchive` (Q2). M1-09: xarchive importer (`packages/store/src/xarchive.ts`) with dry-run counts, mapping, duplicates, warnings, and conflicts; commit through `CaptureStore.commitPage` with method `import`; deterministic per-file job so a repeat is a no-op; unsupported schemas rejected. Tested against `sytelus/xarchive` 1.1.0 (`ae9d026`), schema 1 and 2, synthetic fixtures in `fixtures/xarchive/`. Folder assignments are reported, not stored; native backup and owner-vault importers pending |
+| MIG-01 | Import native backups, owner vault, xarchive; dry-run | M1 | T09, T15 | M1-09, M2-02, M2-07, M5-03 | in progress | F0: xarchive = `sytelus/xarchive` (Q2). M1-09: xarchive importer (`packages/store/src/xarchive.ts`) with dry-run counts, mapping, duplicates, warnings, and conflicts; commit through `CaptureStore.commitPage` with method `import`; deterministic per-file job so a repeat is a no-op, and a page plan that depends only on the file so an interrupted import resumes even if other jobs stored content meanwhile; the weaker-content rule (empty or truncated text never adds a version over a fuller stored copy, account membership still recorded) is decided inside each commit transaction; unavailable status is carried to the observation; the retained lease is renewed with a fresh clock before every page and a cancel request stops at the next page boundary (CAP-03, CAP-04); unsupported schemas rejected. Tested against `sytelus/xarchive` 1.1.0 (`ae9d026`), schema 1 and 2, synthetic fixtures in `fixtures/xarchive/`. Folder assignments are reported, not stored; native backup and owner-vault importers pending |
 | MIG-02 | Pre-migration backup; candidate indexes; no destructive generator | M2 | T08, T09 | M1-02, M2-07, M2-10, M3-01, M5-03 | in progress | M1-02: numbered transactional migrations and pre-migration backup hook; every recorded migration ID and name is validated, and a recorded gap (jobs-only databases at [1, 3]) receives the order-independent sync-core migration 2 exactly once after backup (`migrate.test.ts` upgrade matrix); M1-04 adds additive `capture-commit` as migration 4 after published 2 and 3; upgrades from fresh, [1], [1, 2], [1, 3] and [1, 2, 3] keep legacy repeated observations (capture de-duplication indexes capture rows only); candidate indexes pending. Migration trials in M5 |
 | ACC-01 | Keyboard, screen reader, contrast, reduced motion (WCAG 2.2 AA) | M5 | T13 | M2-02, M2-06, M3-02, M3-09, M5-01 | not started | Incremental from M2 onward |
 | ACC-02 | Names, focus order, announcements, scalable text | M5 | T13 | M2-02, M5-01 | not started | Assistive-technology testing |
@@ -117,6 +117,16 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
   transaction and is not fenced, so callbacks must not schedule database writes.
 - MIG-02: capture bookkeeping is migration 4 (`capture-commit`). The unmerged preview numbered it 2;
   a database that recorded that preview is refused by name before backup or SQL.
+
+## M1-09 integration notes
+
+- CAP-03/MIG-01: `CapturePage.method` (`capture` default, `import`) and the optional
+  `CaptureRecord.availability` and `CaptureRecord.retainFuller` fields are additive. Their values
+  enter a page fingerprint only when they differ from the defaults, so fingerprints of pages already
+  committed by capture adapters are unchanged. `CommitResult` adds `weakerSkipped` and
+  `noContentSkipped` counts (zero for capture pages and replays).
+- CAP-03: `commitXArchive` takes `clock` (epoch ms, default `Date.now`) instead of a fixed `nowMs`,
+  retains the `Lease` from `JobStore.acquire`, and renews it before every page.
 
 ## Acceptance tests
 
