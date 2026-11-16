@@ -170,6 +170,12 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
   Blob rows and files of the purged source are removed when no remaining `media` row names the
   content; media rows win over `blob.ref_count` drift in both directions.
 - ENR-01: `LinkedSourceStore.enrich` returns `suppressed` for a trashed or purged destination.
+- ENR-01/DAT-03: every linked persistence write (captured, reused, joined in-flight capture, gap,
+  known gap and suppressed-destination provenance) runs in one IMMEDIATE transaction that re-checks
+  the parent first. A parent trashed or purged while its enrichment was in flight gets `suppressed`
+  with a null `sourceId` and nothing stored (no article, version, link reference, gap or edge), so
+  purge stays final. A capture shared with a live parent is not cancelled; only the live parent is
+  attached (`trash.test.ts`, "late linked persistence after the parent is purged").
 
 ## Acceptance tests
 

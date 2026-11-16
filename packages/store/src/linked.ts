@@ -22,7 +22,11 @@ export interface LinkRef {
   platformId?: string;
 }
 
-/** `suppressed`: the destination is a trashed or purged source; nothing is fetched or stored for it (DAT-03). */
+/**
+ * `suppressed`: the destination is a trashed or purged source, so nothing is fetched or stored for it
+ * (`sourceId` names it); or the parent was trashed or purged before this result could be stored, so
+ * nothing is stored for the parent (`sourceId` is null) (DAT-03).
+ */
 export type LinkStatus = "reused" | "captured" | "gap" | "known_gap" | "suppressed";
 
 export interface LinkOutcome {
@@ -69,6 +73,14 @@ function trustedCanonical(finalUrl: string, canonical: string | null): string {
     }
   }
   return finalUrl;
+}
+
+/**
+ * Outcome for a parent that is trashed or purged by the time its result would be stored: nothing is
+ * persisted for it (DAT-03). A capture it shares with a live parent still completes for that parent.
+ */
+function inactiveParent(url: string): LinkOutcome {
+  return { url, status: "suppressed", sourceId: null, gapReason: null };
 }
 
 /**
@@ -122,19 +134,20 @@ export class LinkedSourceStore {
     const retry =
       options.retryTransientGaps === true && TRANSIENT_GAPS.has(prior?.gap_reason ?? "");
     if (prior && !retry) {
-      this.#ref(parent, link.url);
-      return { url: link.url, status: "known_gap", sourceId: null, gapReason: prior.gap_reason };
+      return this.#fenced(parent, link.url, (): LinkOutcome => {
+        this.#ref(parent, link.url);
+        return { url: link.url, status: "known_gap", sourceId: null, gapReason: prior.gap_reason };
+      });
     }
 
     if (link.kind === "x_post" && !prior) {
       // Web fetchers cannot read X; saving the post needs the capture adapter, so keep an explicit gap.
-      this.#recordGap(
+      return this.#recordGap(
         parent,
         link.url,
         "x_post_not_saved",
         `X post ${link.platformId ?? ""} is not in the library`,
       );
-      return { url: link.url, status: "gap", sourceId: null, gapReason: "x_post_not_saved" };
     }
 
     if (link.kind === "x_post") {
@@ -172,11 +185,20 @@ export class LinkedSourceStore {
   }
 
   #persist(parent: string, url: string, cap: LinkCapture): LinkOutcome {
-    if (!cap.ok) {
-      this.#recordGap(parent, url, cap.reason, cap.detail, cap);
-      return { url, status: "gap", sourceId: null, gapReason: cap.reason };
-    }
+    if (!cap.ok) return this.#recordGap(parent, url, cap.reason, cap.detail, cap);
     return this.#store(parent, url, cap);
+  }
+
+  /**
+   * Run one linked persistence write for `parent` in an IMMEDIATE transaction that first re-checks
+   * the parent. A parent trashed or purged since enrichment started (including while a capture was
+   * awaited) gets nothing stored: no reference, gap, version or edge (DAT-03, TRASH-01). Only the
+   * write is skipped; a capture shared with other parents is never cancelled.
+   */
+  #fenced(parent: string, url: string, write: () => LinkOutcome): LinkOutcome {
+    return this.#db
+      .transaction((): LinkOutcome => (this.#isHeld(parent) ? inactiveParent(url) : write()))
+      .immediate();
   }
 
   #findSaved(link: LinkRef): string | null {
@@ -230,11 +252,11 @@ export class LinkedSourceStore {
 
   /** Keep the parent's link provenance pointing at the held source, without new versions or edges. */
   #suppress(parent: string, url: string, target: string): LinkOutcome {
-    this.#db.transaction(() => {
+    return this.#fenced(parent, url, (): LinkOutcome => {
       this.#ensureFetchRow(url, target);
       this.#ref(parent, url);
-    })();
-    return { url, status: "suppressed", sourceId: target, gapReason: null };
+      return { url, status: "suppressed", sourceId: target, gapReason: null };
+    });
   }
 
   #ref(parent: string, url: string): void {
@@ -244,12 +266,12 @@ export class LinkedSourceStore {
   }
 
   #attach(parent: string, url: string, target: string, status: LinkStatus): LinkOutcome {
-    this.#db.transaction(() => {
+    return this.#fenced(parent, url, (): LinkOutcome => {
       this.#ensureFetchRow(url, target);
       this.#ref(parent, url);
       this.#relate(parent, target, url);
-    })();
-    return { url, status, sourceId: target, gapReason: null };
+      return { url, status, sourceId: target, gapReason: null };
+    });
   }
 
   /** Reused saved sources get a provenance row too, so later lookups and gap queries see them. */
@@ -284,8 +306,8 @@ export class LinkedSourceStore {
     reason: string,
     detail: string,
     cap?: { chain: string[]; httpStatus: number | null },
-  ): void {
-    this.#db.transaction(() => {
+  ): LinkOutcome {
+    return this.#fenced(parent, url, (): LinkOutcome => {
       this.#db
         .prepare(
           `INSERT INTO linked_fetch (original_url, gap_reason, gap_detail, redirect_chain, http_status)
@@ -298,12 +320,13 @@ export class LinkedSourceStore {
         )
         .run(url, reason, detail, cap ? JSON.stringify(cap.chain) : null, cap?.httpStatus ?? null);
       this.#ref(parent, url);
-    })();
+      return { url, status: "gap", sourceId: null, gapReason: reason };
+    });
   }
 
   #store(parent: string, url: string, cap: Extract<LinkCapture, { ok: true }>): LinkOutcome {
     const canonical = trustedCanonical(cap.finalUrl, cap.canonicalUrl);
-    return this.#db.transaction((): LinkOutcome => {
+    return this.#fenced(parent, url, (): LinkOutcome => {
       const raced = this.#db
         .prepare(
           "SELECT source_id FROM linked_fetch WHERE original_url = ? AND source_id IS NOT NULL",
@@ -381,6 +404,6 @@ export class LinkedSourceStore {
       this.#ref(parent, url);
       this.#relate(parent, target, url);
       return { url, status, sourceId: target, gapReason: null };
-    })();
+    });
   }
 }

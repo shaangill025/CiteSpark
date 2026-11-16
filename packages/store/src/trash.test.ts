@@ -653,6 +653,175 @@ describe("linked sources (ENR-01 with DAT-03)", () => {
   });
 });
 
+// TRASH-01: linked enrichment already in flight when its parent is trashed or purged. Every
+// linked persistence transaction re-checks the parent, so nothing of a purged parent returns.
+describe("late linked persistence after the parent is purged (DAT-03, ENR-01)", () => {
+  const gate = () => {
+    let hit!: () => void;
+    let release!: () => void;
+    const reached = new Promise<void>((r) => (hit = r));
+    const wait = new Promise<void>((r) => (release = r));
+    return { hit, release, reached, wait };
+  };
+  const page = (url: string): LinkCapture => ({
+    ok: true,
+    finalUrl: url,
+    chain: [url],
+    httpStatus: 200,
+    title: "Synthetic late",
+    canonicalUrl: null,
+    text: "synthetic late article",
+    contentHash: "e".repeat(64),
+    extractionMethod: "synthetic",
+  });
+  const URL_LATE = "https://example.test/late-article";
+  const articles = () => n("SELECT 1 FROM source WHERE source_type = 'article'");
+  const leftOf = (id: string) => ({
+    refs: n("SELECT 1 FROM link_ref WHERE source_id = ?", id),
+    edges: n("SELECT 1 FROM relationship WHERE from_id = ? OR to_id = ?", id, id),
+    versions: n("SELECT 1 FROM source_version WHERE source_id = ?", id),
+  });
+
+  it("stores nothing for a parent purged while its capture was in flight", async () => {
+    const g = gate();
+    const linked = new LinkedSourceStore(db, async (url) => {
+      g.hit();
+      await g.wait;
+      return page(url);
+    });
+    const work = linked.enrich(A, [{ url: URL_LATE, kind: "web" }]);
+    await g.reached;
+    const t = new TrashStore(db, { mediaRoot: dir });
+    t.trash(A, T0);
+    t.purge(A, T0);
+    g.release();
+    expect(await work).toEqual([
+      { url: URL_LATE, status: "suppressed", sourceId: null, gapReason: null },
+    ]);
+    expect(t.status(A)).toBe("purged");
+    expect(leftOf(A)).toEqual({ refs: 0, edges: 0, versions: 0 });
+    expect(articles()).toBe(0);
+    expect(n("SELECT 1 FROM linked_fetch WHERE original_url = ?", URL_LATE)).toBe(0);
+  });
+
+  it("records no gap or reference for a parent purged while its gap result was in flight", async () => {
+    const g = gate();
+    const linked = new LinkedSourceStore(db, async (url) => {
+      g.hit();
+      await g.wait;
+      return {
+        ok: false,
+        reason: "paywall",
+        detail: "synthetic gap",
+        chain: [url],
+        httpStatus: 402,
+      };
+    });
+    const work = linked.enrich(A, [{ url: URL_LATE, kind: "web" }]);
+    await g.reached;
+    const t = new TrashStore(db, { mediaRoot: dir });
+    t.trash(A, T0);
+    t.purge(A, T0);
+    g.release();
+    expect(await work).toEqual([
+      { url: URL_LATE, status: "suppressed", sourceId: null, gapReason: null },
+    ]);
+    expect(linked.gaps(A)).toEqual([]);
+    expect(leftOf(A)).toEqual({ refs: 0, edges: 0, versions: 0 });
+    expect(n("SELECT 1 FROM linked_fetch WHERE original_url = ?", URL_LATE)).toBe(0);
+  });
+
+  it("keeps one shared capture for a live joined parent and attaches only it", async () => {
+    const g = gate();
+    let calls = 0;
+    const linked = new LinkedSourceStore(db, async (url) => {
+      calls++;
+      g.hit();
+      await g.wait;
+      return page(url);
+    });
+    const links = [{ url: URL_LATE, kind: "web" as const }];
+    const a = linked.enrich(A, links);
+    await g.reached;
+    const b = linked.enrich(B, links);
+    const t = new TrashStore(db, { mediaRoot: dir });
+    t.trash(A, T0);
+    t.purge(A, T0);
+    g.release();
+    const [outA, outB] = await Promise.all([a, b]);
+    expect(calls).toBe(1);
+    expect(outA).toEqual([
+      { url: URL_LATE, status: "suppressed", sourceId: null, gapReason: null },
+    ]);
+    expect(outB).toHaveLength(1);
+    expect(outB[0]).toMatchObject({ url: URL_LATE, status: "captured" });
+    const article = outB[0]!.sourceId!;
+    expect(t.status(article)).toBe("available");
+    expect(articles()).toBe(1);
+    expect(n("SELECT 1 FROM source_version WHERE source_id = ?", article)).toBe(1);
+    expect(db.prepare("SELECT source_id FROM link_ref ORDER BY source_id").all()).toEqual([
+      { source_id: B },
+    ]);
+    expect(
+      db.prepare("SELECT from_id, to_id FROM relationship WHERE type = 'links_to'").all(),
+    ).toEqual([{ from_id: B, to_id: article }]);
+    expect(leftOf(A)).toEqual({ refs: 0, edges: 0, versions: 0 });
+  });
+
+  it("attaches no later link of the same call once the parent is trashed or purged", async () => {
+    const SAVED = "article:saved";
+    const HELD = "article:held";
+    db.prepare("INSERT INTO source (id, source_type, canonical_url) VALUES (?, 'article', ?)").run(
+      SAVED,
+      "https://example.test/saved",
+    );
+    db.prepare("INSERT INTO source (id, source_type, canonical_url) VALUES (?, 'article', ?)").run(
+      HELD,
+      "https://example.test/held",
+    );
+    db.prepare(
+      "INSERT INTO linked_fetch (original_url, gap_reason, gap_detail) VALUES ('https://example.test/known-gap', 'paywall', 'synthetic')",
+    ).run();
+    const t = new TrashStore(db, { mediaRoot: dir });
+    t.trash(HELD, T0);
+    for (const stage of ["trash", "purge"] as const) {
+      const g = gate();
+      const linked = new LinkedSourceStore(db, async (url) => {
+        g.hit();
+        await g.wait;
+        return page(url);
+      });
+      const parent = stage === "trash" ? A : B;
+      const work = linked.enrich(parent, [
+        { url: `${URL_LATE}/${stage}`, kind: "web" },
+        { url: "https://example.test/saved", kind: "web" },
+        { url: "https://example.test/known-gap", kind: "web" },
+        { url: "https://example.test/held", kind: "web" },
+        {
+          url: "https://x.test/i/status/1800000000000000099",
+          kind: "x_post",
+          platformId: "1800000000000000099",
+        },
+      ]);
+      await g.reached;
+      t.trash(parent, T0);
+      if (stage === "purge") t.purge(parent, T0);
+      g.release();
+      const out = await work;
+      expect(out.map((o) => o.status)).toEqual(Array(5).fill("suppressed"));
+      expect(out.every((o) => o.sourceId === null && o.gapReason === null)).toBe(true);
+      expect(n("SELECT 1 FROM link_ref WHERE source_id = ?", parent)).toBe(0);
+      expect(n("SELECT 1 FROM relationship WHERE from_id = ? AND type = 'links_to'", parent)).toBe(
+        0,
+      );
+    }
+    expect(
+      n("SELECT 1 FROM linked_fetch WHERE original_url LIKE '%status/1800000000000000099'"),
+    ).toBe(0);
+    expect(n("SELECT 1 FROM relationship WHERE to_id IN (?, ?)", SAVED, HELD)).toBe(0);
+  });
+});
+
 describe("T07 end to end (synthetic)", () => {
   it("trash, suppressed recapture, and purge keep shared blobs and linked sources intact", async () => {
     const body = Buffer.from("synthetic shared media bytes");
