@@ -1,6 +1,7 @@
 {
   "files": [],
   "references": [
+    { "path": "packages/capture-x" },
     { "path": "packages/core" },
     { "path": "packages/store" },
     { "path": "packages/sync" },

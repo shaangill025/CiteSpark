@@ -1,0 +1,17 @@
+{
+  "data": {
+    "viewer": {
+      "user_results": {
+        "result": {
+          "rest_id": "7000000000000000001",
+          "bookmark_collections_slice": {
+            "items": [
+              { "id": "1800000000000000001", "name": "Synthetic reading list" },
+              { "id": "1800000000000000002", "name": "Synthetic recipes" }
+            ]
+          }
+        }
+      }
+    }
+  }
+}
