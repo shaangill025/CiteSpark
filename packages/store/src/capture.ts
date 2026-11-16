@@ -2,6 +2,18 @@ import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import { LeaseError, type Job, type JobStore, type Lease } from "./jobs.ts";
 
+export type Availability = "available" | "unavailable";
+
+/**
+ * Another availability report for the same identity that an importer merged into a record when it
+ * deduplicated texts (MIG-01, Q37). `text` says what that report carried relative to the record's
+ * text: the `same` text, a `truncated` (weaker, nonempty) text, or no text (`empty`).
+ */
+export interface AvailabilityReport {
+  availability: Availability;
+  text: "same" | "truncated" | "empty";
+}
+
 /** One captured item, as produced by any capture adapter or importer. Platform IDs are strings (CAP-02). */
 export interface CaptureRecord {
   /** Source kind, for example `x_post`. Together with `platformId` it forms the canonical identity. */
@@ -30,6 +42,16 @@ export interface CaptureRecord {
    * Importers set this; live capture adapters leave it unset.
    */
   retainFuller?: boolean;
+  /**
+   * Other availability reports for this identity that an importer folded into this record while
+   * deduplicating texts. With `retainFuller`, every report of a record is merged, order-free and
+   * idempotently, into the one observation per job and version: at most one report per
+   * availability is kept (the one that carried the most text). When both availabilities are
+   * reported, the observation's `availability` is `conflicting` and its `evidence` is
+   * `{"kind":"conflicting-availability","chronology":"unknown","textCaptured":…,"reports":[…]}`;
+   * the order of reports in a file is not treated as time.
+   */
+  alsoReported?: readonly AvailabilityReport[];
 }
 
 /** One page handed over for commit. Adapter-agnostic: cursors are opaque strings. */
@@ -146,6 +168,19 @@ function validate(page: CapturePage): void {
       fail(`record ${i}`);
     }
     if (r.retainFuller !== undefined && typeof r.retainFuller !== "boolean") fail(`record ${i}`);
+    if (r.alsoReported !== undefined) {
+      if (!Array.isArray(r.alsoReported)) fail(`record ${i}`);
+      for (const a of r.alsoReported) {
+        if (
+          typeof a !== "object" ||
+          a === null ||
+          (a.availability !== "available" && a.availability !== "unavailable") ||
+          (a.text !== "same" && a.text !== "truncated" && a.text !== "empty")
+        ) {
+          fail(`record ${i}`);
+        }
+      }
+    }
   });
 }
 
@@ -168,13 +203,122 @@ const contentHash = (records: readonly CaptureRecord[]): string =>
           r.canonicalUrl ?? null,
           r.publishedAt ?? null,
         ];
-        if (r.availability === "unavailable" || r.retainFuller === true) {
+        const also = r.alsoReported?.length ? canonicalAlso(r.alsoReported) : null;
+        if (r.availability === "unavailable" || r.retainFuller === true || also) {
           fields.push(r.availability ?? "available", r.retainFuller === true);
         }
+        if (also) fields.push(also);
         return fields;
       }),
     ),
   );
+
+const canonicalAlso = (reports: readonly AvailabilityReport[]): string[][] =>
+  [...new Set(reports.map((a) => `${a.availability}\u0000${a.text}`))]
+    .sort()
+    .map((k) => k.split("\u0000"));
+
+/** What one availability report carried relative to the observed version's text. */
+type ReportText = "captured" | "truncated" | "empty" | "none";
+interface ObservedReport {
+  availability: Availability;
+  text: ReportText;
+}
+const TEXT_RANK: Record<ReportText, number> = { none: 0, empty: 1, truncated: 2, captured: 3 };
+
+/**
+ * Canonical report set of one observation: one report per availability, keeping the one that
+ * carried the most text, sorted. A join (commutative, associative, idempotent), so merging reports
+ * in any order, or more than once, gives the same set.
+ */
+function joinReports(reports: readonly ObservedReport[]): ObservedReport[] {
+  const best = new Map<Availability, ReportText>();
+  for (const r of reports) {
+    const prior = best.get(r.availability);
+    if (prior === undefined || TEXT_RANK[r.text] > TEXT_RANK[prior])
+      best.set(r.availability, r.text);
+  }
+  return [...best]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([availability, text]) => ({ availability, text }));
+}
+
+/**
+ * Observation columns for a canonical report set. A single report keeps the established shapes
+ * (`null`, `retained-fuller`, `unavailable-no-text`); both availabilities are an explicit conflict.
+ */
+function encodeReports(reports: readonly ObservedReport[]): {
+  availability: string;
+  evidence: string | null;
+} {
+  if (reports.length > 1) {
+    return {
+      availability: "conflicting",
+      evidence: JSON.stringify({
+        kind: "conflicting-availability",
+        chronology: "unknown",
+        textCaptured: reports.some((r) => r.text === "captured"),
+        reports,
+      }),
+    };
+  }
+  const [r] = reports as [ObservedReport];
+  if (r.text === "empty" || r.text === "truncated") {
+    return {
+      availability: r.availability,
+      evidence: JSON.stringify({ kind: "retained-fuller", incoming: r.text, textCaptured: false }),
+    };
+  }
+  if (r.text === "none" && r.availability === "unavailable") {
+    return {
+      availability: r.availability,
+      evidence: JSON.stringify({ kind: "unavailable-no-text", textCaptured: false }),
+    };
+  }
+  return { availability: r.availability, evidence: null };
+}
+
+/** Reports a stored observation row holds, or `null` when its evidence is not a shape we merge. */
+function decodeReports(
+  availability: string,
+  evidence: string | null,
+  versionText: string,
+): ObservedReport[] | null {
+  const avail = (v: unknown): v is Availability => v === "available" || v === "unavailable";
+  if (evidence === null) {
+    return avail(availability)
+      ? [{ availability, text: versionText === "" ? "none" : "captured" }]
+      : null;
+  }
+  let e: unknown;
+  try {
+    e = JSON.parse(evidence);
+  } catch {
+    return null;
+  }
+  if (typeof e !== "object" || e === null) return null;
+  const o = e as Record<string, unknown>;
+  if (o.kind === "retained-fuller" && avail(availability)) {
+    return o.incoming === "empty" || o.incoming === "truncated"
+      ? [{ availability, text: o.incoming }]
+      : null;
+  }
+  if (o.kind === "unavailable-no-text" && avail(availability)) {
+    return [{ availability, text: "none" }];
+  }
+  if (o.kind === "conflicting-availability" && Array.isArray(o.reports)) {
+    const out: ObservedReport[] = [];
+    for (const r of o.reports as unknown[]) {
+      const x = r as Record<string, unknown> | null;
+      if (!x || !avail(x.availability) || typeof x.text !== "string" || !(x.text in TEXT_RANK)) {
+        return null;
+      }
+      out.push({ availability: x.availability, text: x.text as ReportText });
+    }
+    return out;
+  }
+  return null;
+}
 
 const TRUNCATION = /(…|\.\.\.)$/;
 
@@ -212,9 +356,10 @@ export function isWeakerText(incoming: string, stored: readonly string[]): boole
 /**
  * Index of the stored version that makes `incoming` weaker and is retained in its place: the one
  * carrying the most content, a complete text before a marked truncation of the same content, then
- * the earliest. `null` when `incoming` is not weaker than any stored version.
+ * the smaller text (by code unit), so the choice depends on content, not on storage or file order.
+ * `null` when `incoming` is not weaker than any stored version.
  */
-function retainedVersion(incoming: string, stored: readonly string[]): number | null {
+export function retainedVersion(incoming: string, stored: readonly string[]): number | null {
   let best: number | null = null;
   stored.forEach((t, i) => {
     if (!isWeakerText(incoming, [t])) return;
@@ -226,7 +371,8 @@ function retainedVersion(incoming: string, stored: readonly string[]): number | 
     const c = qualityOf(t);
     if (
       c.head.length > b.head.length ||
-      (c.head.length === b.head.length && b.truncated && !c.truncated)
+      (c.head.length === b.head.length && b.truncated && !c.truncated) ||
+      (c.head.length === b.head.length && b.truncated === c.truncated && t < stored[best]!)
     ) {
       best = i;
     }
@@ -501,6 +647,58 @@ export class CaptureStore {
          WHERE membership.last_job_id IS NOT excluded.last_job_id`,
     );
 
+    const findObservation = this.db.prepare(
+      `SELECT id, availability, evidence FROM observation
+       WHERE job_id = ? AND version_id = ? AND capture_page_id IS NOT NULL`,
+    );
+    const setObservation = this.db.prepare(
+      "UPDATE observation SET availability = ?, evidence = ? WHERE id = ?",
+    );
+    /**
+     * Merge reports into this job's one observation of a version (`retainFuller` records only).
+     * Returns 1 when a new observation row was inserted, 0 when an existing row absorbed them. The
+     * existing row keeps its time and page; only its availability and evidence gain the reports.
+     */
+    const observeReports = (
+      sourceId: string,
+      versionId: number,
+      versionText: string,
+      reports: readonly ObservedReport[],
+    ): number => {
+      const prior = findObservation.get(jobId, versionId) as
+        { id: number; availability: string; evidence: string | null } | undefined;
+      if (prior === undefined) {
+        const e = encodeReports(joinReports(reports));
+        return insObservation.run(
+          sourceId,
+          versionId,
+          jobId,
+          iso,
+          method,
+          adapter,
+          e.availability,
+          e.evidence,
+          pageId,
+        ).changes;
+      }
+      const held = decodeReports(prior.availability, prior.evidence, versionText);
+      if (held === null) return 0;
+      const e = encodeReports(joinReports([...held, ...reports]));
+      if (e.availability !== prior.availability || e.evidence !== prior.evidence) {
+        setObservation.run(e.availability, e.evidence, prior.id);
+      }
+      return 0;
+    };
+    /** Every report a record carries, with `same` mapped to what it means for the target version. */
+    const reportsOf = (r: CaptureRecord, same: ReportText, all?: ReportText): ObservedReport[] =>
+      [
+        { availability: r.availability ?? "available", text: "same" as const },
+        ...(r.alsoReported ?? []),
+      ].map((a) => ({
+        availability: a.availability,
+        text: all ?? (a.text === "same" ? same : a.text),
+      }));
+
     const storedVersions = this.db.prepare(
       "SELECT id, text FROM source_version WHERE source_id = ? ORDER BY id",
     );
@@ -557,22 +755,19 @@ export class CaptureStore {
           // Availability and import provenance are evidence independent of text quality; the
           // observation points at the retained version but says its text was not captured here.
           weakerSkipped++;
-          const evidence = JSON.stringify({
-            kind: "retained-fuller",
-            incoming: r.text === "" ? "empty" : "truncated",
-            textCaptured: false,
-          });
-          observe(stored.id, versions[retained]!.id, r, evidence);
+          const kept = versions[retained]!;
+          const reports = reportsOf(r, r.text === "" ? "empty" : "truncated");
+          observeReports(stored.id, kept.id, kept.text, reports);
           upMembership.run(page.accountId, page.collectionId, stored.id, iso, iso, jobId, jobId);
           return;
         }
-        if (r.text === "" && r.availability === "unavailable") {
+        const reports = reportsOf(r, r.text === "" ? "none" : "captured");
+        if (r.text === "" && reports.some((a) => a.availability === "unavailable")) {
           const { id: sourceId, created } = sourceIdFor(r);
           if (created) newSources++;
           unavailableNoText++;
           const { id: versionId } = addVersion(sourceId, r, "none");
-          const evidence = JSON.stringify({ kind: "unavailable-no-text", textCaptured: false });
-          newRecords += observe(sourceId, versionId, r, evidence);
+          newRecords += observeReports(sourceId, versionId, "", reportsOf(r, "none", "none"));
           upMembership.run(page.accountId, page.collectionId, sourceId, iso, iso, jobId, jobId);
           return;
         }
@@ -580,6 +775,13 @@ export class CaptureStore {
           noContentSkipped++;
           return;
         }
+        const { id: sourceId, created } = sourceIdFor(r);
+        if (created) newSources++;
+        const { id: versionId, added } = addVersion(sourceId, r, "unknown");
+        newVersions += added;
+        newRecords += observeReports(sourceId, versionId, r.text, reports);
+        upMembership.run(page.accountId, page.collectionId, sourceId, iso, iso, jobId, jobId);
+        return;
       }
       const { id: sourceId, created } = sourceIdFor(r);
       if (created) newSources++;

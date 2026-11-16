@@ -136,6 +136,17 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
   unavailable observation of an explicit empty snapshot (`completeness` `none`, evidence
   `{"kind":"unavailable-no-text","textCaptured":false}`); an available record with no text and no
   stored copy still writes nothing (`available-no-text` warning).
+- MIG-01/Q37: in-file deduplication of one `tweet_id` decides text versions only. The status of every
+  dropped repeat (identical, truncated or textless) is attached to the kept text it belongs to as
+  `CaptureRecord.alsoReported` (one report per availability, keeping the one that carried the most
+  text; additive, fingerprinted only when present, so seven-field capture fingerprints are
+  unchanged). In the commit, all reports for `retainFuller` records are merged into the one
+  observation per job and version (migration 4's unique index is unchanged; no new migration):
+  a commutative, idempotent join, so file order, page boundaries, crash-and-retry and re-read passes
+  give the same row. One availability keeps the single-report evidence shapes above; both give
+  `availability` `conflicting` with evidence
+  `{"kind":"conflicting-availability","chronology":"unknown","textCaptured":…,"reports":[{"availability","text":"captured"|"truncated"|"empty"|"none"}]}`.
+  The parse warns `conflicting-availability`. Live capture records keep insert-or-ignore.
 - Limit for M2 retry flow: a cancelled import of a byte-identical file stays blocked (deterministic
   job ID); a distinct retry attempt is a product decision, not implemented here.
 - CAP-03: `commitXArchive` takes `clock` (epoch ms, default `Date.now`) instead of a fixed `nowMs`,

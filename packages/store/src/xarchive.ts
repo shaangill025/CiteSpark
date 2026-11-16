@@ -4,6 +4,8 @@ import { extname } from "node:path";
 import type Database from "better-sqlite3";
 import {
   isWeakerText,
+  retainedVersion,
+  type AvailabilityReport,
   type CapturePage,
   type CaptureRecord,
   type CaptureStore,
@@ -60,6 +62,7 @@ export type WarningCode =
   | "invalid-author-id"
   | "duplicate-in-file"
   | "duplicate-distinct-versions"
+  | "conflicting-availability"
   | "folders-not-imported"
   | "unknown-provenance";
 
@@ -71,7 +74,18 @@ export interface ImportWarning {
 
 interface Bookmark {
   platformId: string;
+  /**
+   * Availability of the report that carried this text. When several in-file reports carried the
+   * same text with different statuses, `available` is listed here and the rest in `alsoReported`;
+   * that choice is canonical, not chronological.
+   */
   status: "available" | "unavailable";
+  /**
+   * Other in-file reports of this ID that deduplication folded into this text: same text with
+   * another status, or a weaker (truncated or empty) text. At most one per availability, sorted.
+   * Absent when there are none.
+   */
+  alsoReported?: AvailabilityReport[];
   text: string;
   authorId: string | null;
   authorHandle: string | null;
@@ -247,6 +261,8 @@ export function parseXArchive(
   // to, or weaker than (by content, see `isWeakerText`), a kept record is dropped; kept records it
   // dominates are replaced. Distinct texts are all kept and become versions of one source.
   const byId = new Map<string, Bookmark[]>();
+  // Every report per tweet_id, for availability evidence, which is independent of text quality.
+  const reportsById = new Map<string, { text: string; status: Bookmark["status"] }[]>();
   data.bookmarks.forEach((b: unknown, i) => {
     const bad = (what: string): never => {
       throw new XArchiveFormatError(`bookmark ${i}: ${what}`);
@@ -296,6 +312,9 @@ export function parseXArchive(
       authorHandle,
       publishedAt,
     };
+    const seen = reportsById.get(next.platformId);
+    if (seen) seen.push({ text, status: next.status });
+    else reportsById.set(next.platformId, [{ text, status: next.status }]);
     const kept = byId.get(next.platformId);
     if (!kept) {
       byId.set(next.platformId, [next]);
@@ -307,6 +326,40 @@ export function parseXArchive(
     byId.set(next.platformId, [...kept.filter((k) => !isWeakerText(k.text, [next.text])), next]);
   });
   const distinctVersions = [...byId.values()].filter((k) => k.length > 1).length;
+
+  // Attach each report to the kept text it belongs to: its own text, or else the kept version
+  // that makes it weaker (chosen by content). Per kept text, one report per availability, keeping
+  // the one that carried the most text. The result does not depend on file order.
+  const RANK = { empty: 0, truncated: 1, same: 2 } as const;
+  let conflicting = 0;
+  for (const [id, kept] of byId) {
+    const keptTexts = kept.map((k) => k.text);
+    const perKept = kept.map(() => new Map<Bookmark["status"], AvailabilityReport["text"]>());
+    for (const d of reportsById.get(id)!) {
+      let at = keptTexts.indexOf(d.text);
+      let kind: AvailabilityReport["text"] = "same";
+      if (at < 0) {
+        const r = retainedVersion(d.text, keptTexts);
+        if (r === null) throw new Error(`internal: dropped report of ${id} has no retained text`);
+        at = r;
+        kind = d.text === "" ? "empty" : "truncated";
+      }
+      const m = perKept[at]!;
+      const prior = m.get(d.status);
+      if (prior === undefined || RANK[kind] > RANK[prior]) m.set(d.status, kind);
+    }
+    kept.forEach((k, i) => {
+      const reports = (["available", "unavailable"] as const)
+        .filter((a) => perKept[i]!.has(a))
+        .map((availability) => ({ availability, text: perKept[i]!.get(availability)! }));
+      const own = reports.find((r) => r.text === "same")!;
+      k.status = own.availability;
+      const also = reports.filter((r) => r !== own);
+      if (also.length > 0) k.alsoReported = also;
+      else delete k.alsoReported;
+      if (reports.length > 1) conflicting++;
+    });
+  }
 
   const userId = typeof meta.user_id === "string" && ID.test(meta.user_id) ? meta.user_id : null;
   const warnings: ImportWarning[] = [];
@@ -335,8 +388,13 @@ export function parseXArchive(
   );
   warn(
     "duplicate-in-file",
-    "tweet_id repeated in file; identical or truncated repeats dropped in favor of the fuller text",
+    "tweet_id repeated in file; identical or truncated repeats dropped in favor of the fuller text; their availability is kept as evidence",
     counts["duplicate-in-file"] ?? 0,
+  );
+  warn(
+    "conflicting-availability",
+    "tweet_id reported both available and unavailable in file; both reports are kept on one observation marked conflicting, and file order is not treated as time",
+    conflicting,
   );
   warn(
     "duplicate-distinct-versions",
@@ -436,7 +494,11 @@ const toRecord = (b: Bookmark): CaptureRecord => ({
   publishedAt: b.publishedAt,
   availability: b.status,
   retainFuller: true,
+  ...(b.alsoReported?.length ? { alsoReported: b.alsoReported } : {}),
 });
+const reportsUnavailable = (b: Bookmark): boolean =>
+  b.status === "unavailable" ||
+  (b.alsoReported ?? []).some((a) => a.availability === "unavailable");
 
 /** Dry run: classifies every record against the store without writing (MIG-01). */
 export function previewXArchive(db: Database.Database, parsed: ParsedExport): ImportPreview {
@@ -471,7 +533,7 @@ export function previewXArchive(db: Database.Database, parsed: ParsedExport): Im
       counts.weakerSkipped++;
       conflicts.push({ platformId: b.platformId, kind: "weaker-skipped" });
       adds = false;
-    } else if (b.text === "" && b.status === "unavailable") {
+    } else if (b.text === "" && reportsUnavailable(b)) {
       counts.unavailableNoText++;
     } else if (b.text === "" && !exists) {
       counts.noContentSkipped++;

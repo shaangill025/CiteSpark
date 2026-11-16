@@ -27,6 +27,8 @@ export {
   InvalidPageError,
   ReplayConflictError,
   isWeakerText,
+  type Availability,
+  type AvailabilityReport,
   type CaptureRecord,
   type CapturePage,
   type CaptureSummary,
