@@ -26,14 +26,6 @@ export function encodeFrame(value: unknown, maxFrameBytes = DEFAULT_MAX_FRAME_BY
   return Buffer.concat([header, body]);
 }
 
-/**
- * The Noise prologue (ADR 0006): the exact wire bytes, length prefixes included, of the client hello frame
- * followed by the core's reply frame. The handshake itself belongs to M1-06.
- */
-export function helloPrologue(helloFrame: Uint8Array, replyFrame: Uint8Array): Buffer {
-  return Buffer.concat([helloFrame, replyFrame]);
-}
-
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 
 /**

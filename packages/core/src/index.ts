@@ -20,3 +20,4 @@ export {
   type PageContent,
 } from "./links.ts";
 export { captureLink, type CaptureResult } from "./capture.ts";
+export * from "./ipc/index.ts";

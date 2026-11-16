@@ -18,8 +18,11 @@ Q33: original Citspark code is Apache-2.0. Dependencies and models keep their ow
 | node-diff3 | three-way merge | MIT | 4.0.0 | Yes | |
 | chokidar | file watching | MIT | 6.0.0 | Yes | |
 | age-encryption (typage) | backup encryption | BSD-3-Clause | 0.3.1 | Yes | Used by `prototypes/backup-age`. |
-| noise-handshake (candidate) | IPC channel (ADR 0006) | Apache-2.0 | 4.2.1 | Yes | First choice (owner decision Q8), to be proven by the M1-06 spike. Must accept a WebCrypto key-agreement callback and run in an MV3 service worker. |
-| @chainsafe/libp2p-noise (candidate) | IPC channel (ADR 0006) | Apache-2.0 OR MIT | 17.0.0 | Yes | Fallback (owner decision Q8) if the spike fails. Tied to libp2p stream types; may need an adapter. |
+| noise-handshake | IPC channel (ADR 0011) | Apache-2.0 | 4.2.1 | Yes | Chosen in M1-06. No async key-agreement callback, so the wrapped-key fallback applies (ADR 0011). |
+| sodium-universal | X25519, ChaCha20-Poly1305, BLAKE2b for the IPC channel | MIT | 5.0.1 | Yes | Pulls in sodium-native 5.2.1 (MIT) in Node. Browser builds need sodium-javascript (MIT), added in M1-08. |
+| b4a, nanoassert, require-addon, which-runtime | transitive dependencies of noise-handshake and sodium-universal | Apache-2.0, ISC | 1.9.0, 2.0.0, 1.3.0, 1.4.0 | Yes | |
+| parse5 | HTML parsing for linked-page metadata, text and meta charset (M1-11) | MIT | 8.0.1 | Yes | Pulls in entities 8.1.0 (BSD-2-Clause). |
+| @chainsafe/libp2p-noise (not adopted) | IPC channel (ADR 0006) | Apache-2.0 OR MIT | 17.0.0 | Yes | Rejected in M1-06: synchronous crypto interface and XX only (ADR 0011). |
 | tar-stream | backup container | MIT | | Yes | |
 | llama.cpp (`llama-server`) | local generation and embeddings | MIT | 1.0.0 | Yes | Prebuilt binaries per OS and backend. |
 | whisper.cpp | transcription | MIT | 1.9.5 | Yes | |
