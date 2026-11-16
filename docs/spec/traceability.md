@@ -66,7 +66,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | BKP-02 | Password-encrypted backups with maintained AEAD | M2 | T08 | M2-08 | not started | F0 encryption format decision. F0: ADR 0008; `prototypes/backup-age`; scrypt accepted (Q3) |
 | BKP-03 | Full portable backups; manifests; media-excluded disclosure | M2 | T08 | M2-08 | not started | F0: ADR 0008 (hashed manifest) |
 | MIG-01 | Import native backups, owner vault, xarchive; dry-run | M1 | T09, T15 | M1-09, M2-02, M2-07, M5-03 | not started | F0: xarchive = `sytelus/xarchive` (Q2); version pinning in M1-09 |
-| MIG-02 | Pre-migration backup; candidate indexes; no destructive generator | M2 | T08, T09 | M1-02, M2-07, M2-10, M3-01, M5-03 | in progress | M1-02: numbered transactional migrations and pre-migration backup hook; candidate indexes pending. Migration trials in M5 |
+| MIG-02 | Pre-migration backup; candidate indexes; no destructive generator | M2 | T08, T09 | M1-02, M2-07, M2-10, M3-01, M5-03 | in progress | M1-02: numbered transactional migrations and pre-migration backup hook; every recorded migration ID and name is validated, and a recorded gap (jobs-only databases at [1, 3]) receives the order-independent sync-core migration 2 exactly once after backup (`migrate.test.ts` upgrade matrix); candidate indexes pending. Migration trials in M5 |
 | ACC-01 | Keyboard, screen reader, contrast, reduced motion (WCAG 2.2 AA) | M5 | T13 | M2-02, M2-06, M3-02, M3-09, M5-01 | not started | Incremental from M2 onward |
 | ACC-02 | Names, focus order, announcements, scalable text | M5 | T13 | M2-02, M5-01 | not started | Assistive-technology testing |
 | LAN-01 | English UI/AI quality; Unicode preserved; documented limits | M5 | T10, T13 | M3-01, M5-05 | not started |  |
@@ -81,7 +81,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
   `findExpired`) throw `RangeError` before any change unless time is a non-negative safe integer
   (epoch ms), TTL is a positive safe integer, and the computed expiry is a safe integer, so NaN
   clocks cannot bypass expiry and non-positive TTLs cannot open same-scope overlaps.
-- MIG-02: existing databases require a successful recovery backup hook before pending migrations.
+- MIG-02: existing databases require a successful recovery backup hook before pending migrations. Unknown or renamed recorded migrations, and gaps for migrations not declared order-independent, are refused before backup or SQL.
   The hook is synchronous; one that returns a Promise or other thenable (for example an un-awaited
   `db.backup()`) is rejected before any migration runs, so callers finish async backups first.
   A rejected native Promise is marked handled; a custom thenable's `then` is never called.

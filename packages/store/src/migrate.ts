@@ -10,7 +10,12 @@ import { MIGRATIONS, type Migration } from "./migrations.ts";
  * handled; a custom thenable's `then` is read once (a throwing accessor also aborts) but never
  * called, so `migrate` runs no code from it.
  */
-export type BackupHook = (fromVersion: number, toVersion: number) => void;
+export type BackupHook = (
+  fromVersion: number,
+  toVersion: number,
+  /** Versions about to be applied, ascending. May include a recorded gap below `fromVersion`. */
+  pending: readonly number[],
+) => void;
 
 export interface MigrateOptions {
   migrations?: readonly Migration[];
@@ -20,7 +25,13 @@ export interface MigrateOptions {
 
 export interface MigrateResult {
   applied: number[];
+  /** Highest recorded migration version after this run. */
   version: number;
+}
+
+/** The recorded schema cannot be safely migrated by this build. Nothing was changed. */
+export class MigrationStateError extends Error {
+  override name = "MigrationStateError";
 }
 
 const BOOKKEEPING = `CREATE TABLE IF NOT EXISTS schema_migration (
@@ -34,23 +45,60 @@ export function migrate(db: Database.Database, options: MigrateOptions = {}): Mi
   const hadTables = hasUserTables(db);
   db.pragma("foreign_keys = ON");
   db.exec(BOOKKEEPING);
-  const current = (
-    db.prepare("SELECT COALESCE(MAX(version), 0) v FROM schema_migration").get() as { v: number }
-  ).v;
-  const latest = migrations.reduce((max, m) => Math.max(max, m.version), 0);
+  const known = new Map<number, Migration>();
+  for (const m of migrations) {
+    if (!Number.isSafeInteger(m.version) || m.version < 1 || known.has(m.version)) {
+      throw new MigrationStateError(`Invalid or duplicate migration version ${m.version}`);
+    }
+    known.set(m.version, m);
+  }
+  const latest = Math.max(0, ...known.keys());
+  // Validate every recorded ID, not just the highest: a build that shipped without a lower
+  // migration leaves a gap that a max-version check would silently skip.
+  const recorded = db
+    .prepare("SELECT version, name FROM schema_migration ORDER BY version")
+    .all() as { version: number; name: string }[];
+  const current = recorded.length ? recorded[recorded.length - 1]!.version : 0;
   if (current > latest) {
     throw new Error(
       `Database schema version ${current} is newer than this build supports (${latest})`,
     );
   }
+  for (const r of recorded) {
+    const m = known.get(r.version);
+    if (!m) {
+      throw new MigrationStateError(
+        `Database records migration ${r.version} (${r.name}), which is unknown to this build`,
+      );
+    }
+    if (m.name !== r.name) {
+      throw new MigrationStateError(
+        `Database records migration ${r.version} as "${r.name}" but this build names it "${m.name}"`,
+      );
+    }
+  }
+  const done = new Set(recorded.map((r) => r.version));
   const pending = migrations
-    .filter((m) => m.version > current)
+    .filter((m) => !done.has(m.version))
     .sort((a, b) => a.version - b.version);
   if (pending.length === 0) return { applied: [], version: current };
+  for (const m of pending) {
+    if (m.version < current && !m.orderIndependent) {
+      throw new MigrationStateError(
+        `Missing migration ${m.version} (${m.name}) cannot be applied after recorded migration ${current}; restore a backup taken by a build that includes it`,
+      );
+    }
+  }
   // An unmarked database that already has tables is existing data too.
   if (current > 0 || hadTables) {
     if (!options.backup) throw new Error("A recovery backup hook is required before migration");
-    rejectAsync(options.backup(current, latest));
+    rejectAsync(
+      options.backup(
+        current,
+        latest,
+        pending.map((m) => m.version),
+      ),
+    );
   }
 
   const record = db.prepare("INSERT INTO schema_migration (version, name) VALUES (?, ?)");
@@ -62,7 +110,7 @@ export function migrate(db: Database.Database, options: MigrateOptions = {}): Mi
     }).immediate();
     applied.push(m.version);
   }
-  return { applied, version: latest };
+  return { applied, version: Math.max(current, ...applied) };
 }
 
 function hasUserTables(db: Database.Database): boolean {

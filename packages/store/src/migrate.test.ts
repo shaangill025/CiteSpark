@@ -169,6 +169,232 @@ describe("migrations", () => {
   });
 });
 
+// Upgrade paths from every published schema. Fixtures are written with raw SQL exactly as the
+// earlier max-version runner recorded them, independent of the runner under test.
+describe("upgrade matrix", () => {
+  const byVersion = (v: number): Migration => {
+    const m = MIGRATIONS.find((x) => x.version === v);
+    if (!m) throw new Error(`no migration ${v}`);
+    return m;
+  };
+  const historical = (versions: number[], recorded = versions): Database.Database => {
+    const db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    db.exec(
+      "CREATE TABLE schema_migration (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))) STRICT;",
+    );
+    for (const v of versions) db.exec(byVersion(v).sql);
+    const rec = db.prepare("INSERT INTO schema_migration (version, name) VALUES (?, ?)");
+    for (const v of recorded) rec.run(v, byVersion(v).name);
+    return db;
+  };
+  const recordedIds = (db: Database.Database): number[] =>
+    (
+      db.prepare("SELECT version FROM schema_migration ORDER BY version").all() as {
+        version: number;
+      }[]
+    ).map((r) => r.version);
+  const columns = (db: Database.Database, table: string): string[] =>
+    (db.pragma(`table_info(${table})`) as { name: string }[]).map((c) => c.name);
+  const seed = (db: Database.Database): void => {
+    db.exec(`
+      INSERT INTO source (id, source_type, platform_id) VALUES ('x:1', 'x_post', '1');
+      INSERT INTO source_version (id, source_id, content_hash, text) VALUES (1, 'x:1', 'h1', 'original');
+      INSERT INTO annotation (id, source_id, base_revision, text) VALUES ('a1', 'x:1', 2, 'my note');
+      INSERT INTO annotation_revision (annotation_id, revision, text) VALUES ('a1', 1, 'draft');
+      INSERT INTO job (id, kind, state, cursor) VALUES ('j1', 'capture', 'running', 'c42');
+      INSERT INTO sync_binding (library_id, vault_id, note_id, source_id, path, last_common_hash, suppression)
+        VALUES ('lib', 'vault', 'n1', 'x:1', 'Notes/x1.md', 'base', 'unlinked');
+    `);
+  };
+  const expectSeedPreserved = (db: Database.Database): void => {
+    expect(db.prepare("SELECT id, platform_id FROM source").all()).toEqual([
+      { id: "x:1", platform_id: "1" },
+    ]);
+    expect(db.prepare("SELECT source_id, content_hash, text FROM source_version").all()).toEqual([
+      { source_id: "x:1", content_hash: "h1", text: "original" },
+    ]);
+    expect(db.prepare("SELECT id, base_revision, text FROM annotation").all()).toEqual([
+      { id: "a1", base_revision: 2, text: "my note" },
+    ]);
+    expect(db.prepare("SELECT revision, text FROM annotation_revision").all()).toEqual([
+      { revision: 1, text: "draft" },
+    ]);
+    expect(db.prepare("SELECT id, state, cursor FROM job").all()).toEqual([
+      { id: "j1", state: "running", cursor: "c42" },
+    ]);
+    expect(
+      db.prepare("SELECT note_id, path, last_common_hash, suppression FROM sync_binding").all(),
+    ).toEqual([
+      { note_id: "n1", path: "Notes/x1.md", last_common_hash: "base", suppression: "unlinked" },
+    ]);
+  };
+  const expectFullSchema = (db: Database.Database): void => {
+    expect(recordedIds(db)).toEqual([1, 2, 3]);
+    expect(columns(db, "job")).toContain("lease_generation");
+    expect(columns(db, "sync_binding")).toEqual(
+      expect.arrayContaining(["state", "base_content", "last_written_hash", "last_txn_id"]),
+    );
+    expect(tables(db)).toContain("sync_conflict");
+    // Constraints from both additive migrations are live.
+    expect(() => db.exec("UPDATE sync_binding SET state = 'bogus'")).toThrow(/CHECK/);
+    expect(() =>
+      db.exec("INSERT INTO sync_conflict (library_id, vault_id, kind) VALUES ('l', 'v', 'bogus')"),
+    ).toThrow(/CHECK/);
+    expect(() =>
+      db.exec(
+        "INSERT INTO source_version (source_id, content_hash, text) VALUES ('x:missing', 'h', 't')",
+      ),
+    ).toThrow(/FOREIGN KEY/);
+    expect(() => db.exec("UPDATE job SET lease_generation = NULL")).toThrow(/NOT NULL/);
+  };
+  const recordingBackup = (db: Database.Database) => {
+    const calls: { from: number; to: number; pending: readonly number[]; ids: number[] }[] = [];
+    const hook: BackupHook = (from, to, pending) => {
+      // The backup completes before any pending migration SQL runs.
+      calls.push({ from, to, pending: [...(pending ?? [])], ids: recordedIds(db) });
+    };
+    return { calls, hook };
+  };
+
+  it("fresh database -> [1, 2, 3] without a backup", () => {
+    const db = new Database(":memory:");
+    const calls: unknown[] = [];
+    const r = migrate(db, { backup: () => void calls.push(1) });
+    expect(r).toEqual({ applied: [1, 2, 3], version: 3 });
+    expect(calls).toEqual([]);
+    seed(db);
+    expectFullSchema(db);
+  });
+
+  it.each([
+    ["v1", [1], [2, 3]],
+    ["sync-v2", [1, 2], [3]],
+    ["historical jobs-only v3 (recorded gap)", [1, 3], [2]],
+  ] as const)(
+    "%s -> applies exactly the missing migrations after a completed backup",
+    (_, from, missing) => {
+      const db = historical([...from]);
+      seed(db);
+      if (from.includes(2)) {
+        db.exec(
+          "UPDATE sync_binding SET state = 'conflict', base_content = x'00ff', last_txn_id = 't1'; INSERT INTO sync_conflict (library_id, vault_id, note_id, kind, base_text, vault_text, library_text) VALUES ('lib', 'vault', 'n1', 'merge', 'b', 'v', 'l');",
+        );
+      }
+      if (from.includes(3)) db.exec("UPDATE job SET lease_generation = 7");
+      const { calls, hook } = recordingBackup(db);
+
+      const r = migrate(db, { backup: hook });
+      expect(r).toEqual({ applied: [...missing], version: 3 });
+      expect(calls).toEqual([
+        { from: Math.max(...from), to: 3, pending: [...missing], ids: [...from] },
+      ]);
+      expectSeedPreserved(db);
+      expectFullSchema(db);
+      if (from.includes(2)) {
+        expect(
+          db.prepare("SELECT state, hex(base_content) b, last_txn_id FROM sync_binding").get(),
+        ).toEqual({
+          state: "conflict",
+          b: "00FF",
+          last_txn_id: "t1",
+        });
+        expect(
+          db
+            .prepare("SELECT kind, base_text, vault_text, library_text, status FROM sync_conflict")
+            .all(),
+        ).toEqual([
+          { kind: "merge", base_text: "b", vault_text: "v", library_text: "l", status: "open" },
+        ]);
+      } else {
+        expect(db.prepare("SELECT state, base_content FROM sync_binding").get()).toEqual({
+          state: "bound",
+          base_content: null,
+        });
+      }
+      expect(db.prepare("SELECT lease_generation g FROM job").get()).toEqual({
+        g: from.includes(3) ? 7 : 0,
+      });
+
+      // Idempotent: nothing pending, no further backup, every migration recorded exactly once.
+      expect(migrate(db, { backup: hook })).toEqual({ applied: [], version: 3 });
+      expect(calls).toHaveLength(1);
+      expect(
+        db.prepare("SELECT COUNT(*) n, COUNT(DISTINCT version) d FROM schema_migration").get(),
+      ).toEqual({ n: 3, d: 3 });
+    },
+  );
+
+  it("requires a backup before filling a recorded gap", () => {
+    const db = historical([1, 3]);
+    expect(() => migrate(db)).toThrow(/backup/i);
+    expect(recordedIds(db)).toEqual([1, 3]);
+    expect(tables(db)).not.toContain("sync_conflict");
+  });
+
+  it("rolls back a failed gap migration, keeps recorded state, and succeeds on retry", () => {
+    const db = historical([1, 3]);
+    seed(db);
+    const broken: Migration[] = MIGRATIONS.map((m) =>
+      m.version === 2 ? { ...m, sql: `${m.sql}\nSELECT * FROM missing_table;` } : m,
+    );
+    expect(() => migrate(db, { migrations: broken, backup: () => undefined })).toThrow(
+      /missing_table/,
+    );
+    expect(recordedIds(db)).toEqual([1, 3]);
+    expect(tables(db)).not.toContain("sync_conflict");
+    expect(columns(db, "sync_binding")).not.toContain("state");
+    expectSeedPreserved(db);
+
+    expect(migrate(db, { backup: () => undefined })).toEqual({ applied: [2], version: 3 });
+    expectSeedPreserved(db);
+    expectFullSchema(db);
+  });
+
+  it("refuses a gap for a migration not declared order-independent, before backup or SQL", () => {
+    const db = historical([1, 3]);
+    const strict: Migration[] = MIGRATIONS.map((m) =>
+      m.version === 2 ? { version: 2, name: m.name, sql: m.sql } : m,
+    );
+    const calls: unknown[] = [];
+    expect(() => migrate(db, { migrations: strict, backup: () => void calls.push(1) })).toThrow(
+      /migration 2 \(sync-core\).*after.*3/i,
+    );
+    expect(calls).toEqual([]);
+    expect(recordedIds(db)).toEqual([1, 3]);
+    expect(tables(db)).not.toContain("sync_conflict");
+  });
+
+  it("refuses recorded migrations this build does not know, without claiming success", () => {
+    // A sync build's database opened by the jobs-only build: 2 is recorded but unknown.
+    const db = historical([1, 2]);
+    const jobsOnly = [byVersion(1), byVersion(3)];
+    const calls: unknown[] = [];
+    expect(() => migrate(db, { migrations: jobsOnly, backup: () => void calls.push(1) })).toThrow(
+      /migration 2 .*unknown to this build/i,
+    );
+    expect(calls).toEqual([]);
+    expect(recordedIds(db)).toEqual([1, 2]);
+    expect(columns(db, "job")).not.toContain("lease_generation");
+  });
+
+  it("refuses a recorded migration whose name differs from this build", () => {
+    const db = historical([1, 2]);
+    db.exec("UPDATE schema_migration SET name = 'job-lease-generation' WHERE version = 2");
+    expect(() => migrate(db, { backup: () => undefined })).toThrow(/name/i);
+    expect(recordedIds(db)).toEqual([1, 2]);
+    expect(columns(db, "job")).not.toContain("lease_generation");
+  });
+
+  it("still rejects a newer database, including one with a gap", () => {
+    const db = historical([1, 3]);
+    db.prepare("INSERT INTO schema_migration (version, name) VALUES (4, 'future')").run();
+    expect(() => migrate(db, { backup: () => undefined })).toThrow(/newer/);
+    expect(recordedIds(db)).toEqual([1, 3, 4]);
+    expect(tables(db)).not.toContain("sync_conflict");
+  });
+});
+
 describe("schema contracts", () => {
   const setup = (): Database.Database => {
     const db = new Database(":memory:");

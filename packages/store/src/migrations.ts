@@ -2,6 +2,12 @@ export interface Migration {
   version: number;
   name: string;
   sql: string;
+  /**
+   * Safe to apply after a higher-numbered migration is already recorded (a gap left by a build
+   * that shipped without it). Only for additive statements that no later migration depends on.
+   * Without it, `migrate` refuses such a gap instead of applying SQL out of order.
+   */
+  orderIndependent?: boolean;
 }
 
 // Platform identifiers are TEXT: 19-digit X IDs exceed Number.MAX_SAFE_INTEGER (DAT-01, CAP-02).
@@ -192,7 +198,8 @@ CREATE TABLE backup_manifest (
 
 // Sync engine core (M2-04, ADR 0007): binding state, compressed base content, write identity, and
 // conflict/review records. Statements only add columns and tables. Published version numbers are
-// never renumbered.
+// never renumbered: a database from the jobs-only build records [1, 3] and receives this migration
+// as a recorded gap (see `migrate`).
 const SYNC_CORE = `
 ALTER TABLE sync_binding ADD COLUMN state TEXT NOT NULL DEFAULT 'bound' CHECK (state IN ('bound', 'unlinked', 'conflict'));
 ALTER TABLE sync_binding ADD COLUMN base_content BLOB;
@@ -219,7 +226,7 @@ CREATE INDEX sync_conflict_open ON sync_conflict (library_id, vault_id, status);
 
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, name: "initial-schema", sql: V1 },
-  { version: 2, name: "sync-core", sql: SYNC_CORE },
+  { version: 2, name: "sync-core", sql: SYNC_CORE, orderIndependent: true },
   {
     version: 3,
     name: "job-lease-generation",
