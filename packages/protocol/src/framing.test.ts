@@ -1,11 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
-import {
-  DEFAULT_MAX_FRAME_BYTES,
-  FrameDecoder,
-  FrameError,
-  encodeFrame,
-  helloPrologue,
-} from "./framing.ts";
+import { DEFAULT_MAX_FRAME_BYTES, FrameDecoder, FrameError, encodeFrame } from "./framing.ts";
 
 const enc = (v: unknown) => encodeFrame(v);
 
@@ -98,11 +92,5 @@ describe("framing", () => {
 
   test("default limit is the 8 MB core limit", () => {
     expect(DEFAULT_MAX_FRAME_BYTES).toBe(8 * 1024 * 1024);
-  });
-
-  test("hello prologue is the exact on-the-wire bytes of both hello frames", () => {
-    const a = enc({ t: "hello" });
-    const b = enc({ t: "hello.ok" });
-    expect(helloPrologue(a, b)).toEqual(Buffer.concat([a, b]));
   });
 });

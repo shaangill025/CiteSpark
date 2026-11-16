@@ -34,7 +34,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | SYN-05 | Watcher events as hints; atomic writes; no feedback loops; symlink policy | M2 | T04 | M2-05 | not started | F0: ADR 0007 |
 | SYN-06 | Portable Markdown with versioned frontmatter | M2 | T04 | M2-04 | in progress | M2-04: `citspark.schema` version check (newer schema is a conflict, never rewritten; invalid mappings, sequences and null return safe diagnostics without object coercion), section markers, reversible marker escaping documented in ADR 0007. Written-file portability checks pending (M2-05). F0: ADR 0007 (frontmatter schema) |
 | PLG-01 | Optional Obsidian companion plugin | M2, M4 | T06, T14, T15 | M2-09, M4-07 | not started | Research UI lands in M4. F0: ADR 0006 |
-| PLG-02 | Plugin connection states; no independent DB or policy engine | M2 | T06, T14 | M2-09 | in progress | F0: ADR 0006. M1-05: `packages/protocol` hello negotiation with structured `incompatible` error (unit tests only); handshake, scopes and UI pending |
+| PLG-02 | Plugin connection states; no independent DB or policy engine | M2 | T06, T14 | M2-09 | in progress | F0: ADR 0006. M1-05: hello negotiation with structured `incompatible` error. M1-06: core socket server enforces scopes and revocation for every client (T06 integration tests, ADR 0011); plugin and its UI pending (M2-09) |
 | RET-01 | Unified search; exact-ID, keyword, semantic; visible mode | M3 | T10, T11, T12 | M3-02, M3-03 | not started | F0: ADR 0002, ADR 0003; keyword and vector cost measured (`docs/f0/benchmarks.md`) |
 | RET-02 | Filters; trashed sources excluded at query time | M3 | T07 | M3-02 | not started | F0: FTS5 benchmark excludes trashed sources at query time |
 | RET-03 | Exact excerpt/version/offset results; atomic index generations | M3 | T10, T11 | M3-01, M3-07 | not started | F0: ADR 0002 (index generations) |
@@ -53,10 +53,10 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | SEC-01 | Local archive/embeddings/OCR; per-library provider approval | M3, M4 | T05 | M3-03, M4-02 | not started |  |
 | SEC-02 | Local-only enforcement across all derived artifacts before dispatch | M3, M4 | T05 | M3-04 | not started |  |
 | SEC-03 | Local-only limitation explanation and explicit local rerun | M4 | T05 | M3-04 | not started |  |
-| SEC-04 | OS credential storage; credentials excluded from logs/backups | M2 | T05, T08 | M1-06, M1-08, M2-03, M2-12 | not started | F0: ADR 0006 (key storage), ADR 0008 |
+| SEC-04 | OS credential storage; credentials excluded from logs/backups | M2 | T05, T08 | M1-06, M1-08, M2-03, M2-12 | in progress | F0: ADR 0006 (key storage), ADR 0008. M1-06: no shared secrets; core registry holds only client public keys; client static key wrapped by a non-extractable WebCrypto key (ADR 0011, unit tests). Desktop `safeStorage` and credential scanner pending |
 | SEC-05 | No telemetry; redacted previewable support bundle | M5 | T05 | M2-03 | not started |  |
 | SEC-06 | Escaping, CSV neutralization, path traversal, quotas, isolation | M1, M5 | T09 | M1-01, M1-09, M2-01, M2-12, M5-02, M5-04 | not started | M1-01 adds CI dependency audit and license allowlist; signed updates in M5. CI maintenance: `actions/checkout` bumped to v7.0.1, still pinned to an immutable commit SHA |
-| SEC-07 | Threat model | F0, M5 | T05, T06 | M1-06, M5-04 | not started | Security review in M5. F0: ADR 0006 IPC threat analysis; full threat model in M5-04 |
+| SEC-07 | Threat model | F0, M5 | T05, T06 | M1-06, M5-04 | in progress | Security review in M5. F0: ADR 0006 IPC threat analysis. M1-06: unauthorized local clients covered by the T06 suite (ADR 0011); full threat model in M5-04 |
 | SEC-08 | No at-rest encryption promise; documented | M5 | T08 | M2-08, M5-05 | not started | Documentation check |
 | DAT-01 | 100,000-post capacity target; incremental indexing | M1, M3 | T11 | M1-02, M3-01 | in progress | M1-02: schema and 19-digit ID round-trip (`packages/store`); capacity and incremental indexing pending. F0 100k-post search test. F0: 100k-post FTS5 benchmark on macOS (`docs/f0/benchmarks.md`); Windows run pending (B3) |
 | DAT-02 | 8 GB RAM target for core; bounded batches | M1, M3 | T11 | M4-01 | not started | F0: Core search peak RSS 123 MB on M1 8 GB; Electron memory pending (B11) |
@@ -107,7 +107,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | T03 | Attribution | M1, M3 | M1-07, M3-11, M4-05 | in progress | ADR 0010 |
 | T04 | Sync | M2 | M2-04, M2-05 | in progress | M2-04: seeded fast-check property tests (`packages/sync/src/t04.property.test.ts`): random concurrent edit sequences never lose user text; same-key metadata changes conflict. Filesystem harness pending (M2-05) |
 | T05 | Privacy | M3, M4 | M3-04 | not started | — |
-| T06 | Pairing | M2 | M1-06, M2-09 | in progress | ADR 0006 |
+| T06 | Pairing | M2 | M1-06, M2-09 | in progress | ADR 0006, ADR 0011. M1-06: socket, channel, pairing (including a socket squatter claiming `pair.ok`), registry-owned replay ledger and Windows pipe DACL suite in `packages/core/src/ipc/t06.test.ts`; plugin in M2-09 |
 | T07 | Deletion | M1, M2 | M1-12, M3-02 | not started | — |
 | T08 | Backup | M2 | M2-08 | not started | F0 prototype: 5 passing tests in `prototypes/backup-age` |
 | T09 | Import | M1 | M1-09, M5-03 | not started | — |
@@ -186,7 +186,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | Q51 | SYN-04 | M2 | M2-05 | not started |
 | Q52 | SYN-01, PLG-01 | M2, M4 | M2-09 | not started |
 | Q53 | PLG-01 | M4 | M4-07 | not started |
-| Q54 | PLG-02, Section 4 | M2 | M1-06, M2-09 | not started |
+| Q54 | PLG-02, Section 4 | M2 | M1-06, M2-09 | in progress |
 | Q55 | Section 4, MIG-02 | M2 | M1-05, M2-10 | in progress |
 | Q56 | SEC-01, SEC-02 | M3, M4 | M3-04 | not started |
 | Q57 | SEC-03 | M4 | M3-04 | not started |
@@ -197,4 +197,5 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 
 ## Implementation notes
 
-- **§14 API contract (M1-05, `packages/protocol`)**: zod schemas, length-prefixed framing with oversize rejection and linear-time reassembly of fragmented frames, `hello` negotiation, request IDs with an idempotency ledger, structured errors and stream sequence numbers are implemented with unit tests. The ledger never forgets an accepted request ID; when full it rejects new IDs with `idempotency_exhausted` instead of evicting, so a late retry cannot repeat a mutation. A durable outcome store, scope checks, the Noise handshake (ADR 0006) and transport wiring are M1-06; the T06 suite is not yet written. Frame limits (1 MB toward the extension, 8 MB toward the core) remain PROPOSED.
+- **§14 API contract (M1-05, `packages/protocol`)**: zod schemas, length-prefixed framing with oversize rejection and linear-time reassembly of fragmented frames, `hello` negotiation, request IDs with an idempotency ledger, structured errors and stream sequence numbers are implemented with unit tests. The ledger never forgets an accepted request ID; when full it rejects new IDs with `idempotency_exhausted` instead of evicting, so a late retry cannot repeat a mutation. Frame limits (1 MB toward the extension, 8 MB toward the core) remain PROPOSED.
+- **M1-06 IPC and pairing (`packages/ipc`, `packages/core/src/ipc`, `packages/native-host`)**: Noise XX pairing confirmed in both directions (a 6-digit code the client shows and the user types into the desktop, then one the desktop shows and the user types into the client), Noise IK per connection, encrypted records, scopes, revocation, a Unix socket or named pipe server and a native messaging relay (ADR 0011). The T06 suite runs in `packages/core/src/ipc/t06.test.ts`. The client registry is in memory until M2; desktop key storage and pairing UI are M2; extension UI is M1-08.
