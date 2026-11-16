@@ -37,3 +37,14 @@ labeled alpha/beta previews; version 1.0 waits until every required capability p
 ## License
 
 Apache-2.0 for original code ([LICENSE](LICENSE), [NOTICE](NOTICE)). Models and dependencies keep their own terms.
+
+## Development
+
+Requires Node.js 24 and pnpm (pinned via `packageManager`).
+
+```sh
+pnpm install --frozen-lockfile
+pnpm build && pnpm lint && pnpm test && pnpm license-check
+```
+
+`prototypes/` is a separate throwaway F0 project with its own install; see its README.

@@ -55,7 +55,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | SEC-03 | Local-only limitation explanation and explicit local rerun | M4 | T05 | M3-04 | not started |  |
 | SEC-04 | OS credential storage; credentials excluded from logs/backups | M2 | T05, T08 | M1-06, M1-08, M2-03, M2-12 | not started | F0: ADR 0006 (key storage), ADR 0008 |
 | SEC-05 | No telemetry; redacted previewable support bundle | M5 | T05 | M2-03 | not started |  |
-| SEC-06 | Escaping, CSV neutralization, path traversal, quotas, isolation | M1, M5 | T09 | M1-01, M1-09, M2-01, M2-12, M5-02, M5-04 | not started | Dependency scanning and signed updates in M5 |
+| SEC-06 | Escaping, CSV neutralization, path traversal, quotas, isolation | M1, M5 | T09 | M1-01, M1-09, M2-01, M2-12, M5-02, M5-04 | not started | M1-01 adds CI dependency audit and license allowlist; signed updates in M5 |
 | SEC-07 | Threat model | F0, M5 | T05, T06 | M1-06, M5-04 | not started | Security review in M5. F0: ADR 0006 IPC threat analysis; full threat model in M5-04 |
 | SEC-08 | No at-rest encryption promise; documented | M5 | T08 | M2-08, M5-05 | not started | Documentation check |
 | DAT-01 | 100,000-post capacity target; incremental indexing | M1, M3 | T11 | M1-02, M3-01 | not started | F0 100k-post search test. F0: 100k-post FTS5 benchmark on macOS (`docs/f0/benchmarks.md`); Windows run pending (B3) |
@@ -138,7 +138,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | Q30 | BKP-02 | M2 | M2-08 | not started |
 | Q31 | CAP-07 | M1 | M1-08 | not started |
 | Q32 | LAN-01 | M5 | M5-05 | not started |
-| Q33 | Licensing / OSS hygiene | L0 | M1-01 | not started |
+| Q33 | Licensing / OSS hygiene | L0, M1-01 | M1-01 | in progress (M1-01 adds the CI license allowlist check) |
 | Q34 | F0 | F0 | F0 (ADRs 0001–0010) | verified |
 | Q35 | Release policy | All | whole plan | not started |
 | Q36 | SEC-05 | M5 | M2-03 | not started |
