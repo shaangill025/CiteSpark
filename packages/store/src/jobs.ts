@@ -41,6 +41,11 @@ export class InvalidTransitionError extends Error {}
 export class LeaseError extends Error {}
 export class UnknownJobError extends Error {}
 
+export interface Lease {
+  owner: string;
+  generation: number;
+}
+
 export interface Job {
   id: string;
   kind: string;
@@ -49,6 +54,7 @@ export interface Job {
   collectionId: string | null;
   cursor: string | null;
   leaseOwner: string | null;
+  leaseGeneration: number;
   leaseExpiresAt: number | null;
   retryCount: number;
   progress: string | null;
@@ -65,6 +71,7 @@ interface Row {
   collection_id: string | null;
   cursor: string | null;
   lease_owner: string | null;
+  lease_generation: number;
   lease_expires_at: number | null;
   retry_count: number;
   progress: string | null;
@@ -81,6 +88,7 @@ const toJob = (r: Row): Job => ({
   collectionId: r.collection_id,
   cursor: r.cursor,
   leaseOwner: r.lease_owner,
+  leaseGeneration: r.lease_generation,
   leaseExpiresAt: r.lease_expires_at,
   retryCount: r.retry_count,
   progress: r.progress,
@@ -123,36 +131,42 @@ export class JobStore {
 
   /**
    * Acquire the lease for a queued job, or take over a running job whose lease expired.
-   * Rejects while another owner holds a live lease on any job of the same account and collection.
+   * Rejects while any other job holds a live lease for the same account and collection.
+   * Returns the acquisition's Lease atomically, or null if excluded. Retain that token for
+   * this attempt; never refresh a stale attempt's generation from get(id).
    */
-  acquire(id: string, owner: string, nowMs: number, ttlMs: number): boolean {
+  acquire(id: string, owner: string, nowMs: number, ttlMs: number): Lease | null {
     return this.db
       .transaction(() => {
         const job = this.get(id);
         const reclaim =
           job.state === "running" && job.leaseExpiresAt !== null && job.leaseExpiresAt <= nowMs;
-        if (job.state !== "queued" && !reclaim) return false;
+        if (job.state !== "queued" && !reclaim) return null;
+        if (job.cancelRequested) {
+          this.write(id, "cancelled", "cancelled by user");
+          return null;
+        }
         if (job.accountId !== null && job.collectionId !== null) {
           const conflict = this.db
             .prepare(
               `SELECT 1 FROM job WHERE id <> ? AND account_id = ? AND collection_id = ?
-               AND lease_owner IS NOT NULL AND lease_owner <> ? AND lease_expires_at > ?`,
+               AND lease_owner IS NOT NULL AND lease_expires_at > ?`,
             )
-            .get(id, job.accountId, job.collectionId, owner, nowMs);
-          if (conflict) return false;
+            .get(id, job.accountId, job.collectionId, nowMs);
+          if (conflict) return null;
         }
         this.db
           .prepare(
-            "UPDATE job SET state = 'running', lease_owner = ?, lease_expires_at = ?, stop_reason = NULL WHERE id = ?",
+            "UPDATE job SET state = 'running', lease_owner = ?, lease_expires_at = ?, lease_generation = lease_generation + 1, stop_reason = NULL WHERE id = ?",
           )
           .run(owner, nowMs + ttlMs, id);
-        return true;
+        return { owner, generation: this.get(id).leaseGeneration };
       })
       .immediate();
   }
 
   /** Extend a live lease. Throws if the lease is not held or has expired. */
-  renew(id: string, owner: string, nowMs: number, ttlMs: number): void {
+  renew(id: string, owner: Lease, nowMs: number, ttlMs: number): void {
     this.db
       .transaction(() => {
         this.assertLease(id, owner, nowMs);
@@ -162,7 +176,7 @@ export class JobStore {
   }
 
   /** Persist cursor/checkpoint/progress durably; fenced by the live lease. Returns whether cancel was requested. */
-  checkpoint(id: string, owner: string, nowMs: number, data: CheckpointData): boolean {
+  checkpoint(id: string, owner: Lease, nowMs: number, data: CheckpointData): boolean {
     return this.db
       .transaction(() => {
         const job = this.assertLease(id, owner, nowMs);
@@ -180,13 +194,17 @@ export class JobStore {
   }
 
   /** Owner moves a running job out of `running`; releases the lease. */
-  transition(id: string, owner: string, nowMs: number, to: JobState, stopReason?: string): void {
+  transition(id: string, owner: Lease, nowMs: number, to: JobState, stopReason?: string): void {
     this.db
       .transaction(() => {
         const job = this.assertLease(id, owner, nowMs);
         this.assertEdge(job.state, to);
         if (to === "running") throw new InvalidTransitionError("use acquire to start a job");
-        this.write(id, to, stopReason ?? null);
+        this.write(
+          id,
+          job.cancelRequested ? "cancelled" : to,
+          job.cancelRequested ? "cancelled by user" : (stopReason ?? null),
+        );
       })
       .immediate();
   }
@@ -196,6 +214,9 @@ export class JobStore {
     this.db
       .transaction(() => {
         const job = this.get(id);
+        if (job.state === "running") {
+          throw new InvalidTransitionError("use the live lease to requeue a running job");
+        }
         this.assertEdge(job.state, "queued");
         if (job.state === "failed") {
           this.db.prepare("UPDATE job SET retry_count = retry_count + 1 WHERE id = ?").run(id);
@@ -249,11 +270,12 @@ export class JobStore {
     }
   }
 
-  private assertLease(id: string, owner: string, nowMs: number): Job {
+  private assertLease(id: string, owner: Lease, nowMs: number): Job {
     const job = this.get(id);
     if (
       job.state !== "running" ||
-      job.leaseOwner !== owner ||
+      job.leaseOwner !== owner.owner ||
+      job.leaseGeneration !== owner.generation ||
       job.leaseExpiresAt === null ||
       job.leaseExpiresAt <= nowMs
     ) {

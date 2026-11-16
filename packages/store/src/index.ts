@@ -10,6 +10,7 @@ export {
   UnknownJobError,
   type CheckpointData,
   type Job,
+  type Lease,
   type JobState,
   type NewJob,
 } from "./jobs.ts";

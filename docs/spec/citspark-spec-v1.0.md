@@ -13,7 +13,7 @@ status: Approved product baseline
 
 Approved product baseline. Implementation choices and numerical targets remain explicitly labeled where feasibility validation is required.
 
-> This Markdown document is the authoritative specification in this repository. It is a faithful conversion of the owner-approved v1.0 PDF. Requirement IDs are tracked in [traceability.md](traceability.md).
+> This Markdown document is the authoritative in-repo copy of the specification: a faithful transcription of the owner-approved v1.0 PDF, which the owner retains. The owner resolves any discrepancy and records it through an ADR or a spec revision. Requirement IDs are tracked in [traceability.md](traceability.md).
 
 ## Contents
 

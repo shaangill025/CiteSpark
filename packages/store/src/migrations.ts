@@ -27,7 +27,8 @@ CREATE TABLE source_version (
   completeness TEXT NOT NULL DEFAULT 'unknown',
   published_at TEXT,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-  UNIQUE (source_id, content_hash)
+  UNIQUE (source_id, content_hash),
+  UNIQUE (id, source_id)
 ) STRICT;
 
 CREATE TABLE job (
@@ -50,13 +51,14 @@ CREATE TABLE job (
 CREATE TABLE observation (
   id INTEGER PRIMARY KEY,
   source_id TEXT NOT NULL REFERENCES source(id),
-  version_id INTEGER NOT NULL REFERENCES source_version(id),
+  version_id INTEGER NOT NULL,
   job_id TEXT REFERENCES job(id),
   observed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   method TEXT NOT NULL,
   adapter_version TEXT,
   availability TEXT NOT NULL DEFAULT 'available',
-  evidence TEXT
+  evidence TEXT,
+  FOREIGN KEY (version_id, source_id) REFERENCES source_version(id, source_id)
 ) STRICT;
 
 CREATE TABLE collection (
@@ -74,7 +76,8 @@ CREATE TABLE membership (
   last_observed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   first_job_id TEXT REFERENCES job(id),
   last_job_id TEXT REFERENCES job(id),
-  PRIMARY KEY (account_id, collection_id, source_id)
+  PRIMARY KEY (account_id, collection_id, source_id),
+  FOREIGN KEY (account_id, collection_id) REFERENCES collection(account_id, id)
 ) STRICT;
 
 CREATE TABLE relationship (
@@ -187,4 +190,12 @@ CREATE TABLE backup_manifest (
 ) STRICT;
 `;
 
-export const MIGRATIONS: readonly Migration[] = [{ version: 1, name: "initial-schema", sql: V1 }];
+// Version 2 is reserved for the sibling sync-core migration (PR #18).
+export const MIGRATIONS: readonly Migration[] = [
+  { version: 1, name: "initial-schema", sql: V1 },
+  {
+    version: 3,
+    name: "job-lease-generation",
+    sql: "ALTER TABLE job ADD COLUMN lease_generation INTEGER NOT NULL DEFAULT 0;",
+  },
+];

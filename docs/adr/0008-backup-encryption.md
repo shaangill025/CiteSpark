@@ -1,6 +1,6 @@
 # 0008. Backup format and encryption
 
-Status: Decided. Throughput measured on the 8 GB M1.
+Status: Decided. Throughput measured on the 8 GB M1. Owner accepted scrypt through age (`logN = 18`) instead of Argon2id on 2026-11-16 (Q3).
 Requirements: BKP-01, BKP-02, BKP-03, SEC-04, SEC-06, SEC-08, MIG-02, Q29, Q30, T08
 
 ## Context
