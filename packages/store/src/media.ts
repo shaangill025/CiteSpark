@@ -64,9 +64,9 @@ export interface MediaFetchInit {
 }
 
 /**
- * The network boundary. Required: there is no default to the global fetch. Production callers
- * inject the guarded fetcher (M1-11: private-network, loopback and redirect validation, ENR-03);
- * tests inject a loopback-only fetch for a local synthetic server.
+ * The network boundary. Required: there is no default to the global fetch. No production fetcher
+ * is wired yet; the ENR-03 guard (private-network, loopback and redirect validation, M1-11) must be
+ * injected here before production use. Tests inject a loopback-only fetch for a synthetic server.
  */
 export type MediaFetch = (url: string, init: MediaFetchInit) => Promise<Response>;
 
