@@ -19,7 +19,7 @@ import {
 } from "./index.ts";
 
 // Synthetic media served by a loopback test server only. The loopback fetch below is a test seam;
-// production callers inject the guarded fetcher (M1-11).
+// the store applies no SSRF screening itself and no guarded media fetcher is wired yet (ENR-03).
 const sha = (b: Buffer) => createHash("sha256").update(b).digest("hex");
 const blobA = Buffer.alloc(10_000, 7);
 const blobB = Buffer.alloc(10_000, 9);

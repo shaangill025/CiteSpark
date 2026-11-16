@@ -65,9 +65,12 @@ export interface MediaFetchInit {
 }
 
 /**
- * The network boundary. Required: there is no default to the global fetch. Production callers
- * inject the guarded fetcher (M1-11: private-network, loopback and redirect validation, ENR-03);
- * tests inject a loopback-only fetch for a local synthetic server.
+ * The network boundary. Required: there is no default to the global fetch. The media store applies
+ * no SSRF screening of its own; the injected fetch is the only network guard. M1-11's
+ * `guardedFetch` (`@citspark/core`) covers linked text pages and does not yet provide a
+ * `MediaFetch` adapter (binary content types, streamed `Response`, Range), so no guarded media
+ * fetcher exists yet and none is wired; callers must inject one that screens every address
+ * (ENR-03). Tests inject a loopback-only fetch for a local synthetic server.
  */
 export type MediaFetch = (url: string, init: MediaFetchInit) => Promise<Response>;
 
