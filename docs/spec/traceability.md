@@ -108,6 +108,13 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
   write atomically under a lease. It validates the clock (non-negative safe integer) and the
   owner, generation and expiry, then runs `fn` in the same IMMEDIATE transaction (or savepoint), so
   no other connection can take over between the check and the work. `assertLease` stays private.
+  The callback is a trusted synchronous contract: its type (`SyncResult<T>`) rejects async and
+  Promise/thenable-returning callbacks at compile time; at run time an async function (any realm,
+  including async generators) is refused with a TypeError before it is invoked, and any other
+  callback that returns a Promise or thenable has its writes rolled back and is refused (a rejected
+  native Promise is marked handled; a custom `then` is never called). Work a callback schedules for
+  later (after an `await` in a bound or proxied async function, timers, callbacks) runs outside the
+  transaction and is not fenced, so callbacks must not schedule database writes.
 - MIG-02: capture bookkeeping is migration 4 (`capture-commit`). The unmerged preview numbered it 2;
   a database that recorded that preview is refused by name before backup or SQL.
 

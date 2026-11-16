@@ -19,6 +19,7 @@ export {
   type Lease,
   type JobState,
   type NewJob,
+  type SyncResult,
 } from "./jobs.ts";
 export {
   CaptureStore,
