@@ -26,8 +26,8 @@ citspark:
   schema: 1
   id: 01J9Z3S7M8Q4V6X2B5N0C1D7EF   # ULID, stable for the life of the note
   source: x:post:1849302746150912345  # namespaced source ID, string
-  kind: source | annotation | generated
-  managed: true
+  kind: source | annotation | generated | user_note
+  managed: true   # false for included user notes
 ---
 ```
 
@@ -41,18 +41,28 @@ Body sections are delimited by HTML comments, which render invisibly in Obsidian
 
 Text outside the markers belongs to the user. Edits inside the source section never change the captured original (SYN-02). They become a user-authored version for review.
 
-**State per note (`sync_binding`)**: stable note ID, vault ID, current path, base content hash and base content (the last common revision), last written hash, unlink and suppression state.
+**Included user notes (SYN-01, Q07)**: notes the user wrote, in folders the user explicitly includes, are not managed notes. They have no section markers and the whole body belongs to the user.
+
+- By default they are indexed read-only. Citspark never writes to them.
+- If the user wants two-way sync for them, Citspark shows a preview listing every file that would gain a `citspark` block (`managed: false`, `kind: user_note`, a new ULID). It writes only after the user approves. Body text is never changed by that step.
+- After that, Citspark syncs only the frontmatter keys it owns, using the same per-key merge. The body is read-only to Citspark.
+
+**State per note (`sync_binding`)**: stable note ID, vault ID, current path, base content hash and base content (the last common revision), last written hash, state (`bound`, `unlinked`, `conflict`), and whether re-creation is suppressed.
 
 **Reconcile loop**
 
 1. Scan included scope (managed notes and explicit includes, SYN-01, Q07) and read frontmatter IDs. Use chokidar events only to schedule scans (SYN-05). Always do a full reconcile at startup.
-2. Identify each file by ID first, then by content hash. Same ID at a new path is a move or rename. The same ID in two files is a duplicate and becomes a conflict. A known ID with no file is a deletion: unlink and suppress re-creation (SYN-04).
+2. Identify each file by its frontmatter ID. Same ID at a new path is a move or rename. The same ID in two files is a duplicate and becomes a conflict.
+   - Content-hash matching is a fallback only for a file with no ID, and only against bindings whose ID is missing from this scan. It must match the base hash exactly and match one binding only. Anything else is treated as a new, unbound file and listed for review, never bound automatically.
+   - A known ID with no file, where the library side has not changed since the base, is a deletion: set the binding to `unlinked` and suppress re-creation (SYN-04).
+   - A known ID with no file, where the library side has changed since the base, is a delete-versus-edit conflict. Keep the library change, do not re-create the file, and list it for review (SYN-03).
+   - A file whose ID belongs to an `unlinked` binding (for example, restored from Obsidian's trash or by a sync tool) is not re-bound automatically. It is listed for review with a choice to restore the binding, which then merges from the stored base. Restoring from Citspark's side (SYN-04) does the same.
 3. For each changed note: three-way merge base, vault, and library per section with diff3 (node-diff3, MIT). Frontmatter merges per key. Concurrent changes to the same key are a conflict, never last-write-wins (SYN-03).
 4. A clean merge writes atomically: write a temp file in the same directory, fsync, re-check the target's hash still matches what was read, then rename. If the hash changed, start over for that note.
 5. A conflict stores both variants and the base in the library, leaves the vault file untouched, and moves on to the next note.
 6. Record the written hash and a transaction ID. Watcher events for our own writes are recognized by hash and ignored, which prevents feedback loops (SYN-05).
 
-**Safety**: resolve every path with `realpath` and refuse anything outside the vault root or authorized scope (SYN-05, SEC-06). Never create or overwrite a file that is not a managed note. Trash in Citspark unlinks and suppresses the vault note but does not delete it (DAT-03, Q51).
+**Safety**: resolve every path with `realpath` and refuse anything outside the vault root or authorized scope (SYN-05, SEC-06). Never create a file outside a managed folder, and never change the body of a file that is not a managed note. Trash in Citspark unlinks and suppresses the vault note but does not delete it (DAT-03, Q51).
 
 ## Consequences
 
@@ -62,5 +72,5 @@ Text outside the markers belongs to the user. Edits inside the source section ne
 
 ## Still to validate
 
-- T04 scenarios with fast-check generated edit sequences in the M2 sync engine layer, plus a filesystem harness for rename, move, interrupted writes, and external sync tools.
+- T04 scenarios with fast-check generated edit sequences in M2-04, plus a filesystem harness in M2-05 for rename, move, delete versus edit, delete then recreate, interrupted writes, and external sync tools.
 - Atomic rename semantics on Windows when Obsidian or a sync client holds the file open.

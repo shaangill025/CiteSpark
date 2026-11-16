@@ -35,6 +35,16 @@ async function sha256Stream(s: ReadableStream<Uint8Array>): Promise<string> {
   return h.digest('hex');
 }
 
+async function bytesBeforeFailure(d: Decrypter, ciphertext: Uint8Array): Promise<number> {
+  let emitted = 0;
+  try {
+    for await (const p of await d.decrypt(once(ciphertext))) emitted += p.length;
+  } catch {
+    return emitted;
+  }
+  throw new Error(`decryption succeeded after ${emitted} bytes`);
+}
+
 const once = (b: Uint8Array) => new ReadableStream<Uint8Array>({ start: (c) => (c.enqueue(b), c.close()) });
 
 async function encryptWithPassphrase(bytes: number) {
@@ -57,27 +67,34 @@ test('T08 passphrase backup round-trips a 64 MiB stream byte-for-byte', async ()
   console.log(JSON.stringify({ bytes: 64 * MIB, ciphertextBytes: ciphertext.length, encryptMs: Math.round(encryptMs), decryptMs: Math.round(decryptMs) }));
 });
 
-test('T08 wrong passphrase is rejected before any plaintext is produced', async () => {
+test('T08 wrong passphrase fails at the header, before any plaintext', async () => {
   const { ciphertext } = await encryptWithPassphrase(MIB);
   const d = new Decrypter();
   d.addPassphrase('wrong passphrase');
-  await assert.rejects(async () => sha256Stream(await d.decrypt(once(ciphertext))));
+  assert.equal(await bytesBeforeFailure(d, ciphertext), 0);
 });
 
-test('T08 a corrupted byte in the payload fails authentication', async () => {
+// age authenticates each 64 KiB chunk as it streams, so damaged or truncated
+// archives can emit a verified prefix before failing. Restore must stage
+// output and act only after the stream ends without error.
+test('T08 a corrupted byte fails; only chunks before it are emitted', async () => {
   const { ciphertext } = await encryptWithPassphrase(4 * MIB);
   const bad = ciphertext.slice();
   bad[Math.floor(bad.length / 2)] ^= 0x01;
   const d = new Decrypter();
   d.addPassphrase(PASSPHRASE);
-  await assert.rejects(async () => sha256Stream(await d.decrypt(once(bad))));
+  const emitted = await bytesBeforeFailure(d, bad);
+  assert.ok(emitted < 4 * MIB);
+  console.log(JSON.stringify({ case: 'corrupt-middle', plaintextBytesBeforeError: emitted }));
 });
 
-test('T08 a truncated archive fails instead of restoring a prefix', async () => {
+test('T08 a truncated archive fails at the end instead of passing as complete', async () => {
   const { ciphertext } = await encryptWithPassphrase(4 * MIB);
   const d = new Decrypter();
   d.addPassphrase(PASSPHRASE);
-  await assert.rejects(async () => sha256Stream(await d.decrypt(once(ciphertext.slice(0, ciphertext.length - 70_000)))));
+  const emitted = await bytesBeforeFailure(d, ciphertext.slice(0, ciphertext.length - 70_000));
+  assert.ok(emitted < 4 * MIB);
+  console.log(JSON.stringify({ case: 'truncated-70000', plaintextBytesBeforeError: emitted }));
 });
 
 test('BKP-02 unattended schedules can encrypt to an X25519 recipient held by the OS keychain', async () => {

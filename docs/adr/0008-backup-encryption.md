@@ -23,7 +23,7 @@ Backups are optional-password encrypted, recommended by default. BKP-02 requires
 From `prototypes/backup-age` (age-encryption 0.3.1, Node 26, Apple M1 8 GB):
 
 - 64 MiB streamed through passphrase encryption in 1.35 s and decryption in 1.21 s (about 50 MB/s each way, single thread). Ciphertext overhead was 16,550 bytes (0.02%).
-- Wrong passphrase, one flipped byte, and truncation by 70,000 bytes all failed with an error. None returned a plaintext prefix.
+- Wrong passphrase, one flipped byte, and truncation by 70,000 bytes all failed with an error. A wrong passphrase fails at the header before any plaintext. A flipped byte or truncation fails only when the stream reaches the damaged chunk or the missing end: 64 KiB and 256 KiB of earlier, authenticated plaintext had already been emitted.
 - An X25519 recipient round-trip worked, which is the unattended schedule path.
 
 ## Decision
@@ -32,7 +32,7 @@ From `prototypes/backup-age` (age-encryption 0.3.1, Node 26, Apple M1 8 GB):
 - **Encrypted backups**: the same tar wrapped in age v1. File extension `.citspark.tar.age`. Plaintext backups are `.citspark.tar`.
 - **Password mode**: age's scrypt recipient. When a passphrase is used it must be the only recipient (age requires this). Work factor `logN = 18` by default, tuned so derivation takes about 1 s on the reference machine.
 - **Unattended schedules**: generate an X25519 identity, keep it in the OS credential store through Electron `safeStorage`, and encrypt scheduled backups to its recipient. Offer a recovery kit: the identity, itself age-encrypted with a user passphrase, saved where the user chooses. Disclose that anyone with the user's OS session can decrypt scheduled backups (BKP-02).
-- **Restore**: decrypt as a stream into a staging directory, reject absolute paths, `..`, symlinks, and device entries (SEC-06), enforce size quotas, verify every hash against the manifest, then open the snapshot in a fresh library. Only switch after verification (MIG-02).
+- **Restore**: decrypt as a stream into a staging directory. While extracting, reject absolute paths, `..`, symlinks, and device entries (SEC-06) and enforce size quotas. A damaged or truncated archive emits a valid prefix before it fails, so nothing in staging is used until the decrypt stream has ended without error. Then verify every hash against the manifest and open the snapshot in a fresh library. Only switch after verification (MIG-02).
 - **Retention**: see `docs/f0/resolved-engineering-details.md`.
 
 ## Consequences
@@ -44,5 +44,5 @@ From `prototypes/backup-age` (age-encryption 0.3.1, Node 26, Apple M1 8 GB):
 
 ## Still to validate
 
-- Full T08: restore into a fresh installation with annotations, policy scopes, relationships, and cited snapshots; missing media; unavailable destination (M2 backup layer).
-- Throughput on large media sets and on the slowest supported CPU (M5 compatibility).
+- Full T08: restore into a fresh installation with annotations, policy scopes, relationships, and cited snapshots; missing media; unavailable destination (M2-08).
+- Throughput on large media sets and on the slowest supported CPU (M5-02).

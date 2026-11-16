@@ -18,6 +18,8 @@ Q33: original Citspark code is Apache-2.0. Dependencies and models keep their ow
 | node-diff3 | three-way merge | MIT | 4.0.0 | Yes | |
 | chokidar | file watching | MIT | 6.0.0 | Yes | |
 | age-encryption (typage) | backup encryption | BSD-3-Clause | 0.3.1 | Yes | Used by `prototypes/backup-age`. |
+| noise-handshake (candidate) | IPC channel (ADR 0006) | Apache-2.0 | 4.2.1 | Yes | PROPOSED. Must accept a WebCrypto key-agreement callback and run in an MV3 service worker. |
+| @chainsafe/libp2p-noise (candidate) | IPC channel (ADR 0006) | Apache-2.0 OR MIT | 17.0.0 | Yes | PROPOSED alternative. Tied to libp2p stream types; may need an adapter. |
 | tar-stream | backup container | MIT | | Yes | |
 | llama.cpp (`llama-server`) | local generation and embeddings | MIT | 1.0.0 | Yes | Prebuilt binaries per OS and backend. |
 | whisper.cpp | transcription | MIT | 1.9.5 | Yes | |

@@ -53,4 +53,4 @@ Credential disclosure (SEC-04) gets its own blocking check: a scanner runs over 
 
 ## Still to validate
 
-- Windows crash injection equivalent to SIGKILL (M1 store layer on the Windows runner).
+- Windows crash injection equivalent to SIGKILL (M1-04 on the Windows runner).

@@ -16,15 +16,15 @@ F0 (spec §14, milestone M0) produces measured prototypes, a license inventory, 
 
 | F0 test | Result | Evidence |
 |---|---|---|
-| Capture restart, synthetic fixtures | **Pass** | T01 prototype: 14 tests, SIGKILL at 9 points, mutation check (`benchmarks.md`) |
+| Capture restart, synthetic fixtures | **Pass (process crash)** | T01 prototype: 15 tests, SIGKILL at 9 points, mutation check (`benchmarks.md`) |
 | Capture restart, real authorized samples | Not run | Needs owner-run capture (blockers B8) |
 | Cross-platform packaging without developer tools | Not run | macOS only here (B1, B2) |
 | Plugin pairing | Designed | ADR 0006; T06 suite in M1-06 and M2-09 (B6) |
 | Vault rename and conflict handling | Designed | ADR 0007; T04 in M2-04 and M2-05 (B7) |
-| 100,000-post search on the 8 GB reference setup | **Pass (keyword, macOS)** | Warm p95 54.9 ms vs PROPOSED 1 s target on M1 8 GB. Vector scan p95 201 ms at 216k chunks. Windows 8 GB and true cold cache open (B3). |
+| 100,000-post search on the 8 GB reference setup | **Pass (keyword, macOS)** | Ranked keyword warm p95 66.6 ms (worst shape 107 ms) vs PROPOSED 1 s target on M1 8 GB. Vector scan p95 125 ms (int8) at 216k chunks. Windows 8 GB and true cold cache open (B3). |
 | Local generation and tool-use model quality | Not run | Needs frozen evaluation set (B4) |
 | OCR and transcription resource behavior | Not run | Needs media fixtures and models (B5) |
-| Encryption and restore | **Pass (encryption)** | age round-trip, wrong password, corruption, truncation. Full restore in M2-08. |
+| Encryption and restore | **Pass (encryption)** | age round-trip; wrong password, corruption, and truncation fail (damaged archives emit a verified prefix first, so restore stages output). Full restore in M2-08. |
 | License compatibility | **Pass (candidates)** | `license-inventory.md`. CI enforcement from M1-01. |
 
 No launch requirement is dropped. Everything not run has a layer that must pass it.

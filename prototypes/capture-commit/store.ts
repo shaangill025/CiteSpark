@@ -91,9 +91,15 @@ export function acquireLease(db: DatabaseSync, jobId: string, owner: string, now
   const r = db
     .prepare(
       `UPDATE job SET lease_owner = ?, lease_expires_at = ?
-       WHERE id = ? AND (lease_owner IS NULL OR lease_owner = ? OR lease_expires_at < ?)`,
+       WHERE id = ? AND (lease_owner IS NULL OR lease_owner = ? OR lease_expires_at < ?)
+         AND NOT EXISTS (
+           SELECT 1 FROM job other, job me
+           WHERE me.id = ? AND other.id <> me.id
+             AND other.account_id = me.account_id AND other.collection_id = me.collection_id
+             AND other.lease_owner IS NOT NULL AND other.lease_owner <> ? AND other.lease_expires_at >= ?
+         )`,
     )
-    .run(owner, nowMs + ttlMs, jobId, owner, nowMs);
+    .run(owner, nowMs + ttlMs, jobId, owner, nowMs, jobId, owner, nowMs);
   return r.changes === 1;
 }
 

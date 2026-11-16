@@ -23,14 +23,14 @@ From `prototypes/vector-scan` (single JavaScript thread, random unit vectors, 38
 
 | Vectors | Format | Memory | p50 | p95 |
 |---|---|---|---|---|
-| 100,000 | float32 | 153.6 MB | 39.8 ms | 64.9 ms |
-| 100,000 | int8 | 38.4 MB | 41.2 ms | 69.4 ms |
-| 216,283 | float32 | 332 MB | 89.9 ms | 201 ms |
-| 216,283 | int8 | 83 MB | 87.4 ms | 150.6 ms |
+| 100,000 | float32 | 153.6 MB | 38.2 ms | 43.0 ms |
+| 100,000 | int8 + per-vector scale | 38.8 MB | 39.7 ms | 43.5 ms |
+| 216,283 | float32 | 332 MB | 87.2 ms | 144 ms |
+| 216,283 | int8 + per-vector scale | 83.9 MB | 84.9 ms | 125 ms |
 
-- int8 top-20 overlap with exact float32 was 0.97 on random vectors. Random vectors say nothing about real retrieval quality.
+- int8 with one scale per vector, applied to each score: top-20 overlap with exact float32 was 0.99 (100k) and 0.98 (216k) on random vectors. Random vectors say nothing about real retrieval quality.
 - The scan is compute-bound scalar JavaScript, not memory-bound (332 MB in 90 ms is about 3.7 GB/s).
-- Inferred hybrid budget at 216k chunks: keyword p95 55 ms plus vector p95 about 200 ms plus query embedding (not measured). Well under 3 s.
+- Inferred hybrid budget at 216k chunks: ranked keyword p95 about 67 ms (worst shape 107 ms) plus vector p95 about 125 to 145 ms plus query embedding (not measured). Well under 3 s.
 
 ## Decision
 
@@ -47,4 +47,4 @@ From `prototypes/vector-scan` (single JavaScript thread, random unit vectors, 38
 ## Still to validate
 
 - PROPOSED: retrieval quality of the chosen embedding model and int8 quantization on the frozen evaluation set (T10, M4).
-- Query embedding latency on the reference machine (M3 embeddings layer).
+- Query embedding latency on the reference machine (M3-03).

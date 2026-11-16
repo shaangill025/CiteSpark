@@ -44,6 +44,6 @@ Hardening defaults: `contextIsolation: true`, `sandbox: true`, `nodeIntegration:
 
 ## Still to validate
 
-- PROPOSED: idle and search-time memory of the packaged app on the 8 GB reference machine, measured in the M2 shell layer.
+- PROPOSED: idle and search-time memory of the packaged app on the 8 GB reference machine, measured in M2-01.
 - PROPOSED: screen-reader behavior on Windows (NVDA, Narrator), macOS (VoiceOver), and Linux (Orca) for the T13 workflows.
 - Code signing and notarization need owner-procured certificates. See `docs/f0/blockers.md`.

@@ -55,7 +55,7 @@ Exact model names per provider are chosen at M4 and recorded with the frozen eva
 |---|---|
 | Obsidian desktop (macOS, Windows, Linux) | Planned. Connects over the local socket (ADR 0006). |
 | Obsidian mobile | Not supported. The plugin is desktop-only (`isDesktopOnly: true`). Mobile edits reach Citspark through the user's vault sync (Q08). |
-| Minimum Obsidian version | PROPOSED: 1.6 or later; fixed in the M2 plugin layer. |
+| Minimum Obsidian version | PROPOSED: 1.6 or later; fixed in M2-09. |
 | Plugin-free sync | Required (SYN-01). Works with the plugin disabled. |
 | States shown | disconnected, unpaired, incompatible, desktop not running (PLG-02). |
 | Community directory | Owner decision. Publishing is not authorized by the spec. Must follow Obsidian developer policies (network use disclosed, no telemetry, no obfuscation). |

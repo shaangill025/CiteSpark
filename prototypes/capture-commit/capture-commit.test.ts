@@ -149,6 +149,21 @@ test('a capture owner whose lease was taken over cannot commit', () => {
   });
 });
 
+test('a second job for the same account and collection cannot take a lease while the first is live', () => {
+  withDb((path) => {
+    const db = openStore(path);
+    createJob(db, 'job-1', ACCOUNT, COLLECTION);
+    createJob(db, 'job-2', ACCOUNT, COLLECTION);
+    createJob(db, 'job-3', ACCOUNT, 'x:collection:other');
+    assert.ok(acquireLease(db, 'job-1', 'owner-a', T0, 60_000));
+    assert.ok(!acquireLease(db, 'job-2', 'owner-b', T0 + 1, 60_000));
+    assert.throws(() => commitPage(db, 'job-2', 'owner-b', T0 + 2, allPages()[0]), LeaseLostError);
+    assert.ok(acquireLease(db, 'job-3', 'owner-b', T0 + 1, 60_000));
+    assert.ok(acquireLease(db, 'job-2', 'owner-b', T0 + 61_000, 60_000));
+    db.close();
+  });
+});
+
 test('a page from a different account is refused before any write (CAP-02)', () => {
   withDb((path) => {
     const db = openStore(path);

@@ -36,7 +36,9 @@ Inspected at pinned commits through the GitHub API and package manifests. No cod
 Option 3.
 
 - **Adapter interface:** a versioned `CaptureAdapter` (`id`, `version`, `detectAccount`, `listCollections`, `parsePage`, `nextRequest`) in `packages/capture-x`. Parsing is pure TypeScript over JSON, tested against synthetic fixtures modeled on the documented response shapes.
-- **Capture model:** the content script runs in the X page. It observes X's own responses to learn current request templates, then pages through collections with `fetch` from the page context so the browser attaches the session. The extension never reads, stores, or forwards cookies or tokens. No header rewriting. No embedded tokens.
+- **Capture model: passive interception with automated scrolling.** A page-context script observes the responses to X's own requests for the open collection and hands each response body to the parser. The extension scrolls the page to make X load the next page, so X's own code sends every request with whatever headers it normally uses. The extension never builds a request, and never reads, stores, or forwards cookies, bearer tokens, or CSRF tokens. No header rewriting. No embedded tokens.
+- **Why not active paging:** X's web API needs an `authorization` bearer header and an `x-csrf-token` that matches the `ct0` cookie, and the browser attaches neither on its own. Sending our own `fetch` calls would mean copying those values, which is what Option 2 was rejected for.
+- **Cursor and resume:** each intercepted response carries the cursor that X sent and the cursor it returned, and the desktop commits it atomically (CAP-03). After a restart, X's cursors from the earlier session cannot be reused without building requests. So a resumed job scrolls from the top of the collection again. Committed pages are replayed as no-ops (T01). The job reports "catching up" until it reaches records it has not committed, then continues.
 - **Rate limiting:** a conservative pacer with jitter, backoff on 429 and errors, a daily page budget, and a visible pause (CAP-05). Stop on any account mismatch (CAP-02).
 - **Pages to the desktop:** each parsed page goes over native messaging (ADR 0006) with its account identity, collection, cursor in, and cursor out. The desktop commits atomically (CAP-03). The extension keeps only in-memory job state.
 - **Import:** implement xarchive's export format as the first importer (MIG-01, Q38), with preview before commit and the same idempotent commit path.
@@ -45,11 +47,14 @@ Option 3.
 ## Consequences
 
 - More initial work than a fork. In exchange, the capture path meets SEC-04 and CAP-05 and has tests from day one.
+- Passive capture needs an open X tab and is paced by scrolling. Resuming a large collection re-reads its committed part, which costs time and rate budget. The pacer counts these requests against the budget.
+- Capture-commit replay rules must accept a fresh pass over the same collection under new cursors. The F0 prototype rejects a replayed page whose continuation differs. M1-04 must key replay checks on the pass as well as the cursor.
 - X changes break parsing. Adapter version and fixture tests make breakage visible. The adapter is the only component that knows X's shapes.
 - Attribution for any copied parsing logic goes into NOTICE with the source commit.
 
 ## Still to validate
 
 - Owner confirmation that `sytelus/xarchive` is the intended project (see `docs/f0/blockers.md`).
+- That passive capture with automated scrolling reaches the end of large bookmark, folder, and like collections in a real authorized session. Owner-run check before M1-08 merges.
 - Real authorized capture samples. F0 used synthetic fixtures only. T01 restart tests with real samples need the owner to run capture against their own account.
 - Per-dependency license check of twitter-web-exporter if any code is copied rather than referenced.

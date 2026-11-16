@@ -52,6 +52,6 @@ tesseract.js (Apache-2.0, WASM, no native install) versus native Tesseract (Apac
 
 ## Still to validate
 
-- PROPOSED: generation and tool-use quality on the frozen evaluation set (T10, M4 evaluation layer). Not run in F0: multi-gigabyte downloads and no evaluation set yet.
-- PROPOSED: OCR and transcription peak memory and throughput on the reference machine (M3 OCR and transcription layers).
+- PROPOSED: generation and tool-use quality on the frozen evaluation set (T10, M4-06). Not run in F0: multi-gigabyte downloads and no evaluation set yet.
+- PROPOSED: OCR and transcription peak memory and throughput on the reference machine (M3-05, M3-06).
 - Whether the chosen `llama-server` build supports Unix sockets on every OS.

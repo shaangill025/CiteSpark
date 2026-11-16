@@ -98,6 +98,9 @@ const timeOne = (q: Query) => {
 for (const q of queries) timeOne(q);
 errors = zeroResult = rowsReturned = 0;
 for (const k of Object.keys(zeroByKind)) delete zeroByKind[k];
+const ranked = (q: Query) => q.kind !== 'exact-id' && q.kind !== 'substring';
+const split = { filtered: [] as number[], unfiltered: [] as number[] };
+const latencyByQuery = new Map<Query, number[]>();
 for (let run = 0; run < Number(args.runs); run++) {
   const all: number[] = [];
   for (const q of queries) {
@@ -105,16 +108,37 @@ for (let run = 0; run < Number(args.runs); run++) {
     all.push(ms);
     if (!byKind.has(q.kind)) byKind.set(q.kind, []);
     byKind.get(q.kind)!.push(ms);
+    if (ranked(q)) {
+      split[q.filtered ? 'filtered' : 'unfiltered'].push(ms);
+      if (!latencyByQuery.has(q)) latencyByQuery.set(q, []);
+      latencyByQuery.get(q)!.push(ms);
+    }
   }
   perRun.push({ p50: pct(all, 50), p95: pct(all, 95) });
   byKind.set('all', [...(byKind.get('all') ?? []), ...all]);
   peakRss = Math.max(peakRss, process.memoryUsage().rss);
 }
 
-const filteredSplit = (filtered: boolean) => {
-  const xs: number[] = [];
-  for (let run = 0; run < Number(args.runs); run++) for (const q of queries) if (q.filtered === filtered && q.kind !== 'exact-id' && q.kind !== 'substring') xs.push(timeOne(q));
-  return summary(xs);
+// Ranked FTS latency vs. number of matching chunks (unfiltered queries, median of the timed runs).
+const matchCount = db.prepare('SELECT count(*) n FROM chunk_fts WHERE chunk_fts MATCH ?');
+const points = [...latencyByQuery]
+  .filter(([q]) => !q.filtered)
+  .map(([q, xs]) => ({ kind: q.kind, matches: (matchCount.get(q.match) as { n: number }).n, ms: pct(xs, 50) }));
+const pearson = (xs: number[], ys: number[]) => {
+  const mx = xs.reduce((a, b) => a + b, 0) / xs.length;
+  const my = ys.reduce((a, b) => a + b, 0) / ys.length;
+  let c = 0, vx = 0, vy = 0;
+  for (let i = 0; i < xs.length; i++) {
+    c += (xs[i] - mx) * (ys[i] - my);
+    vx += (xs[i] - mx) ** 2;
+    vy += (ys[i] - my) ** 2;
+  }
+  return c / Math.sqrt(vx * vy);
+};
+const limiter = {
+  n: points.length,
+  pearsonMatchesVsMedianMs: pearson(points.map((p) => p.matches), points.map((p) => p.ms)),
+  topByMatches: [...points].sort((a, b) => b.matches - a.matches).slice(0, 5),
 };
 
 const report = round({
@@ -144,9 +168,10 @@ const report = round({
     peakRssBytes: peakRss,
     perRun,
     byKind: Object.fromEntries([...byKind].map(([k, xs]) => [k, summary(xs)])),
-    unfiltered: filteredSplit(false),
-    filtered: filteredSplit(true),
+    rankedUnfiltered: summary(split.unfiltered),
+    rankedFiltered: summary(split.filtered),
   },
+  limiter,
 });
 db.close();
 const out = args.out ?? join(import.meta.dirname, 'results', `fts5-${spec.posts}.json`);

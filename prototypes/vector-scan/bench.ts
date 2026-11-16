@@ -34,10 +34,20 @@ function unitVectors(n: number, seed: number): Float32Array {
   return out;
 }
 
-function quantize(v: Float32Array): Int8Array {
+// Symmetric int8 with one scale per vector (ADR 0003): x ≈ q * scale, scale = maxAbs / 127.
+function quantize(v: Float32Array): { q: Int8Array; scale: Float32Array } {
+  const n = v.length / DIM;
   const q = new Int8Array(v.length);
-  for (let i = 0; i < v.length; i++) q[i] = Math.max(-127, Math.min(127, Math.round(v[i] * 127 * 4)));
-  return q;
+  const scale = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const o = i * DIM;
+    let maxAbs = 0;
+    for (let d = 0; d < DIM; d++) maxAbs = Math.max(maxAbs, Math.abs(v[o + d]));
+    const s = maxAbs > 0 ? maxAbs / 127 : 1;
+    scale[i] = s;
+    for (let d = 0; d < DIM; d++) q[o + d] = Math.round(v[o + d] / s);
+  }
+  return { q, scale };
 }
 
 function topK(scores: Float32Array): number[] {
@@ -68,12 +78,12 @@ function scanF32(base: Float32Array, n: number, q: Float32Array, scores: Float32
   return topK(scores);
 }
 
-function scanI8(base: Int8Array, n: number, q: Int8Array, scores: Float32Array): number[] {
+function scanI8(base: Int8Array, baseScale: Float32Array, n: number, q: Int8Array, scores: Float32Array): number[] {
   for (let i = 0; i < n; i++) {
     let s = 0;
     const o = i * DIM;
     for (let d = 0; d < DIM; d++) s += base[o + d] * q[d];
-    scores[i] = s;
+    scores[i] = s * baseScale[i];
   }
   return topK(scores);
 }
@@ -93,17 +103,17 @@ for (const n of SIZES) {
   for (let q = 0; q < QUERIES; q++) {
     const qv = qs.subarray(q * DIM, (q + 1) * DIM);
     scanF32(base, n, qv, scores);
-    scanI8(base8, n, quantize(qv), scores);
+    scanI8(base8.q, base8.scale, n, quantize(qv).q, scores);
   }
   for (let run = 0; run < RUNS; run++) {
     for (let q = 0; q < QUERIES; q++) {
       const qv = qs.subarray(q * DIM, (q + 1) * DIM);
-      const q8 = quantize(qv);
+      const q8 = quantize(qv).q;
       let t = performance.now();
       const exact = scanF32(base, n, qv, scores);
       times.f32.push(performance.now() - t);
       t = performance.now();
-      const approx = scanI8(base8, n, q8, scores);
+      const approx = scanI8(base8.q, base8.scale, n, q8, scores);
       times.i8.push(performance.now() - t);
       checksum += exact[0] + approx[0];
       if (run === 0) overlap += approx.filter((i) => exact.includes(i)).length / K;
@@ -113,7 +123,7 @@ for (const n of SIZES) {
     vectors: n,
     dim: DIM,
     f32Bytes: base.byteLength,
-    i8Bytes: base8.byteLength,
+    i8Bytes: base8.q.byteLength + base8.scale.byteLength,
     f32Ms: { n: times.f32.length, p50: r2(pct(times.f32, 50)), p95: r2(pct(times.f32, 95)), max: r2(Math.max(...times.f32)) },
     i8Ms: { n: times.i8.length, p50: r2(pct(times.i8, 50)), p95: r2(pct(times.i8, 95)), max: r2(Math.max(...times.i8)) },
     i8Top20OverlapWithExact: r2(overlap / QUERIES),

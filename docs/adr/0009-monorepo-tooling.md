@@ -22,7 +22,7 @@ Four deliverables share types and protocol schemas: the desktop app, the browser
 - **pnpm workspaces** with catalogs for shared versions. CI installs with `--frozen-lockfile`. Node LTS pinned in `.nvmrc` and `engines`.
 - **Layout**
 
-```
+```text
 apps/
   desktop/          Electron main, preload, renderer
   extension/        MV3 extension
@@ -57,4 +57,4 @@ fixtures/           synthetic fixtures only
 
 ## Still to validate
 
-- The M1 scaffold layer proves install, build, lint, and test from a clean clone on macOS, Windows, and Linux CI runners.
+- M1-01 proves install, build, lint, and test from a clean clone on macOS, Windows, and Linux CI runners.
