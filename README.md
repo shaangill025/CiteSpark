@@ -35,8 +35,8 @@ Foundation libraries merged on `main`, each with unit or property tests on synth
   (M2-04; T04 property tests in `packages/sync/src/t04.property.test.ts`)
 
 Not yet merged on main: the browser extension and live capture (M1-08), native backup and vault imports, media,
-desktop app, vault file sync, backups, saved-library search and retrieval, citations, and AI answers. See the
-[traceability matrix](docs/spec/traceability.md) for per-requirement status.
+linked sources, trash, the desktop app, vault file sync, backups, saved-library search and retrieval, citations, and
+AI answers. See the [traceability matrix](docs/spec/traceability.md) for per-requirement status.
 
 | Milestone | Scope | Status |
 | --- | --- | --- |
