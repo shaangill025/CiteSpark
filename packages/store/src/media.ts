@@ -333,8 +333,12 @@ export class MediaStore {
    */
   async download(id: number, ctx: LeaseContext): Promise<DownloadOutcome> {
     const run: Run = { ...ctx, renewedAt: Number.NEGATIVE_INFINITY };
-    // A stale or forged token throws here, before any network or file work.
-    const claim = this.fenced(run, () => this.claimRow(run, this.row(id)));
+    // A stale or forged token throws here, before any network or file work. A stopped (`failed`)
+    // entry is not claimed or fetched by a direct call; only its own job's run resumes it.
+    const claim = this.fenced(run, () => {
+      const row = this.row(id);
+      return row.state === "failed" ? "failed" : this.claimRow(run, row);
+    });
     if (typeof claim === "string") return claim;
     return this.downloadIn(claim);
   }
@@ -699,12 +703,16 @@ export class MediaStore {
         const start = m ? Number(m[1]) : NaN;
         const last = m ? Number(m[2]) : NaN;
         const size = m && m[3] !== "*" ? Number(m[3]) : null;
+        // The representation length known from this response or, for `bytes a-b/*`, saved earlier.
+        const known = size ?? d.total_bytes;
         if (
           !m ||
+          !Number.isSafeInteger(last + 1) || // the exclusive end must be exact too
+          (size !== null && !Number.isSafeInteger(size)) ||
           have === 0 ||
           start !== have ||
           last < start ||
-          (size !== null && last >= size) ||
+          (known !== null && last >= known) ||
           (size !== null && d.total_bytes !== null && size !== d.total_bytes) ||
           (length !== null && length !== last - start + 1)
         ) {
@@ -807,6 +815,10 @@ export class MediaStore {
             .run(written, id),
         );
         return "more";
+      }
+      // A known representation length must be matched exactly before anything is published.
+      if (total !== null && written !== total) {
+        return this.record(at, "pending", { error: "length mismatch", reset: true });
       }
       return this.finalizeOrPause(at, written);
     } finally {
