@@ -15,6 +15,8 @@ export const HelloSchema = z.strictObject({
   type: z.literal("hello"),
   versions: VersionRangeSchema,
   client: z.strictObject({ kind: ClientKindSchema, version: z.string().min(1).max(64) }),
+  /** `pair` runs Noise XX plus the 6-digit code; `session` runs Noise IK with paired keys (ADR 0011). */
+  channel: z.enum(["pair", "session"]),
 });
 export type Hello = z.infer<typeof HelloSchema>;
 
@@ -28,6 +30,7 @@ export const HelloErrorSchema = z.strictObject({
   error: ProtocolErrorSchema,
 });
 export const HelloReplySchema = z.discriminatedUnion("type", [HelloOkSchema, HelloErrorSchema]);
+export type HelloReply = z.infer<typeof HelloReplySchema>;
 
 export const RequestIdSchema = z.string().min(1).max(128);
 
