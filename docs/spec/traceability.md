@@ -10,15 +10,15 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 
 | ID | Summary | Milestone | Acceptance tests | Plan layers | Status | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| CAP-01 | Versioned capture adapters; audited collector evaluation | F0, M1 | T01, T02 | M1-07, M1-08 | not started | F0 licence/dependency audit of xarchive and twitter-web-exporter. F0: ADR 0005; collector licence, dependency, and network audit in `docs/f0/license-inventory.md` |
+| CAP-01 | Versioned capture adapters; audited collector evaluation | F0, M1 | T01, T02 | M1-07, M1-08 | in progress | M1-07: versioned `CaptureAdapter` in `packages/capture-x` (passive parse, ADR 0005; synthetic fixtures); real-session capture unvalidated. F0 licence/dependency audit of xarchive and twitter-web-exporter. F0: ADR 0005; collector licence, dependency, and network audit in `docs/f0/license-inventory.md` |
 | CAP-02 | String platform IDs; account-bound membership; account-switch pause | M1 | T01, T02 | M1-02, M1-04 | in progress | M1-02: string IDs and account-scoped membership schema (`packages/store`); account-switch pause pending. F0: `prototypes/capture-commit` (account-bound page refused; distinct platform IDs) |
 | CAP-03 | Atomic record+cursor commit; idempotent replay; lease | M1 | T01 | M1-03, M1-04 | not started | F0: `prototypes/capture-commit` (atomic page + cursor commit, replay no-op, leases) |
 | CAP-04 | Pause/resume/cancel and failure outcomes; loop, schema, disk detection | M1 | T02, T15 | M1-03, M2-02, M2-11, M2-12 | not started |  |
 | CAP-05 | Retry-After, bounded backoff, no auth bypass | M1 | T02 | M1-08, M2-11 | not started |  |
 | CAP-06 | Honest 'complete' definition and termination evidence | M1 | T02 | M1-03, M1-04 | not started | F0: `prototypes/capture-commit` (continuation mismatch rejected) |
-| CAP-07 | Pause honestly when X changes; library stays usable | M1 | T02 | M1-07, M1-08 | not started | F0: ADR 0005 (passive capture; real-session check owner-run, Q6) |
-| CAP-08 | Thread continuations: identity, order, flagged uncertainty | M1 | T02, T03 | M1-07 | not started |  |
-| CAP-09 | Original vs translation text kept separate | M1 | T03 | M1-07, M3-11 | not started |  |
+| CAP-07 | Pause honestly when X changes; library stays usable | M1 | T02 | M1-07, M1-08 | in progress | M1-07: unsupported X schema and control-only pages return `paused`, never ok/complete; job-level pause and UI pending. F0: ADR 0005 (passive capture; real-session check owner-run, Q6) |
+| CAP-08 | Thread continuations: identity, order, flagged uncertainty | M1 | T02, T03 | M1-07 | in progress | M1-07: confirmed vs uncertain thread membership, other authors excluded, unavailable ancestry and gaps flagged (synthetic fixtures); end-to-end T02/T03 pending |
+| CAP-09 | Original vs translation text kept separate | M1 | T03 | M1-07, M3-11 | in progress | M1-07: original text and translation kept as separate fields (synthetic fixtures); storage and citation attribution pending |
 | ENR-01 | Linked posts/articles as separate sources; no recursive crawl | M1 | T15 | M1-11 | not started |  |
 | ENR-02 | Link provenance fields; explicit gaps | M1 | T02, T03 | M1-11 | not started |  |
 | ENR-03 | SSRF/local-file blocking; size/time/type limits; sanitization | M1 | T02 | M1-11 | not started | Security review in M5 (SEC-06/07) |
@@ -77,7 +77,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | --- | --- | --- | --- | --- | --- |
 | T01 | Capture replay | M1 | M1-04 | not started | F0 prototype: 15 passing tests in `prototypes/capture-commit` (synthetic; production port in M1-04) |
 | T02 | Coverage honesty | M1 | M1-08 | not started | — |
-| T03 | Attribution | M1, M3 | M1-07, M3-11, M4-05 | not started | ADR 0010 |
+| T03 | Attribution | M1, M3 | M1-07, M3-11, M4-05 | in progress | ADR 0010 |
 | T04 | Sync | M2 | M2-04, M2-05 | in progress | M2-04: seeded fast-check property tests (`packages/sync/src/t04.property.test.ts`): random concurrent edit sequences never lose user text; same-key metadata changes conflict. Filesystem harness pending (M2-05) |
 | T05 | Privacy | M3, M4 | M3-04 | not started | — |
 | T06 | Pairing | M2 | M1-06, M2-09 | not started | ADR 0006 |
@@ -120,9 +120,9 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | Q12 | AI-01, AI-04 | M4 | M4-04 | not started |
 | Q13 | AI-02 | M4 | M4-03 | not started |
 | Q14 | AI-01, AI-07 | M4 | whole plan | not started |
-| Q15 | CAP-01 | M1 | M1-07, M2-12 | not started |
+| Q15 | CAP-01 | M1 | M1-07, M2-12 | in progress |
 | Q16 | ENR-01 | M1 | M1-11 | not started |
-| Q17 | CAP-08 | M1 | M1-07 | not started |
+| Q17 | CAP-08 | M1 | M1-07 | in progress |
 | Q18 | MED-01, MED-02 | M1, M3 | M3-05, M3-06 | not started |
 | Q19 | MED-03 | M3 | M3-05 | not started |
 | Q20 | T14 | M5 | M1-08, M5-02 | not started |
