@@ -809,6 +809,10 @@ export class MediaStore {
         );
         return "more";
       }
+      // A known representation length must be matched exactly before anything is published.
+      if (total !== null && written !== total) {
+        return this.record(at, "pending", { error: "length mismatch", reset: true });
+      }
       return this.finalizeOrPause(at, written);
     } finally {
       abort.abort(); // cancel any unread body on every exit path
