@@ -132,6 +132,9 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
   by rename and a lost attempt's recorded prefix by copy, then unlinks the old path, so a stale
   open or write can reach only an orphaned file. The fetch boundary is required and redirects are never followed by the media store.
 - MIG-02: the media store is migration 5 after published 1-4; numbers are never reused.
+- Test hygiene: the one `guardrails-disable-line` in `media.test.ts` marks a false positive on the
+  loopback fixture's partial write of fixed synthetic PNG bytes (not Express, no echo, no HTML). No
+  file, rule or global scanner exclusion is added.
 
 ## Acceptance tests
 
