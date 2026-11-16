@@ -422,7 +422,7 @@ describe("relationship identifiers (CAP-02, CAP-07 review regressions)", () => {
       ]);
     };
     for (const field of fields) {
-      for (const bad of [1900000000000000901, "", true, {}]) {
+      for (const bad of [1900000000000000, "", true, {}]) {
         expect(xAdapter.parsePage(page({ [field]: bad }), bookmarks)).toMatchObject({
           status: "paused",
           reason: "unsupported_schema",
@@ -467,5 +467,55 @@ describe("quoted translation attribution (CAP-09 review regressions)", () => {
         origin: "x-translation",
       },
     });
+  });
+});
+
+describe("thread order and ancestry evidence (CAP-08 review regressions)", () => {
+  const R = "1900000000000000921";
+  const S = "1900000000000000922";
+  const T = "1900000000000000923";
+
+  function modulePage(items: [string, unknown][]): ParsedPage {
+    return okPage(
+      bookmarksBody([
+        {
+          type: "TimelineAddEntries",
+          entries: [moduleEntry(`conversationthread-${R}`, items), cursor("Bottom", "SYNTH")],
+        },
+      ]) as object,
+    );
+  }
+
+  test("confirmed sequence follows reply ancestry, not raw module order (F2)", () => {
+    const page = modulePage([
+      [`m-${R}`, tweet(R, null, R)],
+      [`m-${T}`, tweet(T, S, R)],
+      [`m-${S}`, tweet(S, R, R)],
+    ]);
+    expect(post(page, R).thread).toEqual({ rootId: R, sequence: 0, membership: "confirmed" });
+    expect(post(page, S).thread).toEqual({ rootId: R, sequence: 1, membership: "confirmed" });
+    expect(post(page, T).thread).toEqual({ rootId: R, sequence: 2, membership: "confirmed" });
+
+    // Two confirmed replies to the same parent: order between them is unproven, so flag it.
+    const branched = modulePage([
+      [`m-${R}`, tweet(R, null, R)],
+      [`m-${S}`, tweet(S, R, R)],
+      [`m-${T}`, tweet(T, R, R)],
+    ]);
+    expect(post(branched, R).thread?.sequence).toBe(0);
+    expect(post(branched, S).thread).toEqual({
+      rootId: R,
+      sequence: null,
+      membership: "confirmed",
+    });
+    expect(post(branched, T).thread).toEqual({
+      rootId: R,
+      sequence: null,
+      membership: "confirmed",
+    });
+    expect(branched.threads[0]?.flags).toEqual([
+      `ambiguous_sequence:${S}`,
+      `ambiguous_sequence:${T}`,
+    ]);
   });
 });

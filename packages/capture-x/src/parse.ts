@@ -206,36 +206,46 @@ function resolveThread(
   const root = first.post;
   const rootId = rootUnavailable ? (root.conversationId ?? root.inReplyToId ?? root.id) : root.id;
   const ids = new Set(items.map((i) => i.post.id));
-  const confirmed = new Set<string>(rootUnavailable ? [] : [root.id]);
+  // Confirmed post ID -> depth along the proven reply chain from the root.
+  const confirmed = new Map<string, number>(rootUnavailable ? [] : [[root.id, 0]]);
   for (let changed = true; changed;) {
     changed = false;
     for (const { post, replyToUserId } of items) {
+      const parentDepth = post.inReplyToId === null ? undefined : confirmed.get(post.inReplyToId);
       if (
         !confirmed.has(post.id) &&
         post.author.id === root.author.id &&
-        post.inReplyToId !== null &&
-        confirmed.has(post.inReplyToId) &&
+        parentDepth !== undefined &&
         replyToUserId === root.author.id
       ) {
-        confirmed.add(post.id);
+        confirmed.set(post.id, parentDepth + 1);
         changed = true;
       }
     }
   }
+  // Sequence is the proven chain depth, never raw module order. A depth shared by several
+  // confirmed posts is a branch: positions from there on are unproven and flagged.
+  const depthCounts = new Map<number, number>();
+  for (const depth of confirmed.values()) depthCounts.set(depth, (depthCounts.get(depth) ?? 0) + 1);
+  let ambiguousFrom = Infinity;
+  for (const [depth, count] of depthCounts)
+    if (count > 1) ambiguousFrom = Math.min(ambiguousFrom, depth);
   const flags: string[] = rootUnavailable ? ["root_unavailable"] : [];
   const excludedReplyIds: string[] = [];
   const posts: CapturedPost[] = [];
-  let sequence = 0;
   for (const { post } of items) {
     if (post.author.id !== root.author.id) {
       excludedReplyIds.push(post.id);
       continue;
     }
-    if (confirmed.has(post.id)) {
+    const depth = confirmed.get(post.id);
+    if (depth !== undefined) {
+      const ambiguous = depth >= ambiguousFrom;
+      if (ambiguous) flags.push(`ambiguous_sequence:${post.id}`);
       posts.push({
         ...post,
         role: post.id === rootId ? "root" : "thread_continuation",
-        thread: { rootId, sequence: sequence++, membership: "confirmed" },
+        thread: { rootId, sequence: ambiguous ? null : depth, membership: "confirmed" },
       });
       continue;
     }
