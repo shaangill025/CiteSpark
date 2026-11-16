@@ -223,7 +223,35 @@ ALTER TABLE observation ADD COLUMN capture_page_id INTEGER REFERENCES capture_pa
 CREATE UNIQUE INDEX observation_job_version ON observation (job_id, version_id) WHERE job_id IS NOT NULL;
 `;
 
+// Keyword index generations (RET-03, MIG-02, ADR 0002). Each generation owns its chunk rows, a view over
+// them, and external-content FTS5 tables named by generation number; generation numbers are never reused.
+// `index_coverage` records every version a generation has chunked, including versions with no text.
+const V3 = `
+CREATE TABLE index_generation (
+  generation INTEGER PRIMARY KEY CHECK (generation > 0),
+  state TEXT NOT NULL CHECK (state IN ('building', 'ready', 'active', 'retired', 'failed', 'dropped')),
+  tokenizer TEXT NOT NULL,
+  trigram INTEGER NOT NULL CHECK (trigram IN (0, 1)),
+  chunker TEXT NOT NULL,
+  chunk_count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  verified_at TEXT,
+  activated_at TEXT
+) STRICT;
+
+CREATE TABLE index_coverage (
+  generation INTEGER NOT NULL REFERENCES index_generation(generation),
+  version_id INTEGER NOT NULL REFERENCES source_version(id),
+  chunk_count INTEGER NOT NULL,
+  PRIMARY KEY (generation, version_id)
+) STRICT, WITHOUT ROWID;
+
+ALTER TABLE index_state ADD COLUMN previous_generation INTEGER;
+CREATE INDEX chunk_generation ON chunk (index_generation, version_id, char_start);
+`;
+
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, name: "initial-schema", sql: V1 },
   { version: 2, name: "capture-commit", sql: V2 },
+  { version: 3, name: "index-generations", sql: V3 },
 ];

@@ -13,6 +13,21 @@ export {
   type JobState,
   type NewJob,
 } from "./jobs.ts";
+export { chunkText, DEFAULT_CHUNKER, type ChunkSpan, type ChunkerOptions } from "./chunker.ts";
+export {
+  IndexStore,
+  TOKENIZER,
+  GenerationStateError,
+  GenerationVerificationError,
+  TrigramUnavailableError,
+  type BuildOptions,
+  type GenerationInfo,
+  type GenerationState,
+  type IndexFaultPoint,
+  type SearchHit,
+  type SearchOptions,
+  type SwitchOptions,
+} from "./search-index.ts";
 export {
   CaptureStore,
   AccountMismatchError,
