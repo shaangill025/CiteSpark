@@ -700,7 +700,7 @@ export class MediaStore {
         const known = size ?? d.total_bytes;
         if (
           !m ||
-          !Number.isSafeInteger(last) ||
+          !Number.isSafeInteger(last + 1) || // the exclusive end must be exact too
           (size !== null && !Number.isSafeInteger(size)) ||
           have === 0 ||
           start !== have ||

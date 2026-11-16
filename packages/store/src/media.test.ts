@@ -925,6 +925,43 @@ describe("download integrity (MED-01, CAP-03 fencing)", () => {
     });
   });
 
+  it("rejects a 206 whose exclusive range end overflows a safe integer", async () => {
+    const appends: string[] = [];
+    const { media, dl } = setup({
+      fs: {
+        open: (p, flags) => {
+          if (flags === "a") appends.push(String(p));
+          return realFs.open(p, flags);
+        },
+      },
+    });
+    const d = media.enqueue("s1", `${base}/x`);
+    handler = (req, res) => {
+      if (!req.headers.range) {
+        res.writeHead(200, { etag: '"v1"' });
+        res.write("AAAA");
+        setTimeout(() => res.destroy(), 20);
+        return true;
+      }
+      // The last position is safe; its exclusive end (last + 1) is not.
+      res
+        .writeHead(206, {
+          etag: '"v1"',
+          "content-range": `bytes 4-${Number.MAX_SAFE_INTEGER}/*`,
+        })
+        .end("BBBB");
+      return true;
+    };
+    expect(await dl(d.id)).toBe("interrupted");
+    expect(await dl(d.id)).toBe("interrupted");
+    expect(appends).toEqual([]);
+    expect(media.getDownload(d.id)).toMatchObject({
+      state: "pending",
+      bytesReceived: 0,
+      error: "invalid content-range",
+    });
+  });
+
   it("a stale worker's delayed open cannot truncate the new owner's partial", async () => {
     const ttl = 1_000;
     let t = 1_000;
