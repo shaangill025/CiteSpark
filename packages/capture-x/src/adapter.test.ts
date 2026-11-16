@@ -542,4 +542,21 @@ describe("thread order and ancestry evidence (CAP-08 review regressions)", () =>
     expect(post(detached, S).thread?.membership).toBe("uncertain");
     expect(detached.threads[0]?.flags).toContain(`missing_root:${R}`);
   });
+
+  test("an unknown opening author never excludes surviving replies by author (F4)", () => {
+    const bob = { rest_id: "7000000000000000002", legacy: { screen_name: "synth_bob" } };
+    const byBob = tweet(S, R, R) as { core: unknown };
+    byBob.core = { user_results: { result: bob } };
+    const page = modulePage([
+      [`m-${R}`, TOMBSTONE],
+      [`m-${S}`, byBob],
+      [`m-${T}`, tweet(T, R, R)],
+    ]);
+    expect(page.posts.map((p) => p.id)).toEqual([S, T]);
+    for (const id of [S, T]) {
+      expect(post(page, id).thread).toEqual({ rootId: R, sequence: null, membership: "uncertain" });
+    }
+    expect(page.threads[0]?.excludedReplyIds).toEqual([]);
+    expect(page.threads[0]?.flags).toContain("root_author_unknown");
+  });
 });

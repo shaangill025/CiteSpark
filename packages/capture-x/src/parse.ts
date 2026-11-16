@@ -236,14 +236,16 @@ function resolveThread(
   let ambiguousFrom = Infinity;
   for (const [depth, count] of depthCounts)
     if (count > 1) ambiguousFrom = Math.min(ambiguousFrom, depth);
-  const flags: string[] = rootProven ? [] : ["root_unavailable"];
+  // Without a proven opening post its author is unknown, so no survivor can be excluded as
+  // another author's reply; all are kept as uncertain evidence.
+  const flags: string[] = rootProven ? [] : ["root_unavailable", "root_author_unknown"];
   if (!rootUnavailable && root.inReplyToId === null && !ids.has(rootId)) {
     flags.push(`missing_root:${rootId}`);
   }
   const excludedReplyIds: string[] = [];
   const posts: CapturedPost[] = [];
   for (const { post } of items) {
-    if (post.author.id !== root.author.id) {
+    if (rootProven && post.author.id !== root.author.id) {
       excludedReplyIds.push(post.id);
       continue;
     }
