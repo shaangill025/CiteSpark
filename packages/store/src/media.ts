@@ -212,7 +212,7 @@ export class MediaStore {
   }
 
   private blobPath(hash: string): string {
-    return join("blobs", hash.slice(0, 2), hash);
+    return `blobs/${hash.slice(0, 2)}/${hash}`;
   }
 
   private partPath(id: number): string {
@@ -253,6 +253,10 @@ export class MediaStore {
     if (othersBytes + have >= this.budget) return this.pause(id, "paused_budget");
 
     const headers: Record<string, string> = {};
+    if (have > 0 && !(d.etag && !d.etag.startsWith("W/"))) {
+      this.resetPart(id);
+      have = 0;
+    }
     if (have > 0) {
       headers["range"] = `bytes=${have}-`;
       if (d.etag) headers["if-range"] = d.etag;
@@ -277,6 +281,13 @@ export class MediaStore {
       }
       this.setState(id, "failed", { error: `http ${res.status}` });
       return "failed";
+    }
+    const rangeStart = /^bytes (\d+)-/.exec(res.headers.get("content-range") ?? "")?.[1];
+    if (res.status === 206 && Number(rangeStart) !== have) {
+      await res.body?.cancel();
+      this.resetPart(id);
+      this.setState(id, "pending", { error: "unexpected content-range" });
+      return "interrupted";
     }
     const resumed = res.status === 206;
     if (!resumed && have > 0) {
@@ -359,7 +370,7 @@ export class MediaStore {
     await pipeline(createReadStream(part), hash);
     const digest = hash.digest("hex");
     const rel = this.blobPath(digest);
-    const dest = join(this.opts.root, rel);
+    const dest = join(this.opts.root, ...rel.split("/"));
     if (!existsSync(dest)) {
       mkdirSync(join(this.opts.root, "blobs", digest.slice(0, 2)), { recursive: true });
       renameSync(part, dest);
