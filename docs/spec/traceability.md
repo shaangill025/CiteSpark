@@ -133,7 +133,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | T03 | Attribution | M1, M3 | M1-07, M3-11, M4-05 | in progress | ADR 0010 |
 | T04 | Sync | M2 | M2-04, M2-05 | in progress | M2-04: seeded fast-check property tests (`packages/sync/src/t04.property.test.ts`): random concurrent edit sequences never lose user text; same-key metadata changes conflict. Filesystem harness pending (M2-05) |
 | T05 | Privacy | M3, M4 | M3-04 | not started | — |
-| T06 | Pairing | M2 | M1-06, M2-09 | in progress | ADR 0006, ADR 0011. M1-06: socket, channel, pairing (including a socket squatter claiming `pair.ok`), registry-owned replay ledger and Windows pipe DACL suite in `packages/core/src/ipc/t06.test.ts`; plugin in M2-09 |
+| T06 | Pairing | M2 | M1-06, M2-09 | in progress | ADR 0006, ADR 0011. M1-06: socket, channel, pairing (including a socket squatter claiming `pair.ok`), registry-owned replay ledger and Windows pipe DACL suite in `packages/core/src/ipc/t06.test.ts`; the DACL check bounds its PowerShell child (pipe connect 5 s < child 20 s < test 30 s) and logs each stage it reached; plugin in M2-09 |
 | T07 | Deletion | M1, M2 | M1-12, M3-02 | not started | — |
 | T08 | Backup | M2 | M2-08 | not started | F0 prototype: 5 passing tests in `prototypes/backup-age` |
 | T09 | Import | M1 | M1-09, M5-03 | not started | — |
