@@ -57,9 +57,13 @@ export interface CapturedPost {
 }
 
 export interface ThreadObservation {
+  /** Opening post ID. When the opening post is unavailable this is X's conversation ID (or the
+   * first surviving post's parent) and `flags` contains `root_unavailable`. */
   rootId: string;
   postIds: string[];
   excludedReplyIds: string[];
+  /** Module entries X delivered as tombstones; their positions are gaps in the thread. */
+  unavailableEntryIds: string[];
   flags: string[];
 }
 
@@ -75,13 +79,21 @@ export interface ParsedPage {
   threads: ThreadObservation[];
   unavailable: UnavailableEntry[];
   cursorOut: string | null;
-  /** True only when X delivered no further bottom cursor or no posts. */
+  /** True only when X explicitly terminated the bottom of the timeline, delivered no bottom
+   * cursor, or delivered no content entries. Tombstone-only pages are not exhausted. */
   exhausted: boolean;
 }
 
 export type ParseResult =
   | { status: "ok"; page: ParsedPage }
-  | { status: "paused"; reason: "unsupported_schema"; detail: string; adapterVersion: string };
+  | {
+      status: "paused";
+      /** `control_only`: the body held no page entries and no termination, so it is no evidence
+       * that the collection ended (CAP-06). */
+      reason: "unsupported_schema" | "control_only";
+      detail: string;
+      adapterVersion: string;
+    };
 
 export type NextStep = { kind: "scroll"; expectCursor: string } | { kind: "end" };
 

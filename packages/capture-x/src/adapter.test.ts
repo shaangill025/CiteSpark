@@ -15,8 +15,9 @@ function fixture(name: string): unknown {
 
 const bookmarks: CollectionRef = { kind: "bookmarks" };
 
-function okPage(name: string, collection: CollectionRef = bookmarks): ParsedPage {
-  const result = xAdapter.parsePage(fixture(name), collection);
+function okPage(source: string | object, collection: CollectionRef = bookmarks): ParsedPage {
+  const body = typeof source === "string" ? fixture(source) : source;
+  const result = xAdapter.parsePage(body, collection);
   if (result.status !== "ok") throw new Error(`expected ok, got ${result.status}`);
   return result.page;
 }
@@ -217,5 +218,170 @@ describe("passive capture (ADR 0005)", () => {
       expectCursor: "SYNTHETIC_BOTTOM_CURSOR_1",
     });
     expect(xAdapter.nextRequest(okPage("bookmarks-last-page.json"))).toEqual({ kind: "end" });
+  });
+});
+
+// Synthetic builders for review regressions (no real X data).
+const ALICE = { rest_id: "7000000000000000001", legacy: { screen_name: "synth_alice" } };
+
+function tweet(id: string, inReplyTo: string | null, conversation: string): unknown {
+  return {
+    __typename: "Tweet",
+    rest_id: id,
+    core: { user_results: { result: ALICE } },
+    legacy: {
+      full_text: `Synthetic post ${id}`,
+      lang: "en",
+      created_at: "Wed Jan 07 10:00:00 +0000 2026",
+      conversation_id_str: conversation,
+      ...(inReplyTo === null
+        ? {}
+        : { in_reply_to_status_id_str: inReplyTo, in_reply_to_user_id_str: ALICE.rest_id }),
+    },
+  };
+}
+
+const TOMBSTONE = { __typename: "TweetTombstone", tombstone: { text: { text: "Unavailable." } } };
+
+function itemEntry(entryId: string, result: unknown): unknown {
+  return {
+    entryId,
+    content: {
+      entryType: "TimelineTimelineItem",
+      itemContent: { itemType: "TimelineTweet", tweet_results: { result } },
+    },
+  };
+}
+
+function moduleEntry(entryId: string, items: [string, unknown][]): unknown {
+  return {
+    entryId,
+    content: {
+      entryType: "TimelineTimelineModule",
+      items: items.map(([id, result]) => ({
+        entryId: id,
+        item: { itemContent: { itemType: "TimelineTweet", tweet_results: { result } } },
+      })),
+    },
+  };
+}
+
+function cursor(type: "Top" | "Bottom", value: string): unknown {
+  return {
+    entryId: `cursor-${type.toLowerCase()}-${value}`,
+    content: { entryType: "TimelineTimelineCursor", cursorType: type, value },
+  };
+}
+
+function bookmarksBody(instructions: unknown[]): unknown {
+  return { data: { bookmark_timeline_v2: { timeline: { instructions } } } };
+}
+
+describe("termination evidence (CAP-06, CAP-07 review regressions)", () => {
+  test("a cache-control-only response pauses instead of claiming exhaustion", () => {
+    const result = xAdapter.parsePage(bookmarksBody([{ type: "TimelineClearCache" }]), bookmarks);
+    expect(result.status).toBe("paused");
+  });
+
+  test("an empty instruction list pauses instead of claiming exhaustion", () => {
+    expect(xAdapter.parsePage(bookmarksBody([]), bookmarks).status).toBe("paused");
+  });
+
+  test("a tombstone-only page with a bottom cursor keeps scrolling", () => {
+    const body = bookmarksBody([
+      {
+        type: "TimelineAddEntries",
+        entries: [
+          itemEntry("tweet-1900000000000000601", TOMBSTONE),
+          cursor("Bottom", "SYNTHETIC_AFTER_TOMBSTONES"),
+        ],
+      },
+    ]);
+    const page = okPage(body);
+    expect(page.posts).toEqual([]);
+    expect(page.unavailable).toEqual([
+      { entryId: "tweet-1900000000000000601", reason: "tombstone" },
+    ]);
+    expect(page.exhausted).toBe(false);
+    expect(xAdapter.nextRequest(page)).toEqual({
+      kind: "scroll",
+      expectCursor: "SYNTHETIC_AFTER_TOMBSTONES",
+    });
+  });
+
+  test("an explicit bottom termination ends even with a cursor present", () => {
+    const body = bookmarksBody([
+      {
+        type: "TimelineAddEntries",
+        entries: [
+          itemEntry(
+            "tweet-1900000000000000611",
+            tweet("1900000000000000611", null, "1900000000000000611"),
+          ),
+          cursor("Bottom", "SYNTHETIC_TERMINATED"),
+        ],
+      },
+      { type: "TimelineTerminateTimeline", direction: "Bottom" },
+    ]);
+    expect(okPage(body).exhausted).toBe(true);
+  });
+});
+
+describe("unavailable thread ancestry (CAP-08 review regressions)", () => {
+  test("a tombstoned opening post is not replaced by the first surviving reply", () => {
+    const body = bookmarksBody([
+      {
+        type: "TimelineAddEntries",
+        entries: [
+          moduleEntry("conversationthread-1900000000000000701", [
+            ["conversationthread-1900000000000000701-tweet-1900000000000000701", TOMBSTONE],
+            [
+              "conversationthread-1900000000000000701-tweet-1900000000000000702",
+              tweet("1900000000000000702", "1900000000000000701", "1900000000000000701"),
+            ],
+            [
+              "conversationthread-1900000000000000701-tweet-1900000000000000703",
+              tweet("1900000000000000703", "1900000000000000702", "1900000000000000701"),
+            ],
+          ]),
+          cursor("Bottom", "SYNTHETIC_THREAD_CURSOR"),
+        ],
+      },
+    ]);
+    const page = okPage(body);
+    const first = post(page, "1900000000000000702");
+    expect(first.role).toBe("thread_continuation");
+    expect(first.thread).toMatchObject({ rootId: "1900000000000000701", membership: "uncertain" });
+    expect(page.threads).toHaveLength(1);
+    expect(page.threads[0]).toMatchObject({
+      rootId: "1900000000000000701",
+      unavailableEntryIds: ["conversationthread-1900000000000000701-tweet-1900000000000000701"],
+    });
+    expect(page.threads[0]?.flags).toContain("missing_parent:1900000000000000701");
+  });
+
+  test("the gap observation survives when only one available item remains", () => {
+    const body = bookmarksBody([
+      {
+        type: "TimelineAddEntries",
+        entries: [
+          moduleEntry("conversationthread-1900000000000000801", [
+            ["conversationthread-1900000000000000801-tweet-1900000000000000801", TOMBSTONE],
+            [
+              "conversationthread-1900000000000000801-tweet-1900000000000000802",
+              tweet("1900000000000000802", "1900000000000000801", "1900000000000000801"),
+            ],
+          ]),
+          cursor("Bottom", "SYNTHETIC_GAP_CURSOR"),
+        ],
+      },
+    ]);
+    const page = okPage(body);
+    expect(post(page, "1900000000000000802").role).toBe("thread_continuation");
+    expect(page.threads).toHaveLength(1);
+    expect(page.threads[0]?.flags).toContain("missing_parent:1900000000000000801");
+    expect(page.threads[0]?.unavailableEntryIds).toEqual([
+      "conversationthread-1900000000000000801-tweet-1900000000000000801",
+    ]);
   });
 });

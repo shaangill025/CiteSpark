@@ -15,6 +15,8 @@ type Obj = Record<string, unknown>;
 
 class SchemaError extends Error {}
 
+class ControlOnlyError extends Error {}
+
 function isObj(v: unknown): v is Obj {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
@@ -175,13 +177,23 @@ function parseItem(
   };
 }
 
-/** Same-author replies join a thread only with explicit reply-chain evidence (CAP-08). */
-function resolveThread(items: ModuleItem[]): { posts: CapturedPost[]; thread: ThreadObservation } {
+/**
+ * Same-author replies join a thread only with explicit reply-chain evidence (CAP-08).
+ * `rootUnavailable` means X delivered the opening post as a tombstone: the first surviving post
+ * is then not a root, its author cannot be compared with the real root author, and every
+ * surviving member is uncertain.
+ */
+function resolveThread(
+  items: ModuleItem[],
+  unavailableEntryIds: string[],
+  rootUnavailable: boolean,
+): { posts: CapturedPost[]; thread: ThreadObservation } {
   const first = items[0];
   if (!first) throw new SchemaError("empty module");
   const root = first.post;
+  const rootId = rootUnavailable ? (root.conversationId ?? root.inReplyToId ?? root.id) : root.id;
   const ids = new Set(items.map((i) => i.post.id));
-  const confirmed = new Set<string>([root.id]);
+  const confirmed = new Set<string>(rootUnavailable ? [] : [root.id]);
   for (let changed = true; changed;) {
     changed = false;
     for (const { post, replyToUserId } of items) {
@@ -197,7 +209,7 @@ function resolveThread(items: ModuleItem[]): { posts: CapturedPost[]; thread: Th
       }
     }
   }
-  const flags: string[] = [];
+  const flags: string[] = rootUnavailable ? ["root_unavailable"] : [];
   const excludedReplyIds: string[] = [];
   const posts: CapturedPost[] = [];
   let sequence = 0;
@@ -209,8 +221,8 @@ function resolveThread(items: ModuleItem[]): { posts: CapturedPost[]; thread: Th
     if (confirmed.has(post.id)) {
       posts.push({
         ...post,
-        role: post.id === root.id ? "root" : "thread_continuation",
-        thread: { rootId: root.id, sequence: sequence++, membership: "confirmed" },
+        role: post.id === rootId ? "root" : "thread_continuation",
+        thread: { rootId, sequence: sequence++, membership: "confirmed" },
       });
       continue;
     }
@@ -221,12 +233,18 @@ function resolveThread(items: ModuleItem[]): { posts: CapturedPost[]; thread: Th
     posts.push({
       ...post,
       role: "thread_continuation",
-      thread: { rootId: root.id, sequence: null, membership: "uncertain" },
+      thread: { rootId, sequence: null, membership: "uncertain" },
     });
   }
   return {
     posts,
-    thread: { rootId: root.id, postIds: posts.map((p) => p.id), excludedReplyIds, flags },
+    thread: {
+      rootId,
+      postIds: posts.map((p) => p.id),
+      excludedReplyIds,
+      unavailableEntryIds,
+      flags,
+    },
   };
 }
 
@@ -235,6 +253,7 @@ function parseEntries(entries: unknown[]) {
   const threads: ThreadObservation[] = [];
   const unavailable: UnavailableEntry[] = [];
   let cursorOut: string | null = null;
+  let contentEntries = 0;
   for (const entry of entries) {
     const entryId = reqString(dig(entry, "entryId"), "entryId");
     const content = dig(entry, "content");
@@ -246,6 +265,7 @@ function parseEntries(entries: unknown[]) {
         break;
       }
       case "TimelineTimelineItem": {
+        contentEntries++;
         const parsed = parseItem(dig(content, "itemContent"), entryId, unavailable);
         if (parsed) posts.push(parsed.post);
         break;
@@ -253,23 +273,39 @@ function parseEntries(entries: unknown[]) {
       case "TimelineTimelineModule": {
         const rawItems = dig(content, "items");
         if (!Array.isArray(rawItems)) throw new SchemaError("module without items");
+        contentEntries++;
         const items: ModuleItem[] = [];
+        const moduleUnavailable: UnavailableEntry[] = [];
         for (const raw of rawItems) {
           const id = reqString(dig(raw, "entryId"), "module item entryId");
-          const parsed = parseItem(dig(raw, "item", "itemContent"), id, unavailable);
+          const parsed = parseItem(dig(raw, "item", "itemContent"), id, moduleUnavailable);
           if (parsed) items.push(parsed);
         }
+        unavailable.push(...moduleUnavailable);
         if (items.length === 0) break;
-        const resolved = resolveThread(items);
+        const rootUnavailable = isLeadingTombstone(rawItems, moduleUnavailable);
+        const resolved = resolveThread(
+          items,
+          moduleUnavailable.map((u) => u.entryId),
+          rootUnavailable,
+        );
         posts.push(...resolved.posts);
-        if (items.length > 1) threads.push(resolved.thread);
+        // Keep the observation whenever it carries a gap, even for a single surviving item.
+        if (items.length > 1 || resolved.thread.flags.length > 0 || moduleUnavailable.length > 0) {
+          threads.push(resolved.thread);
+        }
         break;
       }
       default:
         throw new SchemaError("unknown entry type");
     }
   }
-  return { posts, threads, unavailable, cursorOut };
+  return { posts, threads, unavailable, cursorOut, contentEntries };
+}
+
+function isLeadingTombstone(rawItems: unknown[], moduleUnavailable: UnavailableEntry[]): boolean {
+  const firstId = dig(rawItems[0], "entryId");
+  return moduleUnavailable.some((u) => u.entryId === firstId);
 }
 
 export function parsePage(body: unknown, collection: CollectionRef): ParseResult {
@@ -278,25 +314,43 @@ export function parsePage(body: unknown, collection: CollectionRef): ParseResult
     const instructions = dig(timeline, "instructions");
     if (!Array.isArray(instructions)) throw new SchemaError("timeline instructions not found");
     const entries: unknown[] = [];
+    let sawEntries = false;
+    let terminatedBottom = false;
     for (const ins of instructions) {
       const type = dig(ins, "type");
       if (type === "TimelineAddEntries") {
         const list = dig(ins, "entries");
         if (!Array.isArray(list)) throw new SchemaError("entries not an array");
+        sawEntries = true;
         entries.push(...list);
-      } else if (type !== "TimelineClearCache" && type !== "TimelineTerminateTimeline") {
+      } else if (type === "TimelineTerminateTimeline") {
+        const direction = dig(ins, "direction");
+        if (direction === "Bottom" || direction === "TopAndBottom") terminatedBottom = true;
+        else if (direction !== "Top") throw new SchemaError("unknown termination direction");
+      } else if (type !== "TimelineClearCache") {
         throw new SchemaError("unknown instruction type");
       }
     }
-    const parsed = parseEntries(entries);
+    // Cache control alone says nothing about where the collection ends (CAP-06).
+    if (!sawEntries && !terminatedBottom)
+      throw new ControlOnlyError("no page entries or termination");
+    const { contentEntries, ...parsed } = parseEntries(entries);
     const page: ParsedPage = {
       adapterVersion: ADAPTER_VERSION,
       collection,
       ...parsed,
-      exhausted: parsed.cursorOut === null || parsed.posts.length === 0,
+      exhausted: terminatedBottom || parsed.cursorOut === null || contentEntries === 0,
     };
     return { status: "ok", page };
   } catch (err) {
+    if (err instanceof ControlOnlyError) {
+      return {
+        status: "paused",
+        reason: "control_only",
+        detail: err.message,
+        adapterVersion: ADAPTER_VERSION,
+      };
+    }
     if (err instanceof SchemaError) {
       return {
         status: "paused",
