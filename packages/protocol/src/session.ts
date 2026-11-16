@@ -1,19 +1,28 @@
 import { ErrorCode, ProtocolException } from "./errors.ts";
 import type { StreamEvent, StreamState } from "./messages.ts";
 
-type Entry = { fingerprint: string; promise: Promise<unknown>; done: boolean };
+type Entry = { fingerprint: string; promise: Promise<unknown> };
 
 /**
  * Remembers every mutation by request ID so a retry after reconnect gets the stored outcome instead of
  * running the mutation again (§14). Failures are remembered too: a half-applied mutation is never repeated.
- * The caller must persist its own durable state; this ledger is the in-process guard.
+ *
+ * The ledger never forgets an ID it has accepted: forgetting one would let a late retry run the mutation a
+ * second time. When `capacity` IDs are held it fails closed and rejects *new* IDs with
+ * `idempotency_exhausted`, while replays of known IDs keep returning their stored outcome. A durable outcome
+ * store that lets old entries leave memory safely belongs with transport wiring (M1-06). The ledger must
+ * outlive individual connections (for example one per paired client), or reconnects would bypass it.
  */
 export class IdempotencyLedger {
   readonly #capacity: number;
   readonly #entries = new Map<string, Entry>();
 
   constructor(opts: { capacity?: number } = {}) {
-    this.#capacity = opts.capacity ?? 10_000;
+    const capacity = opts.capacity ?? 10_000;
+    if (!Number.isSafeInteger(capacity) || capacity < 1) {
+      throw new RangeError(`capacity must be a positive integer, got ${capacity}`);
+    }
+    this.#capacity = capacity;
   }
 
   has(requestId: string): boolean {
@@ -33,25 +42,30 @@ export class IdempotencyLedger {
       }
       return existing.promise as Promise<T>;
     }
-    const entry: Entry = { fingerprint, done: false, promise: undefined as never };
-    entry.promise = (async () => {
-      try {
-        return await run();
-      } finally {
-        entry.done = true;
-      }
-    })();
-    entry.promise.catch(() => undefined);
-    this.#entries.set(requestId, entry);
-    this.#evict();
-    return entry.promise as Promise<T>;
-  }
-
-  #evict(): void {
-    for (const [id, e] of this.#entries) {
-      if (this.#entries.size <= this.#capacity) return;
-      if (e.done) this.#entries.delete(id);
+    if (this.#entries.size >= this.#capacity) {
+      return Promise.reject(
+        new ProtocolException(
+          ErrorCode.IdempotencyExhausted,
+          "idempotency ledger is full; refusing a new mutation rather than forgetting an old one",
+        ),
+      );
     }
+    // Reserve the ID (and its capacity slot) before invoking `run`, so a callback that re-enters
+    // `execute` sees this request as in flight. A synchronous throw becomes a remembered rejection too.
+    let settle!: (outcome: T | Promise<T>) => void;
+    let fail!: (reason: unknown) => void;
+    const promise = new Promise<T>((resolve, reject) => {
+      settle = resolve;
+      fail = reject;
+    });
+    promise.catch(() => undefined);
+    this.#entries.set(requestId, { fingerprint, promise });
+    try {
+      settle(run());
+    } catch (error) {
+      fail(error);
+    }
+    return promise;
   }
 }
 

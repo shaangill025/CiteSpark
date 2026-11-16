@@ -6,6 +6,7 @@ export const ErrorCode = {
   MalformedFrame: "malformed_frame",
   InvalidMessage: "invalid_message",
   IdempotencyConflict: "idempotency_conflict",
+  IdempotencyExhausted: "idempotency_exhausted",
   Unauthorized: "unauthorized",
   Forbidden: "forbidden",
   NotFound: "not_found",

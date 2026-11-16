@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { DEFAULT_MAX_FRAME_BYTES, FrameDecoder, FrameError, encodeFrame } from "./framing.ts";
 
 const enc = (v: unknown) => encodeFrame(v);
@@ -18,6 +18,48 @@ describe("framing", () => {
     for (let i = 0; i < all.length; i++) out.push(...d.push(all.subarray(i, i + 1)));
     expect(out).toEqual([{ n: 1 }, { n: 2 }]);
     expect(new FrameDecoder().push(all)).toHaveLength(2);
+  });
+
+  test("fragmented frames are copied once, not re-concatenated per chunk (no quadratic copying)", () => {
+    const frame = enc({ s: "y".repeat(256 * 1024) });
+    const chunks: Buffer[] = [];
+    for (let i = 0; i < frame.length; i += 1024) chunks.push(frame.subarray(i, i + 1024));
+    const concat = vi.spyOn(Buffer, "concat");
+    const from = vi.spyOn(Buffer, "from");
+    try {
+      const d = new FrameDecoder();
+      const out: unknown[] = [];
+      for (const c of chunks) out.push(...d.push(c));
+      expect(out).toEqual([{ s: "y".repeat(256 * 1024) }]);
+      // Old behaviour: one full-buffer copy per chunk (~260 calls). Allow a constant, not O(chunks).
+      expect(concat.mock.calls.length + from.mock.calls.length).toBeLessThanOrEqual(2);
+    } finally {
+      concat.mockRestore();
+      from.mockRestore();
+    }
+  });
+
+  test("a header split across chunks is reassembled, and the oversize check still fires", () => {
+    const d = new FrameDecoder({ maxFrameBytes: 16 });
+    expect(d.push(Buffer.from([0, 0]))).toEqual([]);
+    expect(() => d.push(Buffer.from([0, 17]))).toThrowError(
+      expect.objectContaining({ code: "frame_too_large" }),
+    );
+  });
+
+  test("decoded frames do not alias caller buffers that are later reused", () => {
+    const d = new FrameDecoder();
+    const frame = enc({ a: 1 });
+    const chunk = Buffer.from(frame.subarray(0, 6));
+    expect(d.push(chunk)).toEqual([]);
+    chunk.fill(0x7b);
+    expect(d.push(frame.subarray(6))).toEqual([{ a: 1 }]);
+  });
+
+  test("empty chunks are harmless", () => {
+    const d = new FrameDecoder();
+    expect(d.push(new Uint8Array(0))).toEqual([]);
+    expect(d.push(enc({ ok: true }))).toEqual([{ ok: true }]);
   });
 
   test("rejects an oversized frame from the header alone, before buffering the body", () => {

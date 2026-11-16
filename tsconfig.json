@@ -1,20 +1,12 @@
 {
   "files": [],
   "references": [
-    {
-      "path": "packages/protocol"
-    },
-    {
-      "path": "packages/ipc"
-    },
-    {
-      "path": "packages/core"
-    },
-    {
-      "path": "packages/native-host"
-    },
-    {
-      "path": "tools/license-check"
-    }
+    { "path": "packages/protocol" },
+    { "path": "packages/ipc" },
+    { "path": "packages/core" },
+    { "path": "packages/native-host" },
+    { "path": "packages/store" },
+    { "path": "packages/sync" },
+    { "path": "tools/license-check" }
   ]
 }
