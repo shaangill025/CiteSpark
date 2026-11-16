@@ -369,13 +369,17 @@ export interface ImportPreview {
   records: CaptureRecord[];
 }
 
-const stripEllipsis = (s: string): string => s.trimEnd().replace(/(…|\.\.\.)$/, "");
+const TRUNCATION = /(…|\.\.\.)$/;
+const stripEllipsis = (s: string): string => s.trimEnd().replace(TRUNCATION, "");
 
 /** Incoming content is weaker when it is empty or a truncation of a longer stored text. */
 function isWeaker(incoming: string, stored: readonly string[]): boolean {
   if (incoming === "") return stored.some((t) => t !== "");
   const head = stripEllipsis(incoming);
-  return stored.some((t) => t.length > incoming.length && t.startsWith(head));
+  // A stored copy that is itself truncated is not fuller than anything it prefixes.
+  return stored.some(
+    (t) => !TRUNCATION.test(t.trimEnd()) && t.length > incoming.length && t.startsWith(head),
+  );
 }
 
 export const importJobId = (parsed: ParsedExport): string =>

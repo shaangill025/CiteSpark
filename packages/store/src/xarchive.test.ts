@@ -229,6 +229,15 @@ describe("xarchive preview and commit", () => {
     expect(stored().map((r) => r.text)).toEqual([full]);
   });
 
+  it("lets a complete text supersede a stored truncated copy", () => {
+    const c = setup();
+    const seed = (t: string, extra = {}) =>
+      parseXArchive(exportOf([{ tweet_id: "66", full_text: t }], extra));
+    run(c, seed("Great thread on caching…"));
+    run(c, seed("Great thread on caching", { x: 1 }), "A", T0 + 1);
+    expect(n(c.db, "SELECT COUNT(*) n FROM source_version")).toBe(2);
+  });
+
   it("keeps a differing edit as an additional version and reports the conflict", () => {
     const c = setup();
     const seed = (t: string, extra = {}) =>
