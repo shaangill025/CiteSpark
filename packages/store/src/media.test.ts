@@ -825,6 +825,47 @@ describe("download integrity (MED-01, CAP-03 fencing)", () => {
     expect(db.prepare("SELECT COUNT(*) n FROM media").get()).toEqual({ n: 0 });
   });
 
+  it("rejects a 206 with unknown total that ends past the saved representation length", async () => {
+    const appends: string[] = [];
+    const { media, dl, db } = setup({
+      fs: {
+        open: (p, flags) => {
+          if (flags === "a") appends.push(String(p));
+          return realFs.open(p, flags);
+        },
+      },
+    });
+    const d = media.enqueue("s1", `${base}/x`);
+    handler = (req, res) => {
+      if (!req.headers.range) {
+        res.writeHead(200, { etag: '"v1"', "content-length": 8 });
+        res.write("AAAA");
+        setTimeout(() => res.destroy(), 20);
+        return true;
+      }
+      res
+        .writeHead(206, {
+          etag: '"v1"',
+          "content-length": 6,
+          "content-range": "bytes 4-9/*",
+        })
+        .end("BBBBBB");
+      return true;
+    };
+    expect(await dl(d.id)).toBe("interrupted");
+    expect(media.getDownload(d.id)).toMatchObject({ bytesReceived: 4, totalBytes: 8 });
+    expect(await dl(d.id)).toBe("interrupted");
+    expect(appends).toEqual([]); // rejected before any file I/O
+    expect(media.getDownload(d.id)).toMatchObject({
+      state: "pending",
+      bytesReceived: 0,
+      error: "invalid content-range",
+      mediaId: null,
+    });
+    expect(db.prepare("SELECT COUNT(*) n FROM blob").get()).toEqual({ n: 0 });
+    expect(db.prepare("SELECT COUNT(*) n FROM media").get()).toEqual({ n: 0 });
+  });
+
   it("a stale worker's delayed open cannot truncate the new owner's partial", async () => {
     const ttl = 1_000;
     let t = 1_000;

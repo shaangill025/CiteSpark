@@ -696,12 +696,14 @@ export class MediaStore {
         const start = m ? Number(m[1]) : NaN;
         const last = m ? Number(m[2]) : NaN;
         const size = m && m[3] !== "*" ? Number(m[3]) : null;
+        // The representation length known from this response or, for `bytes a-b/*`, saved earlier.
+        const known = size ?? d.total_bytes;
         if (
           !m ||
           have === 0 ||
           start !== have ||
           last < start ||
-          (size !== null && last >= size) ||
+          (known !== null && last >= known) ||
           (size !== null && d.total_bytes !== null && size !== d.total_bytes) ||
           (length !== null && length !== last - start + 1)
         ) {
