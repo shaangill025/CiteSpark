@@ -104,7 +104,11 @@ export interface CheckpointData {
 
 /** Job state machine, leases, and durable checkpoints (CAP-03, CAP-04, CAP-06). Time is injected as epoch ms. */
 export class JobStore {
-  constructor(private readonly db: Database.Database) {}
+  private readonly db: Database.Database;
+
+  constructor(db: Database.Database) {
+    this.db = db;
+  }
 
   create(job: NewJob): Job {
     this.db
@@ -249,7 +253,8 @@ export class JobStore {
     }
   }
 
-  private assertLease(id: string, owner: string, nowMs: number): Job {
+  /** Returns the job if `owner` holds a live lease on it; throws `LeaseError` otherwise. */
+  assertLease(id: string, owner: string, nowMs: number): Job {
     const job = this.get(id);
     if (
       job.state !== "running" ||

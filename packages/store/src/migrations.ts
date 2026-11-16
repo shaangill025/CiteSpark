@@ -187,4 +187,43 @@ CREATE TABLE backup_manifest (
 ) STRICT;
 `;
 
-export const MIGRATIONS: readonly Migration[] = [{ version: 1, name: "initial-schema", sql: V1 }];
+// Capture commit bookkeeping (CAP-03, CAP-06). A pass is one scroll of a collection from the top;
+// replay checks are keyed on the pass and the cursor a page started from (ADR 0005).
+const V2 = `
+CREATE TABLE capture_pass (
+  job_id TEXT NOT NULL REFERENCES job(id),
+  pass_id TEXT NOT NULL,
+  cursor TEXT,
+  pages INTEGER NOT NULL DEFAULT 0,
+  ended_at TEXT,
+  started_at TEXT NOT NULL,
+  PRIMARY KEY (job_id, pass_id)
+) STRICT;
+
+CREATE TABLE capture_page (
+  id INTEGER PRIMARY KEY,
+  job_id TEXT NOT NULL,
+  pass_id TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  page_key TEXT NOT NULL,
+  cursor_in TEXT,
+  cursor_out TEXT,
+  content_hash TEXT NOT NULL,
+  record_count INTEGER NOT NULL,
+  new_records INTEGER NOT NULL,
+  adapter_id TEXT NOT NULL,
+  adapter_version TEXT NOT NULL,
+  committed_at TEXT NOT NULL,
+  FOREIGN KEY (job_id, pass_id) REFERENCES capture_pass(job_id, pass_id),
+  UNIQUE (job_id, pass_id, page_key),
+  UNIQUE (job_id, pass_id, seq)
+) STRICT;
+
+ALTER TABLE observation ADD COLUMN capture_page_id INTEGER REFERENCES capture_page(id);
+CREATE UNIQUE INDEX observation_job_version ON observation (job_id, version_id) WHERE job_id IS NOT NULL;
+`;
+
+export const MIGRATIONS: readonly Migration[] = [
+  { version: 1, name: "initial-schema", sql: V1 },
+  { version: 2, name: "capture-commit", sql: V2 },
+];

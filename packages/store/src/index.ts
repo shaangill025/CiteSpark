@@ -13,3 +13,16 @@ export {
   type JobState,
   type NewJob,
 } from "./jobs.ts";
+export {
+  CaptureStore,
+  AccountMismatchError,
+  CursorMismatchError,
+  InvalidPageError,
+  ReplayConflictError,
+  type CaptureRecord,
+  type CapturePage,
+  type CaptureSummary,
+  type CommitOptions,
+  type CommitResult,
+  type FaultPoint,
+} from "./capture.ts";
