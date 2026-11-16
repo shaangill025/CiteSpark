@@ -20,7 +20,11 @@ Foundation libraries merged on `main`, each with unit or property tests on synth
 
 - `packages/store`: canonical schema with string platform IDs, numbered transactional migrations with a
   pre-migration backup hook, job state machine with fenced leases and durable checkpoints, and atomic capture page
-  commit with idempotent replay (M1-02 to M1-04; T01 in `packages/store/src/t01.test.ts`)
+  commit with idempotent replay (M1-02 to M1-04; T01 in `packages/store/src/t01.test.ts`), and an xarchive import
+  library: bounded file reading, a dry-run preview, a commit through the shared capture path with an import receipt
+  and idempotent replay, and availability evidence for unavailable or repeated posts (M1-09; T09 xarchive part in
+  `packages/store/src/xarchive.test.ts`). It has no import UI and is tested on synthetic fixtures only, not on a
+  real or private archive
 - `packages/protocol`: message schemas, framing, version negotiation, and request-ID idempotency (M1-05)
 - `packages/ipc`, `packages/core/src/ipc`, `packages/native-host`: Noise pairing and encrypted local IPC with scopes
   and revocation ([ADR 0011](docs/adr/0011-noise-ipc-implementation.md); T06 core suite in
@@ -34,14 +38,14 @@ Foundation libraries merged on `main`, each with unit or property tests on synth
 - `packages/sync`: sync merge core (note identity, three-way merge, conflict records) with no vault file access yet
   (M2-04; T04 property tests in `packages/sync/src/t04.property.test.ts`)
 
-Not yet merged on main: the browser extension and live capture (M1-08), imports, linked sources, trash, the
-desktop app, vault file sync, backups, saved-library search and retrieval, citations, and AI answers. See the
-[traceability matrix](docs/spec/traceability.md) for per-requirement status.
+Not yet merged on main: the browser extension and live capture (M1-08), native backup and vault imports, linked
+sources, trash, the desktop app, vault file sync, backups, saved-library search and retrieval, citations, and AI
+answers. See the [traceability matrix](docs/spec/traceability.md) for per-requirement status.
 
 | Milestone | Scope | Status |
 | --- | --- | --- |
 | F0/M0 | Feasibility prototypes, license inventory, architecture decisions | complete (plan approved; follow-up gates open) |
-| M1 | Data foundation: archive, capture, import, media, recoverable storage | in progress (M1-01 to M1-07 and M1-10 merged; M1-08, M1-09, M1-11, M1-12 pending) |
+| M1 | Data foundation: archive, capture, import, media, recoverable storage | in progress (M1-01 to M1-07, M1-09 and M1-10 merged; M1-08, M1-11, M1-12 pending) |
 | M2 | Desktop app, pairing, two-way vault sync, backups | in progress (M2-04 sync core only) |
 | M3 | Search, OCR/transcripts, organization, graph, exact citations | not started |
 | M4 | Local and cloud answers, bounded research, plugin research UI | not started |
