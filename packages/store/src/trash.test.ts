@@ -1,7 +1,17 @@
 // T07 (store part): trash excludes at once, survives restart, suppresses recapture; purge removes
 // unshared derived data and keeps shared blobs (DAT-03, DAT-04, Q50). Synthetic data only.
 import Database from "better-sqlite3";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import * as fsp from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -20,6 +30,7 @@ import {
   type LinkCapture,
   type MediaFetch,
 } from "./index.ts";
+import type { MediaFs } from "./media.ts";
 
 const T0 = 1_800_000_000_000;
 const HASH_SHARED = "a".repeat(64);
@@ -367,14 +378,14 @@ describe("purge integrity", () => {
     expect(media.usedBytes()).toBe(3); // the shared blob only; the partial no longer counts
   });
 
-  it("refuses to purge while a live job holds one of the source's downloads", () => {
+  it("refuses to purge while a running attempt holds one of the source's downloads", () => {
     const jobs = new JobStore(db);
     jobs.create({ id: "m", kind: "media" });
     const lease = jobs.acquire("m", "w", T0, 60_000);
     if (!lease) throw new Error("setup could not acquire the lease");
     db.prepare(
-      "INSERT INTO media_download (source_id, url, state, claim_job_id, claim_generation) VALUES (?, 'https://example.test/live.png', 'downloading', 'm', ?)",
-    ).run(A, lease.generation);
+      "INSERT INTO media_download (source_id, url, state, claim_job_id, claim_generation, claim_token) VALUES (?, 'https://example.test/live.png', 'downloading', 'm', ?, ?)",
+    ).run(A, lease.generation, "0123abcd-0000-4000-8000-000000000001");
     const t = new TrashStore(db, { mediaRoot: dir });
     t.trash(A, T0);
     expect(() => t.purge(A, T0 + 1)).toThrow(PurgeBusyError);
@@ -734,5 +745,357 @@ describe("T07 end to end (synthetic)", () => {
     expect(n("SELECT 1 FROM blob WHERE content_hash = ?", hash)).toBe(0);
     expect(after.status(art!.sourceId!)).toBe("available");
     expect(n("SELECT 1 FROM purge_file")).toBe(0);
+  });
+});
+
+// Attempt-isolated media downloads (media store migration 5: claim_token, part_file) racing trash
+// and purge. Each test pauses a real execution attempt at one async file step, lets its lease
+// expire or keeps it live, purges, then releases the step and lists every file left on disk.
+describe("purge against attempt-isolated media downloads", () => {
+  const BODY = Buffer.from("synthetic attempt-isolated media bytes");
+  const H = createHash("sha256").update(BODY).digest("hex");
+  const TTL = 60_000;
+  const okFetch =
+    (fetched: string[] = []): MediaFetch =>
+    (url) => {
+      fetched.push(url);
+      return Promise.resolve(
+        new Response(BODY, {
+          status: 200,
+          headers: {
+            "content-type": "image/png",
+            "content-length": String(BODY.length),
+            etag: '"v1"',
+          },
+        }),
+      );
+    };
+  const gate = () => {
+    let release!: () => void;
+    let reached!: () => void;
+    const released = new Promise<void>((r) => (release = r));
+    const hit = new Promise<void>((r) => (reached = r));
+    return { release, reached, released, hit };
+  };
+  const files = (): string[] => {
+    const out: string[] = [];
+    const walk = (rel: string): void => {
+      const abs = join(dir, rel);
+      if (!existsSync(abs)) return;
+      for (const e of readdirSync(abs, { withFileTypes: true })) {
+        const r = `${rel}/${e.name}`;
+        if (e.isDirectory()) walk(r);
+        else out.push(r);
+      }
+    };
+    walk("tmp");
+    walk("blobs");
+    return out.sort();
+  };
+  const seededBlobs = [
+    `blobs/${HASH_SHARED.slice(0, 2)}/${HASH_SHARED}`,
+    `blobs/${HASH_ONLY_A.slice(0, 2)}/${HASH_ONLY_A}`,
+  ].sort();
+  const claim = (id: number) =>
+    db
+      .prepare(
+        "SELECT state, error, claim_job_id, claim_token, part_file FROM media_download WHERE id = ?",
+      )
+      .get(id) as {
+      state: string;
+      error: string | null;
+      claim_job_id: string | null;
+      claim_token: string | null;
+      part_file: string | null;
+    };
+  const store = (clock: { now: number }, fs: Partial<MediaFs> = {}, fetch = okFetch()) =>
+    new MediaStore(db, {
+      root: dir,
+      budgetBytes: 1_000_000,
+      minFreeBytes: 0,
+      freeBytes: () => 10_000_000,
+      fetch,
+      now: () => clock.now,
+      leaseTtlMs: TTL,
+      fs,
+    });
+  const lease = (jobs: JobStore, id: string, now: number) => {
+    jobs.create({ id, kind: "media" });
+    const l = jobs.acquire(id, "w", now, TTL);
+    if (!l) throw new Error("setup could not acquire the lease");
+    return l;
+  };
+
+  it.each(["open", "write"] as const)(
+    "an expired attempt paused at %s leaves no file once purge and the attempt settle",
+    async (step) => {
+      const clock = { now: T0 };
+      const g = gate();
+      const pause = async (): Promise<void> => {
+        g.reached();
+        await g.released;
+      };
+      const fs: Partial<MediaFs> =
+        step === "open"
+          ? { open: async (p, f) => (await pause(), fsp.open(p, f)) }
+          : { write: async (h, c) => (await pause(), h.write(c)) };
+      const media = store(clock, fs);
+      const jobs = new JobStore(db);
+      const l = lease(jobs, "m", T0);
+      const d = media.enqueue(A, "https://example.test/a/paused.png");
+      const run = media.download(d.id, { jobs, jobId: "m", lease: l });
+      await g.hit;
+      const held = claim(d.id);
+      // The attempt holds an exclusive token and its own attempt-named part file.
+      expect(held.claim_token).toMatch(/^[0-9a-f-]{36}$/);
+      expect(held.part_file).toBe(`${d.id}.${held.claim_token}.part`);
+      const own = `tmp/${held.part_file}`;
+      expect(files()).toEqual(step === "open" ? seededBlobs : [...seededBlobs, own].sort());
+
+      clock.now = T0 + TTL + 1; // the attempt's lease expires while its file step is in flight
+      const t = new TrashStore(db, { mediaRoot: dir });
+      t.trash(A, clock.now);
+      expect(claim(d.id)).toMatchObject({
+        state: "failed",
+        error: "source_trashed",
+        claim_job_id: null,
+        claim_token: null,
+        part_file: null,
+      });
+      expect(t.purge(A, clock.now).filesPending).toBe(0);
+      expect(files()).toEqual([`blobs/${HASH_SHARED.slice(0, 2)}/${HASH_SHARED}`]);
+
+      g.release();
+      expect(await run).toBe("lease_lost");
+      // Named paths after purge: the late open or write reached only the attempt's own file,
+      // which the attempt removes when it ends; no blob was published.
+      expect(existsSync(join(dir, own))).toBe(false);
+      expect(existsSync(blobFile(H))).toBe(false);
+      expect(files()).toEqual([`blobs/${HASH_SHARED.slice(0, 2)}/${HASH_SHARED}`]);
+      expect(n("SELECT 1 FROM blob WHERE content_hash = ?", H)).toBe(0);
+      expect(n("SELECT 1 FROM media WHERE source_id = ?", A)).toBe(0);
+    },
+  );
+
+  it.each(["before", "after"] as const)(
+    "an expired attempt paused %s its rename into blobs/ leaves no blob once purge runs",
+    async (when) => {
+      const clock = { now: T0 };
+      const g = gate();
+      const pause = async (): Promise<void> => {
+        g.reached();
+        await g.released;
+      };
+      const media = store(clock, {
+        rename: async (from, to) => {
+          const publish = to.endsWith(H);
+          if (publish && when === "before") await pause();
+          await fsp.rename(from, to);
+          if (publish && when === "after") await pause();
+        },
+      });
+      const jobs = new JobStore(db);
+      const l = lease(jobs, "m", T0);
+      const d = media.enqueue(A, "https://example.test/a/late.png");
+      const run = media.download(d.id, { jobs, jobId: "m", lease: l });
+      await g.hit; // verified and fenced; the rename is about to run or has just run
+      const own = `tmp/${claim(d.id).part_file}`;
+      const published = `blobs/${H.slice(0, 2)}/${H}`;
+      expect(files()).toContain(when === "before" ? own : published);
+      clock.now = T0 + TTL + 1;
+      const t = new TrashStore(db, { mediaRoot: dir });
+      t.trash(A, clock.now);
+      t.purge(A, clock.now);
+      // Named paths after purge: before the rename, purge removed the attempt's part file so the
+      // late rename fails; after it, purge's sweep removed the unreferenced published file.
+      expect(files()).toEqual([`blobs/${HASH_SHARED.slice(0, 2)}/${HASH_SHARED}`]);
+      g.release();
+      expect(await run).toBe("lease_lost");
+      expect(files()).toEqual([`blobs/${HASH_SHARED.slice(0, 2)}/${HASH_SHARED}`]);
+      expect(n("SELECT 1 FROM blob WHERE content_hash = ?", H)).toBe(0);
+      expect(n("SELECT 1 FROM media WHERE content_hash = ?", H)).toBe(0);
+    },
+  );
+
+  it("defers removing a late-published orphan while another attempt is live, then removes it", async () => {
+    const clock = { now: T0 };
+    const g = gate();
+    const media = store(clock, {
+      rename: async (from, to) => {
+        await fsp.rename(from, to);
+        if (to.endsWith(H)) {
+          g.reached();
+          await g.released;
+        }
+      },
+    });
+    const jobs = new JobStore(db);
+    const l = lease(jobs, "m", T0);
+    const d = media.enqueue(A, "https://example.test/a/late.png");
+    const run = media.download(d.id, { jobs, jobId: "m", lease: l });
+    await g.hit;
+    clock.now = T0 + TTL + 1;
+    // Another source's attempt is running under a live lease.
+    const other = lease(jobs, "mb", clock.now);
+    db.prepare(
+      "INSERT INTO media_download (source_id, url, state, claim_job_id, claim_generation, claim_token) VALUES (?, 'https://example.test/b/live.png', 'downloading', 'mb', ?, ?)",
+    ).run(B, other.generation, "0123abcd-0000-4000-8000-00000000cafe");
+    const t = new TrashStore(db, { mediaRoot: dir });
+    t.trash(A, clock.now);
+    t.purge(A, clock.now);
+    const orphan = `blobs/${H.slice(0, 2)}/${H}`;
+    expect(files()).toEqual(
+      [`blobs/${HASH_SHARED.slice(0, 2)}/${HASH_SHARED}`, `blobs/bb/${HASH_ONLY_A}`, orphan].sort(),
+    );
+    g.release();
+    expect(await run).toBe("lease_lost");
+    db.prepare("UPDATE media_download SET claim_token = NULL WHERE source_id = ?").run(B);
+    expect(t.retryPendingFiles(clock.now)).toEqual({ removed: 2, pending: 0 });
+    expect(files()).toEqual([`blobs/${HASH_SHARED.slice(0, 2)}/${HASH_SHARED}`]);
+  });
+
+  it("never deletes a blob another source's live attempt has just published for the same bytes", async () => {
+    // A's media has the same content as B's download, but A's file is missing, so B publishes
+    // its own verified file by rename and commits afterwards.
+    db.prepare("INSERT INTO blob (content_hash, size_bytes, ref_count) VALUES (?, ?, 1)").run(
+      H,
+      BODY.length,
+    );
+    db.prepare(
+      "INSERT INTO media (source_id, content_hash, blob_path, mime_type) VALUES (?, ?, ?, 'image/png')",
+    ).run(A, H, `blobs/${H.slice(0, 2)}/${H}`);
+    const clock = { now: T0 };
+    const g = gate();
+    const media = store(clock, {
+      rename: async (from, to) => {
+        await fsp.rename(from, to);
+        if (to.includes(`${H.slice(0, 2)}`) && to.endsWith(H)) {
+          g.reached();
+          await g.released;
+        }
+      },
+    });
+    const jobs = new JobStore(db);
+    const l = lease(jobs, "mb", T0);
+    const d = media.enqueue(B, "https://example.test/b/same.png");
+    const run = media.download(d.id, { jobs, jobId: "mb", lease: l });
+    await g.hit; // B's blob file exists; B's blob/media rows are not committed yet
+    expect(existsSync(blobFile(H))).toBe(true);
+    const t = new TrashStore(db, { mediaRoot: dir });
+    t.trash(A, T0 + 1);
+    const r = t.purge(A, T0 + 1);
+    expect(r.blobsRemoved).toContain(H);
+    // B's live attempt may still reference these bytes: every blob removal stays queued.
+    expect(existsSync(blobFile(H))).toBe(true);
+    expect(existsSync(blobFile(HASH_ONLY_A))).toBe(true);
+    expect(r.filesPending).toBe(2);
+    g.release();
+    expect(await run).toBe("complete");
+    expect(existsSync(blobFile(H))).toBe(true);
+    expect(media.blob(H)).toMatchObject({ refCount: 1 });
+    expect(n("SELECT 1 FROM media WHERE source_id = ? AND content_hash = ?", B, H)).toBe(1);
+    // The authoritative rows now reference the blob, so its queued removal is dropped; A's
+    // unshared blob is removed now that no attempt is running.
+    expect(t.retryPendingFiles(T0 + 2)).toEqual({ removed: 1, pending: 0 });
+    expect(existsSync(blobFile(HASH_ONLY_A))).toBe(false);
+    expect(existsSync(blobFile(H))).toBe(true);
+    expect(n("SELECT 1 FROM purge_file")).toBe(0);
+  });
+
+  it("stops a cleanly ended attempt's entry on trash even while its job lease is live", async () => {
+    const clock = { now: T0 };
+    const fetched: string[] = [];
+    let fail = true;
+    const ok = okFetch(fetched);
+    const media = store(clock, {}, (url, init) =>
+      fail ? Promise.reject(new Error("synthetic network down")) : ok(url, init),
+    );
+    const jobs = new JobStore(db);
+    const l = lease(jobs, "m", T0);
+    const d = media.enqueue(A, "https://example.test/a/retry.png");
+    expect(await media.download(d.id, { jobs, jobId: "m", lease: l })).toBe("interrupted");
+    // The attempt ended (token released) but its job still holds a live lease.
+    expect(claim(d.id)).toMatchObject({ state: "pending", claim_job_id: "m", claim_token: null });
+    const t = new TrashStore(db, { mediaRoot: dir });
+    t.trash(A, T0 + 1);
+    expect(claim(d.id)).toMatchObject({ state: "failed", error: "source_trashed" });
+    fail = false;
+    clock.now = T0 + TTL + 1;
+    jobs.create({ id: "m2", kind: "media" });
+    await media.runJob(jobs, "m2", "w");
+    expect(fetched).toEqual([]);
+    // No attempt is running, so purge is not busy.
+    expect(t.purge(A, T0 + 2).sourceId).toBe(A);
+    expect(files()).toEqual([`blobs/${HASH_SHARED.slice(0, 2)}/${HASH_SHARED}`]);
+  });
+
+  it("keeps a job from retrying its own failed download of a trashed source", async () => {
+    const clock = { now: T0 };
+    const fetched: string[] = [];
+    const media = store(clock, {}, okFetch(fetched));
+    const jobs = new JobStore(db);
+    jobs.create({ id: "m", kind: "media" });
+    // Job m failed this entry earlier and owns the failure, so its next run would retry it.
+    db.prepare(
+      "INSERT INTO media_download (source_id, url, state, error, claim_job_id, claim_generation) VALUES (?, 'https://example.test/a/404.png', 'failed', 'http 404', 'm', 0)",
+    ).run(A);
+    const t = new TrashStore(db, { mediaRoot: dir });
+    t.trash(A, T0);
+    await media.runJob(jobs, "m", "w");
+    expect(fetched).toEqual([]);
+    expect(n("SELECT 1 FROM media WHERE content_hash = ?", H)).toBe(0);
+  });
+
+  it("removes an attempt-named part file and the recorded part of a sealed attempt", () => {
+    const tok = "0123abcd-0000-4000-8000-00000000beef";
+    const id = Number(
+      db
+        .prepare(
+          "INSERT INTO media_download (source_id, url, state, bytes_received) VALUES (?, 'https://example.test/v.mp4', 'pending', 3)",
+        )
+        .run(A).lastInsertRowid,
+    );
+    db.prepare("UPDATE media_download SET part_file = ? WHERE id = ?").run(`${id}.${tok}.part`, id);
+    mkdirSync(join(dir, "tmp"), { recursive: true });
+    writeFileSync(join(dir, "tmp", `${id}.${tok}.part`), "abc");
+    // A stale attempt's file of the same entry, and another entry's file that must stay.
+    writeFileSync(join(dir, "tmp", `${id}.ffffffff-0000-4000-8000-000000000000.part`), "x");
+    writeFileSync(join(dir, "tmp", `${id + 1}.${tok}.part`), "keep");
+    const t = new TrashStore(db, { mediaRoot: dir });
+    t.trash(A, T0);
+    t.purge(A, T0);
+    expect(readdirSync(join(dir, "tmp"))).toEqual([`${id + 1}.${tok}.part`]);
+    expect(claim(id)).toMatchObject({ part_file: null, claim_token: null });
+  });
+
+  it("removes a purged-only blob whose reference count drifted upward", () => {
+    db.prepare("UPDATE blob SET ref_count = 5 WHERE content_hash = ?").run(HASH_ONLY_A);
+    const t = new TrashStore(db, { mediaRoot: dir });
+    t.trash(A, T0);
+    expect(t.purge(A, T0).blobsRemoved).toEqual([HASH_ONLY_A]);
+    expect(existsSync(blobFile(HASH_ONLY_A))).toBe(false);
+    expect(existsSync(blobFile(HASH_SHARED))).toBe(true);
+  });
+
+  it("keeps a queued blob file that a media row still names without a blob row", () => {
+    let fail = true;
+    const t = new TrashStore(db, {
+      mediaRoot: dir,
+      removeFile: (p) => {
+        if (fail) throw Object.assign(new Error("EACCES: synthetic"), { code: "EACCES" });
+        rmSync(p, { force: true });
+      },
+    });
+    t.trash(A, T0);
+    expect(t.purge(A, T0).filesPending).toBe(1);
+    // A legacy media row (predating the blob table) names the same content.
+    db.prepare("INSERT INTO media (source_id, content_hash, blob_path) VALUES (?, ?, ?)").run(
+      B,
+      HASH_ONLY_A,
+      `blobs/${HASH_ONLY_A.slice(0, 2)}/${HASH_ONLY_A}`,
+    );
+    fail = false;
+    expect(t.retryPendingFiles()).toEqual({ removed: 0, pending: 0 });
+    expect(existsSync(blobFile(HASH_ONLY_A))).toBe(true);
   });
 });

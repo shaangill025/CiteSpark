@@ -147,12 +147,28 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
   numbered capture-commit 2, media-store 3 and trash-purge 4; a database that recorded any of those
   names is refused by name before backup or SQL. Upgrades from every earlier recorded state, a
   rolled-back failed migration 7, and idempotent re-runs are covered by `migrate.test.ts`.
-- DAT-03: `TrashStore.purge(sourceId, nowMs)` throws `PurgeBusyError` while a running job's
-  unexpired lease holds one of the source's downloads; `emptyTrash` reports such sources as
-  `busy`. A worker whose lease already expired can still finish an unfenced file write; its
-  database commit is refused by the lease fence and by the `media_purged_source` trigger.
-- DAT-03: purged downloads remain as `failed`/`source_purged` rows so their ids are never reused
-  and re-enqueueing is a no-op. Partial files are matched by download id under `tmp/`.
+- DAT-03: `TrashStore.purge(sourceId, nowMs)` throws `PurgeBusyError` while one of the source's
+  downloads has a running media attempt (an unreleased `claim_token` under a live lease);
+  `emptyTrash` reports such sources as `busy`. A cleanly ended attempt does not block purge.
+- DAT-03: in-flight async file work of a worker whose lease already expired is not stoppable from
+  the store. Under the attempt-isolated media model its late open or write reaches only its own
+  `tmp/<id>.<token>.part`, which purge queues and removes and the attempt removes again when it
+  ends; its database commits are refused by the lease and token fence and by the
+  `media_purged_source` trigger. Its rename into `blobs/` either fails (purge already removed the
+  part) or leaves a file no `blob` or `media` row names, which `retryPendingFiles` (run by every
+  trash, purge and `emptyTrash`; callers should also run it at startup) removes. Blob files are
+  never removed while any media attempt is running under a live lease, so another source's
+  attempt that has just published or verified the same bytes keeps them; the removal stays queued
+  (`trash.test.ts`, "purge against attempt-isolated media downloads", named paths asserted).
+- DAT-03: trash stops every entry without a running attempt, clears its claim (so a job cannot
+  retry its own failure of a trashed source) and, for an attempt that never ended, queues its part
+  file for removal and restarts the entry from zero instead of letting a resume take over a file a
+  stale handle may still write. Restore re-queues only entries trash stopped.
+- DAT-03: purged downloads remain as `failed`/`source_purged` rows (claim token and part file
+  cleared) so their ids are never reused and re-enqueueing is a no-op. Partial files are matched by
+  download id under `tmp/` (`<id>.part` and `<id>.<token>.part`) and by the recorded part file.
+  Blob rows and files of the purged source are removed when no remaining `media` row names the
+  content; media rows win over `blob.ref_count` drift in both directions.
 - ENR-01: `LinkedSourceStore.enrich` returns `suppressed` for a trashed or purged destination.
 
 ## Acceptance tests

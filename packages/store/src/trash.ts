@@ -46,6 +46,15 @@ const RESUMABLE = "('pending', 'downloading', 'paused_budget', 'paused_disk')";
 /** Same rule as the media store: the claiming job is running under the same, unexpired lease. */
 const LIVE_CLAIM = `EXISTS (SELECT 1 FROM job j WHERE j.id = md.claim_job_id AND j.state = 'running'
   AND j.lease_expires_at > @now AND j.lease_generation = md.claim_generation)`;
+/**
+ * An execution attempt that has not ended (it still holds its exclusive claim token) under a live
+ * lease. Only such an attempt can still commit blob or media rows: the media store fences every
+ * commit by both the lease and the token, so an attempt whose lease expired, or whose token was
+ * cleared here, can at most leave files that nothing references.
+ */
+const LIVE_ATTEMPT = `(md.claim_token IS NOT NULL AND ${LIVE_CLAIM})`;
+/** Part files the media store writes under `tmp/`: `<id>.part` (earlier layout) or `<id>.<token>.part`. */
+const PART = /^([0-9]+)(\.[0-9a-f-]{36})?\.part$/;
 
 /**
  * Recoverable trash and explicit purge (DAT-03, DAT-04, Q50, SYN-04, Q51). Trash marks the source,
@@ -84,14 +93,44 @@ export class TrashStore {
              suppression = CASE suppression WHEN 'none' THEN 'unlinked' ELSE suppression END
            WHERE source_id = ?`,
         ).run(sourceId);
-        // Waiting downloads stop; one a live job is transferring finishes into trash.
+        // Waiting downloads stop; one a running attempt is transferring finishes into trash. A
+        // cleanly ended attempt (token released) keeps its part file for a resume after restore.
+        // An attempt that never ended (crashed, or its lease expired) may still hold an open
+        // handle on its part file, so its progress cannot be taken over by rename: the file is
+        // queued for removal and the entry restarts from zero.
+        const stop = { id: sourceId, now: nowMs };
+        const queue = db.prepare(
+          "INSERT OR IGNORE INTO purge_file (path, source_id, kind) VALUES (?, ?, 'partial')",
+        );
+        const unended = db
+          .prepare(
+            `SELECT part_file FROM media_download AS md WHERE source_id = @id
+               AND claim_token IS NOT NULL AND part_file IS NOT NULL AND NOT ${LIVE_ATTEMPT}`,
+          )
+          .all(stop) as { part_file: string }[];
+        for (const r of unended) {
+          if (PART.test(r.part_file)) queue.run(`tmp/${r.part_file}`, sourceId);
+        }
         db.prepare(
-          `UPDATE media_download AS md SET state = 'failed', error = @reason,
-             claim_job_id = NULL, claim_generation = NULL
-           WHERE source_id = @id AND state IN ${RESUMABLE} AND NOT ${LIVE_CLAIM}`,
-        ).run({ id: sourceId, reason: SUPPRESSED_TRASH, now: nowMs });
+          `UPDATE media_download AS md SET part_file = NULL, bytes_received = 0, total_bytes = NULL,
+             etag = NULL
+           WHERE source_id = @id AND claim_token IS NOT NULL AND state <> 'complete'
+             AND NOT ${LIVE_ATTEMPT}`,
+        ).run(stop);
+        db.prepare(
+          `UPDATE media_download AS md SET state = 'failed', error = @reason
+           WHERE source_id = @id AND state IN ${RESUMABLE} AND NOT ${LIVE_ATTEMPT}`,
+        ).run({ ...stop, reason: SUPPRESSED_TRASH });
+        // No job may claim the entry again while the source is in trash, including a job retrying
+        // its own failures.
+        db.prepare(
+          `UPDATE media_download AS md SET claim_job_id = NULL, claim_generation = NULL,
+             claim_token = NULL
+           WHERE source_id = @id AND claim_job_id IS NOT NULL AND NOT ${LIVE_ATTEMPT}`,
+        ).run(stop);
       })
       .immediate();
+    this.retryPendingFiles(nowMs);
   }
 
   /** Restore a trashed source. Its vault binding stays unlinked until restored explicitly (SYN-04). */
@@ -133,8 +172,8 @@ export class TrashStore {
 
   /**
    * Permanently remove a trashed source's derived data. Idempotent for an already purged source,
-   * which only retries queued file removals. Throws PurgeBusyError, changing nothing, while a live
-   * job lease holds one of the source's downloads.
+   * which only retries queued file removals. Throws PurgeBusyError, changing nothing, while one of
+   * the source's downloads has a running attempt (an unreleased claim token under a live lease).
    */
   purge(sourceId: string, nowMs: number): PurgeResult {
     const row = this.row(sourceId);
@@ -145,7 +184,7 @@ export class TrashStore {
       row.purged_at !== null
         ? []
         : this.db.transaction(() => this.purgeRows(sourceId, nowMs)).immediate();
-    this.retryPendingFiles();
+    this.retryPendingFiles(nowMs);
     const { n } = this.db
       .prepare("SELECT COUNT(*) n FROM purge_file WHERE source_id = ?")
       .get(sourceId) as { n: number };
@@ -173,41 +212,119 @@ export class TrashStore {
   }
 
   /**
-   * Retry queued file removals (after a failed unlink, or a crash after the purge committed). A
-   * queued blob whose content was stored again since (another download of the same bytes) is kept
-   * and dequeued.
+   * Retry queued file removals (after a failed unlink, or a crash after the purge committed) and
+   * remove files a purge left unreferenced. The database is authoritative: a queued blob that a
+   * `blob` row or any `media` row (including rows that predate the blob table) names again is kept
+   * and dequeued. Blob files are only removed while no media download attempt is running under a
+   * live lease, because such an attempt may have just published or verified those bytes and not
+   * yet committed its rows; they stay queued until it ends.
+   *
+   * In-flight async file work of a worker whose lease expired cannot be stopped from here. Its
+   * late open or write reaches only its own attempt-named part file, which the attempt removes
+   * when it ends; a late rename into `blobs/` leaves an unreferenced file that the sweep in this
+   * method removes on its next run (every trash, purge and `emptyTrash` runs it; callers should
+   * also run it at startup). `nowMs` decides which leases are live.
    */
-  retryPendingFiles(): { removed: number; pending: number } {
-    const rows = this.db.prepare("SELECT path, kind FROM purge_file ORDER BY path").all() as {
+  retryPendingFiles(nowMs: number = Date.now()): { removed: number; pending: number } {
+    return this.db.transaction(() => this.retryIn(nowMs)).immediate();
+  }
+
+  private retryIn(nowMs: number): { removed: number; pending: number } {
+    const db = this.db;
+    const busy =
+      db
+        .prepare(`SELECT 1 FROM media_download md WHERE ${LIVE_ATTEMPT} LIMIT 1`)
+        .get({ now: nowMs }) !== undefined;
+    const rows = db.prepare("SELECT path, kind FROM purge_file ORDER BY path").all() as {
       path: string;
       kind: "blob" | "partial";
     }[];
-    const reused = this.db.prepare("SELECT 1 FROM blob WHERE content_hash = ?");
-    const done = this.db.prepare("DELETE FROM purge_file WHERE path = ?");
+    const done = db.prepare("DELETE FROM purge_file WHERE path = ?");
     let removed = 0;
     let pending = 0;
-    for (const r of rows) {
-      const parts = r.path.split("/");
-      if (r.kind === "blob" && reused.get(parts[parts.length - 1]) !== undefined) {
-        done.run(r.path);
-        continue;
-      }
+    const remove = (rel: string): boolean => {
       try {
-        this.removeFile(join(this.opts.mediaRoot, ...parts));
+        this.removeFile(join(this.opts.mediaRoot, ...rel.split("/")));
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    for (const r of rows) {
+      if (r.kind === "blob") {
+        if (this.referenced(r.path)) {
+          done.run(r.path);
+          continue;
+        }
+        if (busy) {
+          pending++;
+          continue;
+        }
+      }
+      if (remove(r.path)) {
         done.run(r.path);
         removed++;
-      } catch {
+      } else {
         pending++;
       }
     }
+    for (const rel of this.orphans(busy)) {
+      if (remove(rel)) removed++;
+    }
     return { removed, pending };
+  }
+
+  /** Whether any `blob` or `media` row names the blob at `blobs/<xx>/<hash>`. */
+  private referenced(path: string): boolean {
+    const hash = path.split("/").pop() ?? "";
+    return (
+      this.db
+        .prepare(
+          `SELECT 1 WHERE EXISTS (SELECT 1 FROM blob WHERE content_hash = @hash)
+             OR EXISTS (SELECT 1 FROM media WHERE content_hash = @hash OR blob_path = @path)`,
+        )
+        .get({ hash, path }) !== undefined
+    );
+  }
+
+  /**
+   * Files no row references any more: part files of purged sources' downloads, and (only while
+   * no attempt is live) content-addressed blob files with no `blob` or `media` row. Files with
+   * other names are never touched.
+   */
+  private orphans(busy: boolean): string[] {
+    const out: string[] = [];
+    const list = (rel: string): string[] => {
+      try {
+        return readdirSync(join(this.opts.mediaRoot, ...rel.split("/")));
+      } catch {
+        return [];
+      }
+    };
+    const purgedDownload = this.db.prepare(
+      `SELECT 1 FROM media_download md JOIN source s ON s.id = md.source_id
+       WHERE md.id = ? AND s.purged_at IS NOT NULL`,
+    );
+    for (const name of list("tmp")) {
+      const m = PART.exec(name);
+      if (m && purgedDownload.get(Number(m[1])) !== undefined) out.push(`tmp/${name}`);
+    }
+    if (busy) return out;
+    for (const shard of list("blobs")) {
+      if (!/^[0-9a-f]{2}$/.test(shard)) continue;
+      for (const name of list(`blobs/${shard}`)) {
+        const rel = `blobs/${shard}/${name}`;
+        if (HASH.test(name) && name.startsWith(shard) && !this.referenced(rel)) out.push(rel);
+      }
+    }
+    return out;
   }
 
   /** Every row change of one purge; runs inside an IMMEDIATE transaction. Returns removed blobs. */
   private purgeRows(sourceId: string, nowMs: number): string[] {
     const db = this.db;
     const live = db
-      .prepare(`SELECT 1 FROM media_download md WHERE source_id = @id AND ${LIVE_CLAIM} LIMIT 1`)
+      .prepare(`SELECT 1 FROM media_download md WHERE source_id = @id AND ${LIVE_ATTEMPT} LIMIT 1`)
       .get({ id: sourceId, now: nowMs });
     if (live) throw new PurgeBusyError(`a running job holds a download of source ${sourceId}`);
     const queue = db.prepare(
@@ -217,15 +334,21 @@ export class TrashStore {
     // Downloads stay as suppressed tombstones: the row keeps its id, so a later enqueue never
     // reuses it and a stale worker cannot attach bytes to another source, and its URL, so
     // re-enqueueing is a no-op. Their partial files are queued for removal.
+    // An attempt whose lease expired may still finish an async open or write; it reaches only its
+    // own attempt-named part file and removes that file itself when it ends, because the entry no
+    // longer records it.
     const downloads = db
-      .prepare("SELECT id FROM media_download WHERE source_id = ?")
-      .all(sourceId) as { id: number }[];
-    for (const f of this.partialFiles(downloads.map((d) => d.id))) {
-      queue.run(f, sourceId, "partial");
+      .prepare("SELECT id, part_file FROM media_download WHERE source_id = ?")
+      .all(sourceId) as { id: number; part_file: string | null }[];
+    const parts = new Set(this.partialFiles(downloads.map((d) => d.id)));
+    for (const d of downloads) {
+      if (d.part_file !== null && PART.test(d.part_file)) parts.add(`tmp/${d.part_file}`);
     }
+    for (const f of [...parts].sort()) queue.run(f, sourceId, "partial");
     db.prepare(
       `UPDATE media_download SET state = 'failed', error = ?, media_id = NULL, bytes_received = 0,
-         total_bytes = NULL, etag = NULL, mime_type = NULL, claim_job_id = NULL, claim_generation = NULL
+         total_bytes = NULL, etag = NULL, mime_type = NULL, claim_job_id = NULL,
+         claim_generation = NULL, claim_token = NULL, part_file = NULL
        WHERE source_id = ?`,
     ).run(SUPPRESSED_PURGE, sourceId);
 
@@ -296,10 +419,12 @@ export class TrashStore {
 
     const gone: string[] = [];
     for (const hash of new Set(media.map((m) => m.content_hash))) {
-      // A counter can undercount (for example after a stray release); remaining media rows win.
+      // The remaining media rows are authoritative in both directions: a counter that undercounts
+      // (a stray release) never removes a referenced blob, and one that overcounts (legacy drift)
+      // never keeps a purged source's content on disk.
       const { refs: still } = db
-        .prepare("SELECT COUNT(*) refs FROM media WHERE content_hash = ?")
-        .get(hash) as { refs: number };
+        .prepare("SELECT COUNT(*) refs FROM media WHERE content_hash = ? OR blob_path = ?")
+        .get(hash, `blobs/${hash.slice(0, 2)}/${hash}`) as { refs: number };
       if (still > 0) {
         db.prepare("UPDATE blob SET ref_count = MAX(ref_count, ?) WHERE content_hash = ?").run(
           still,
@@ -307,7 +432,7 @@ export class TrashStore {
         );
         continue;
       }
-      const r = db.prepare("DELETE FROM blob WHERE content_hash = ? AND ref_count = 0").run(hash);
+      const r = db.prepare("DELETE FROM blob WHERE content_hash = ?").run(hash);
       if (r.changes > 0 && HASH.test(hash)) {
         gone.push(hash);
         queue.run(`blobs/${hash.slice(0, 2)}/${hash}`, sourceId, "blob");
