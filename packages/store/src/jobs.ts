@@ -110,7 +110,30 @@ export interface CheckpointData {
   progress?: string | null;
 }
 
-/** Job state machine, leases, and durable checkpoints (CAP-03, CAP-04, CAP-06). Time is injected as epoch ms. */
+/** Time is epoch ms: a non-negative safe integer. Invalid values throw before any read or write. */
+function checkTime(nowMs: number): void {
+  if (!Number.isSafeInteger(nowMs) || nowMs < 0) {
+    throw new RangeError(`time must be a non-negative safe integer (ms), got ${nowMs}`);
+  }
+}
+
+/** TTL is a positive safe integer and the resulting expiry must also be a safe integer. */
+function checkExpiry(nowMs: number, ttlMs: number): number {
+  checkTime(nowMs);
+  if (!Number.isSafeInteger(ttlMs) || ttlMs <= 0) {
+    throw new RangeError(`TTL must be a positive safe integer (ms), got ${ttlMs}`);
+  }
+  const expiresAt = nowMs + ttlMs;
+  if (!Number.isSafeInteger(expiresAt)) {
+    throw new RangeError(`lease expiry ${nowMs} + ${ttlMs} exceeds the safe integer range`);
+  }
+  return expiresAt;
+}
+
+/**
+ * Job state machine, leases, and durable checkpoints (CAP-03, CAP-04, CAP-06). Time is injected as
+ * epoch ms; every timed method throws RangeError for invalid time or TTL before changing anything.
+ */
 export class JobStore {
   constructor(private readonly db: Database.Database) {}
 
@@ -136,6 +159,7 @@ export class JobStore {
    * this attempt; never refresh a stale attempt's generation from get(id).
    */
   acquire(id: string, owner: string, nowMs: number, ttlMs: number): Lease | null {
+    const expiresAt = checkExpiry(nowMs, ttlMs);
     return this.db
       .transaction(() => {
         const job = this.get(id);
@@ -159,7 +183,7 @@ export class JobStore {
           .prepare(
             "UPDATE job SET state = 'running', lease_owner = ?, lease_expires_at = ?, lease_generation = lease_generation + 1, stop_reason = NULL WHERE id = ?",
           )
-          .run(owner, nowMs + ttlMs, id);
+          .run(owner, expiresAt, id);
         return { owner, generation: this.get(id).leaseGeneration };
       })
       .immediate();
@@ -167,16 +191,18 @@ export class JobStore {
 
   /** Extend a live lease. Throws if the lease is not held or has expired. */
   renew(id: string, owner: Lease, nowMs: number, ttlMs: number): void {
+    const expiresAt = checkExpiry(nowMs, ttlMs);
     this.db
       .transaction(() => {
         this.assertLease(id, owner, nowMs);
-        this.db.prepare("UPDATE job SET lease_expires_at = ? WHERE id = ?").run(nowMs + ttlMs, id);
+        this.db.prepare("UPDATE job SET lease_expires_at = ? WHERE id = ?").run(expiresAt, id);
       })
       .immediate();
   }
 
   /** Persist cursor/checkpoint/progress durably; fenced by the live lease. Returns whether cancel was requested. */
   checkpoint(id: string, owner: Lease, nowMs: number, data: CheckpointData): boolean {
+    checkTime(nowMs);
     return this.db
       .transaction(() => {
         const job = this.assertLease(id, owner, nowMs);
@@ -195,6 +221,7 @@ export class JobStore {
 
   /** Owner moves a running job out of `running`; releases the lease. */
   transition(id: string, owner: Lease, nowMs: number, to: JobState, stopReason?: string): void {
+    checkTime(nowMs);
     this.db
       .transaction(() => {
         const job = this.assertLease(id, owner, nowMs);
@@ -231,6 +258,7 @@ export class JobStore {
    * request and the owner finishes with `transition(..., "cancelled")`; otherwise it cancels at once.
    */
   cancel(id: string, nowMs: number): Job {
+    checkTime(nowMs);
     this.db
       .transaction(() => {
         const job = this.get(id);
@@ -249,6 +277,7 @@ export class JobStore {
 
   /** Jobs left `running` with an expired lease after a crash; they are reclaimed with `acquire`. */
   findExpired(nowMs: number): Job[] {
+    checkTime(nowMs);
     return (
       this.db
         .prepare("SELECT * FROM job WHERE state = 'running' AND lease_expires_at <= ?")

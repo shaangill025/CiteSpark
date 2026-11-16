@@ -77,7 +77,14 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
   `{ owner, generation }` lease, not just an owner string. `acquire` returns this token atomically
   (or null on exclusion), replacing its former boolean result. Dependent capture/media layers must
   retain that token rather than rereading the generation for delayed work.
+- CAP-03/CAP-04: timed `JobStore` calls (`acquire`, `renew`, `checkpoint`, `transition`, `cancel`,
+  `findExpired`) throw `RangeError` before any change unless time is a non-negative safe integer
+  (epoch ms), TTL is a positive safe integer, and the computed expiry is a safe integer, so NaN
+  clocks cannot bypass expiry and non-positive TTLs cannot open same-scope overlaps.
 - MIG-02: existing databases require a successful recovery backup hook before pending migrations.
+  The hook is synchronous; one that returns a Promise or other thenable (for example an un-awaited
+  `db.backup()`) is rejected before any migration runs, so callers finish async backups first.
+  A rejected native Promise is marked handled; a custom thenable's `then` is never called.
   The additive `job-lease-generation` migration uses version 3; version 1 and its main-branch
   foreign-key constraints are unchanged. Version 2 is reserved for PR #18's `sync-core` migration;
   no sync implementation is included here.

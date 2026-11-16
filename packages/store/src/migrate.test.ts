@@ -1,6 +1,8 @@
 import Database from "better-sqlite3";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { migrate, MIGRATIONS, type Migration } from "./index.ts";
+import { migrate, MIGRATIONS, type BackupHook, type Migration } from "./index.ts";
 
 const tables = (db: Database.Database): string[] =>
   (
@@ -100,6 +102,63 @@ describe("migrations", () => {
       }),
     ).toThrow("disk full");
     expect(tables(db2)).not.toContain("b");
+  });
+
+  it.each([
+    ["an unfinished Promise", () => new Promise<void>(() => undefined)],
+    ["a rejected Promise", () => Promise.reject(new Error("backup failed later"))],
+    ["a custom thenable", () => ({ then: () => undefined })],
+    [
+      "a thenable with a throwing then getter",
+      () =>
+        Object.defineProperty({}, "then", {
+          get() {
+            throw new Error("then getter threw");
+          },
+        }),
+    ],
+  ] as const)("rejects a backup hook that returns %s before applying migrations", (_, hook) => {
+    const db = new Database(":memory:");
+    migrate(db, { migrations: MIGRATIONS.slice(0, 1) });
+    expect(() => migrate(db, { backup: hook as unknown as BackupHook })).toThrow(/synchronous/i);
+    expect(
+      (db.pragma("table_info(job)") as { name: string }[]).some(
+        (c) => c.name === "lease_generation",
+      ),
+    ).toBe(false);
+    expect(db.prepare("SELECT MAX(version) v FROM schema_migration").get()).toEqual({ v: 1 });
+  });
+
+  it("rejects async backup results without an unhandled rejection in strict mode", () => {
+    // A fresh process, because vitest installs its own unhandled-rejection handler.
+    const script = `
+      import Database from "better-sqlite3";
+      import { migrate } from ${JSON.stringify(new URL("./migrate.ts", import.meta.url).href)};
+      import { MIGRATIONS } from ${JSON.stringify(new URL("./migrations.ts", import.meta.url).href)};
+      const hooks = [
+        () => Promise.reject(new Error("native rejected")),
+        () => ({ async then() { throw new Error("async custom then rejected"); } }),
+        () => ({ then() { return Promise.reject(new Error("custom then returned rejection")); } }),
+        () => ({ then(_ok, fail) { fail(new Error("custom then rejected")); } }),
+        () => Object.defineProperty({}, "then", { get() { throw new Error("then getter threw"); } }),
+      ];
+      for (const backup of hooks) {
+        const db = new Database(":memory:");
+        migrate(db, { migrations: MIGRATIONS.slice(0, 1) });
+        try { migrate(db, { backup }); console.log("migrated"); } catch { /* expected */ }
+        console.log(db.prepare("SELECT MAX(version) v FROM schema_migration").get().v);
+      }
+      for (let i = 0; i < 3; i++) await new Promise((r) => setTimeout(r, 0));
+      console.log("survived");
+    `;
+    const run = spawnSync(
+      process.execPath,
+      ["--unhandled-rejections=strict", "--input-type=module", "--eval", script],
+      { cwd: fileURLToPath(new URL("..", import.meta.url)), encoding: "utf8" },
+    );
+    expect(run.stderr).toBe("");
+    expect(run.stdout.trim().split("\n")).toEqual(["1", "1", "1", "1", "1", "survived"]);
+    expect(run.status).toBe(0);
   });
 
   it("rejects a database newer than this build", () => {
