@@ -23,7 +23,7 @@ labeled alpha/beta previews; version 1.0 waits until every required capability p
 
 ## Documents
 
-- [Specification v1.0](docs/spec/citspark-spec-v1.0.md)
+- [Specification v1.0](docs/spec/citspark-spec-v1.0.md): authoritative in-repo transcription of the owner-approved PDF
 - [Traceability matrix](docs/spec/traceability.md): requirement, milestone, acceptance test, status
 - [Contributing](CONTRIBUTING.md), [Security policy](SECURITY.md), [Agent conventions](AGENTS.md)
 
