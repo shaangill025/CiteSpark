@@ -115,6 +115,7 @@ function parseQuoted(tweet: Obj): QuotedPost | null {
       text: null,
       language: null,
       createdAt: null,
+      translation: null,
     };
   }
   const un = unwrap(dig(container, "result"));
@@ -127,6 +128,7 @@ function parseQuoted(tweet: Obj): QuotedPost | null {
       text: null,
       language: null,
       createdAt: null,
+      translation: null,
     };
   }
   return {
@@ -136,6 +138,7 @@ function parseQuoted(tweet: Obj): QuotedPost | null {
     text: postText(un.tweet),
     language: optString(dig(un.tweet, "legacy", "lang")),
     createdAt: parseDate(dig(un.tweet, "legacy", "created_at")),
+    translation: parseTranslation(un.tweet),
   };
 }
 

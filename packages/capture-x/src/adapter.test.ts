@@ -432,3 +432,40 @@ describe("relationship identifiers (CAP-02, CAP-07 review regressions)", () => {
     }
   });
 });
+
+describe("quoted translation attribution (CAP-09 review regressions)", () => {
+  test("a quoted post's translation is retained separately from the root's (F6)", () => {
+    const quote = tweet("1900000000000000912", null, "1900000000000000912") as Record<
+      string,
+      unknown
+    >;
+    quote["translation"] = { text: "Translated quote", source_lang: "en", target_lang: "fr" };
+    const root = tweet("1900000000000000911", null, "1900000000000000911") as {
+      legacy: Record<string, unknown>;
+    } & Record<string, unknown>;
+    root["translation"] = { text: "Translated root", source_lang: "en", target_lang: "fr" };
+    root.legacy["quoted_status_id_str"] = "1900000000000000912";
+    root["quoted_status_result"] = { result: quote };
+    const page = okPage(
+      bookmarksBody([
+        {
+          type: "TimelineAddEntries",
+          entries: [itemEntry("tweet-1900000000000000911", root), cursor("Bottom", "SYNTHETIC_Q")],
+        },
+      ]) as object,
+    );
+    const p = post(page, "1900000000000000911");
+    expect(p.text).toBe("Synthetic post 1900000000000000911");
+    expect(p.translation?.text).toBe("Translated root");
+    expect(p.quoted).toMatchObject({
+      id: "1900000000000000912",
+      text: "Synthetic post 1900000000000000912",
+      translation: {
+        text: "Translated quote",
+        sourceLanguage: "en",
+        targetLanguage: "fr",
+        origin: "x-translation",
+      },
+    });
+  });
+});

@@ -33,6 +33,9 @@ export interface QuotedPost {
   text: string | null;
   language: string | null;
   createdAt: string | null;
+  /** X translation of the quoted post itself, attributed to the quoted author; never merged
+   * into the quoting post's text or translation (CAP-09). */
+  translation: Translation | null;
 }
 
 export interface ThreadPlacement {
