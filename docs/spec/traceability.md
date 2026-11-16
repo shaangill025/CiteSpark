@@ -55,7 +55,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | SEC-03 | Local-only limitation explanation and explicit local rerun | M4 | T05 | M3-04 | not started |  |
 | SEC-04 | OS credential storage; credentials excluded from logs/backups | M2 | T05, T08 | M1-06, M1-08, M2-03, M2-12 | in progress | F0: ADR 0006 (key storage), ADR 0008. M1-06: no shared secrets; core registry holds only client public keys; client static key wrapped by a non-extractable WebCrypto key (ADR 0011, unit tests). Desktop `safeStorage` and credential scanner pending |
 | SEC-05 | No telemetry; redacted previewable support bundle | M5 | T05 | M2-03 | not started |  |
-| SEC-06 | Escaping, CSV neutralization, path traversal, quotas, isolation | M1, M5 | T09 | M1-01, M1-09, M2-01, M2-12, M5-02, M5-04 | not started | M1-01 adds CI dependency audit and license allowlist; signed updates in M5. CI maintenance: `actions/checkout` bumped to v7.0.1, still pinned to an immutable commit SHA |
+| SEC-06 | Escaping, CSV neutralization, path traversal, quotas, isolation | M1, M5 | T09 | M1-01, M1-09, M2-01, M2-12, M5-02, M5-04 | not started | M1-01 adds CI dependency audit and license allowlist; signed updates in M5. CI maintenance: `actions/checkout` bumped to v7.0.1, still pinned to an immutable commit SHA. Dev dependency maintenance: a bounded pnpm override moves only `minimatch@>=7.0.0 <11.0.1` (transitive via typescript-eslint) to the patched 11.x line for GHSA-g3hv-75wg-m249; minimatch 3.x used by ESLint is unaffected |
 | SEC-07 | Threat model | F0, M5 | T05, T06 | M1-06, M5-04 | in progress | Security review in M5. F0: ADR 0006 IPC threat analysis. M1-06: unauthorized local clients covered by the T06 suite (ADR 0011); full threat model in M5-04 |
 | SEC-08 | No at-rest encryption promise; documented | M5 | T08 | M2-08, M5-05 | not started | Documentation check |
 | DAT-01 | 100,000-post capacity target; incremental indexing | M1, M3 | T11 | M1-02, M3-01 | in progress | M1-02: schema and 19-digit ID round-trip (`packages/store`); capacity and incremental indexing pending. F0 100k-post search test. F0: 100k-post FTS5 benchmark on macOS (`docs/f0/benchmarks.md`); Windows run pending (B3) |
@@ -136,6 +136,13 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
   loopback fixture's partial write of fixed synthetic PNG bytes (not Express, no echo, no HTML). No
   file, rule or global scanner exclusion is added.
 
+## Status maintenance notes
+
+- README status: the milestone row for M1 now reads `in progress`, matching the merged M1-01 to M1-07 and M1-10
+  layers and the requirement rows above (CAP-01 to CAP-04, CAP-06 to CAP-09, DAT-01, MED-01, MED-04, MIG-02). M1 is
+  partial, not complete: M1-08, M1-09, M1-11 and M1-12 are pending. README status mirrors this matrix and is limited to
+  merged code; it records no test counts.
+
 ## Acceptance tests
 
 | ID | Name | Milestone gate | Plan layers | Status | F0 evidence |
@@ -145,7 +152,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | T03 | Attribution | M1, M3 | M1-07, M3-11, M4-05 | in progress | ADR 0010 |
 | T04 | Sync | M2 | M2-04, M2-05 | in progress | M2-04: seeded fast-check property tests (`packages/sync/src/t04.property.test.ts`): random concurrent edit sequences never lose user text; same-key metadata changes conflict. Filesystem harness pending (M2-05) |
 | T05 | Privacy | M3, M4 | M3-04 | not started | — |
-| T06 | Pairing | M2 | M1-06, M2-09 | in progress | ADR 0006, ADR 0011. M1-06: socket, channel, pairing (including a socket squatter claiming `pair.ok`), registry-owned replay ledger and Windows pipe DACL suite in `packages/core/src/ipc/t06.test.ts`; plugin in M2-09 |
+| T06 | Pairing | M2 | M1-06, M2-09 | in progress | ADR 0006, ADR 0011. M1-06: socket, channel, pairing (including a socket squatter claiming `pair.ok`), registry-owned replay ledger and Windows pipe DACL suite in `packages/core/src/ipc/t06.test.ts`; the DACL check bounds its PowerShell child (pipe connect 5 s < child 20 s < test 30 s) and logs each stage it reached; plugin in M2-09 |
 | T07 | Deletion | M1, M2 | M1-12, M3-02 | not started | — |
 | T08 | Backup | M2 | M2-08 | not started | F0 prototype: 5 passing tests in `prototypes/backup-age` |
 | T09 | Import | M1 | M1-09, M5-03 | not started | — |
@@ -161,7 +168,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | ID | Name | Scope | Status | Evidence |
 | --- | --- | --- | --- | --- |
 | M0 | Feasibility | Measured prototypes, licence inventory, architecture decisions, capability matrix; owner-reviewed plan | complete | [ADRs 0001–0010](../adr/README.md), [F0 results](../f0/README.md), [owner decisions](../f0/owner-decisions.md); plan approved 2026-11-16 |
-| M1 | Data foundation | Archive, versioning, jobs, capture, import, media, recoverable storage (preview only) | not started | M1-01 to M1-12 |
+| M1 | Data foundation | Archive, versioning, jobs, capture, import, media, recoverable storage (preview only) | in progress | M1-01 to M1-12 (M1-01 to M1-07 and M1-10 merged; M1-08, M1-09, M1-11 and M1-12 pending) |
 | M2 | Desktop and vault | Packaged apps, pairing, two-way sync, conflicts, plugin controls, backups, restore | in progress | M2-01 to M2-12 (M2-04 sync core in progress) |
 | M3 | Knowledge layer | Search, OCR/transcripts, organization, graph/list, exact citations, privacy filtering | not started | M3-01 to M3-11 |
 | M4 | Intelligence | Local runtime, cloud adapters, quick answers, bounded research, plugin research UI, frozen evaluation | not started | M4-01 to M4-08 |

@@ -4,3 +4,7 @@ packages:
   - tools/*
 onlyBuiltDependencies:
   - better-sqlite3
+overrides:
+  # GHSA-g3hv-75wg-m249: only the vulnerable minimatch range (>=7.0.0 <11.0.1) moves to the patched
+  # line; minimatch 3.x used by ESLint is outside the range and stays as resolved.
+  "minimatch@>=7.0.0 <11.0.1": "^11.0.1"
