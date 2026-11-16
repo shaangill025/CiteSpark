@@ -39,6 +39,13 @@ function optString(v: unknown): string | null {
   return typeof v === "string" && v !== "" ? v : null;
 }
 
+/** Optional platform ID: absent or null means no relationship; any other present value that is
+ * not a non-empty string is an unsupported shape and must not be coerced or dropped (CAP-07). */
+function optId(v: unknown, what: string): string | null {
+  if (v === undefined || v === null) return null;
+  return reqString(v, what);
+}
+
 function timelineRoot(body: unknown, collection: CollectionRef): unknown {
   switch (collection.kind) {
     case "bookmarks":
@@ -97,7 +104,7 @@ function parseTranslation(tweet: Obj): Translation | null {
 }
 
 function parseQuoted(tweet: Obj): QuotedPost | null {
-  const legacyId = optString(dig(tweet, "legacy", "quoted_status_id_str"));
+  const legacyId = optId(dig(tweet, "legacy", "quoted_status_id_str"), "quoted_status_id_str");
   const container = tweet["quoted_status_result"];
   if (container === undefined) {
     if (legacyId === null) return null;
@@ -147,8 +154,8 @@ function parseTweet(tweet: Obj): CapturedPost {
     text: postText(tweet),
     language: optString(dig(legacy, "lang")),
     createdAt: parseDate(dig(legacy, "created_at")),
-    conversationId: optString(dig(legacy, "conversation_id_str")),
-    inReplyToId: optString(dig(legacy, "in_reply_to_status_id_str")),
+    conversationId: optId(dig(legacy, "conversation_id_str"), "conversation_id_str"),
+    inReplyToId: optId(dig(legacy, "in_reply_to_status_id_str"), "in_reply_to_status_id_str"),
     quoted: parseQuoted(tweet),
     translation: parseTranslation(tweet),
     thread: null,
@@ -173,7 +180,10 @@ function parseItem(
   }
   return {
     post: parseTweet(un.tweet),
-    replyToUserId: optString(dig(un.tweet, "legacy", "in_reply_to_user_id_str")),
+    replyToUserId: optId(
+      dig(un.tweet, "legacy", "in_reply_to_user_id_str"),
+      "in_reply_to_user_id_str",
+    ),
   };
 }
 

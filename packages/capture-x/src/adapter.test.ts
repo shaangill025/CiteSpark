@@ -400,3 +400,35 @@ describe("unavailable thread ancestry (CAP-08 review regressions)", () => {
     ]);
   });
 });
+
+describe("relationship identifiers (CAP-02, CAP-07 review regressions)", () => {
+  test("a present non-string relationship ID pauses; absence or null is allowed (F5)", () => {
+    const fields = [
+      "in_reply_to_status_id_str",
+      "in_reply_to_user_id_str",
+      "conversation_id_str",
+      "quoted_status_id_str",
+    ];
+    const page = (legacyPatch: Record<string, unknown>) => {
+      const t = tweet("1900000000000000902", "1900000000000000901", "1900000000000000901") as {
+        legacy: Record<string, unknown>;
+      };
+      Object.assign(t.legacy, legacyPatch);
+      return bookmarksBody([
+        {
+          type: "TimelineAddEntries",
+          entries: [itemEntry("tweet-1900000000000000902", t), cursor("Bottom", "SYNTHETIC_IDS")],
+        },
+      ]);
+    };
+    for (const field of fields) {
+      for (const bad of [1900000000000000901, "", true, {}]) {
+        expect(xAdapter.parsePage(page({ [field]: bad }), bookmarks)).toMatchObject({
+          status: "paused",
+          reason: "unsupported_schema",
+        });
+      }
+      expect(xAdapter.parsePage(page({ [field]: null }), bookmarks).status).toBe("ok");
+    }
+  });
+});
