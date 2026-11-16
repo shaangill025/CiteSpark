@@ -1,0 +1,19 @@
+{
+  "name": "@citspark/native-host",
+  "version": "0.0.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "citspark-native-host": "dist/cli.js"
+  },
+  "dependencies": {
+    "@citspark/ipc": "workspace:*"
+  },
+  "devDependencies": {
+    "@citspark/core": "workspace:*",
+    "@citspark/protocol": "workspace:*"
+  }
+}
