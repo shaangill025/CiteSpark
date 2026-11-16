@@ -60,3 +60,14 @@ export {
   type ParsedExport,
   type WarningCode,
 } from "./xarchive.ts";
+export {
+  MediaStore,
+  defaultMediaBudget,
+  type BlobInfo,
+  type DownloadOutcome,
+  type DownloadState,
+  type JobOutcome,
+  type MediaDownload,
+  type MediaStoreOptions,
+  type StorageStatus,
+} from "./media.ts";
