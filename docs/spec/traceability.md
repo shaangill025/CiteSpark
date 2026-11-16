@@ -118,6 +118,12 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 - MIG-02: capture bookkeeping is migration 4 (`capture-commit`). The unmerged preview numbered it 2;
   a database that recorded that preview is refused by name before backup or SQL.
 
+## Status maintenance notes
+
+- README status: the milestone row for M1 now reads `in progress`, matching the merged M1-01 to M1-07 layers and the
+  requirement rows above (CAP-01 to CAP-04, CAP-06 to CAP-09, DAT-01, MIG-02). README status mirrors this matrix and
+  is limited to merged code; it records no test counts.
+
 ## Acceptance tests
 
 | ID | Name | Milestone gate | Plan layers | Status | F0 evidence |
@@ -127,7 +133,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | T03 | Attribution | M1, M3 | M1-07, M3-11, M4-05 | in progress | ADR 0010 |
 | T04 | Sync | M2 | M2-04, M2-05 | in progress | M2-04: seeded fast-check property tests (`packages/sync/src/t04.property.test.ts`): random concurrent edit sequences never lose user text; same-key metadata changes conflict. Filesystem harness pending (M2-05) |
 | T05 | Privacy | M3, M4 | M3-04 | not started | — |
-| T06 | Pairing | M2 | M1-06, M2-09 | in progress | ADR 0006, ADR 0011. M1-06: socket, channel, pairing (including a socket squatter claiming `pair.ok`), registry-owned replay ledger and Windows pipe DACL suite in `packages/core/src/ipc/t06.test.ts`; plugin in M2-09 |
+| T06 | Pairing | M2 | M1-06, M2-09 | in progress | ADR 0006, ADR 0011. M1-06: socket, channel, pairing (including a socket squatter claiming `pair.ok`), registry-owned replay ledger and Windows pipe DACL suite in `packages/core/src/ipc/t06.test.ts`; the DACL check bounds its PowerShell child (pipe connect 5 s < child 20 s < test 30 s) and logs each stage it reached; plugin in M2-09 |
 | T07 | Deletion | M1, M2 | M1-12, M3-02 | not started | — |
 | T08 | Backup | M2 | M2-08 | not started | F0 prototype: 5 passing tests in `prototypes/backup-age` |
 | T09 | Import | M1 | M1-09, M5-03 | not started | — |
@@ -143,7 +149,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | ID | Name | Scope | Status | Evidence |
 | --- | --- | --- | --- | --- |
 | M0 | Feasibility | Measured prototypes, licence inventory, architecture decisions, capability matrix; owner-reviewed plan | complete | [ADRs 0001–0010](../adr/README.md), [F0 results](../f0/README.md), [owner decisions](../f0/owner-decisions.md); plan approved 2026-11-16 |
-| M1 | Data foundation | Archive, versioning, jobs, capture, import, media, recoverable storage (preview only) | not started | M1-01 to M1-12 |
+| M1 | Data foundation | Archive, versioning, jobs, capture, import, media, recoverable storage (preview only) | in progress | M1-01 to M1-12 (M1-01 to M1-07 merged; M1-08 to M1-12 not merged) |
 | M2 | Desktop and vault | Packaged apps, pairing, two-way sync, conflicts, plugin controls, backups, restore | in progress | M2-01 to M2-12 (M2-04 sync core in progress) |
 | M3 | Knowledge layer | Search, OCR/transcripts, organization, graph/list, exact citations, privacy filtering | not started | M3-01 to M3-11 |
 | M4 | Intelligence | Local runtime, cloud adapters, quick answers, bounded research, plugin research UI, frozen evaluation | not started | M4-01 to M4-08 |
