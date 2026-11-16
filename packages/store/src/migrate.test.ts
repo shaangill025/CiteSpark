@@ -562,4 +562,71 @@ describe("schema contracts", () => {
     migrate(db, { backup: (f) => void calls.push(f) });
     expect(calls).toEqual([0]);
   });
+
+  const legacyDb = (): Database.Database => {
+    const db = new Database(":memory:");
+    db.exec("CREATE TABLE legacy (payload TEXT); INSERT INTO legacy VALUES ('preserve');");
+    return db;
+  };
+
+  it.each([
+    ["absent", undefined],
+    [
+      "throwing",
+      () => {
+        throw new Error("backup refused");
+      },
+    ],
+    ["a rejected Promise", () => Promise.reject(new Error("late backup"))],
+    ["a custom thenable", () => ({ then: () => undefined })],
+  ] as const)(
+    "leaves an unmarked existing database byte-identical when the backup hook is %s",
+    (_, backup) => {
+      const db = legacyDb();
+      const before = db.serialize();
+      expect(() => migrate(db, { backup: backup as BackupHook | undefined })).toThrow();
+      expect(db.serialize().equals(before)).toBe(true);
+      expect(tables(db)).toEqual(["legacy"]);
+    },
+  );
+
+  it("completes the backup of an unmarked database before creating bookkeeping", () => {
+    const db = legacyDb();
+    const seen: { live: string[]; copy: string[]; rows: unknown[] }[] = [];
+    const result = migrate(db, {
+      backup: () => {
+        // A real synchronous copy, taken while the hook runs.
+        const copy = new Database(db.serialize());
+        seen.push({
+          live: tables(db),
+          copy: tables(copy),
+          rows: copy.prepare("SELECT * FROM legacy").all(),
+        });
+        copy.close();
+      },
+    });
+    expect(seen).toEqual([{ live: ["legacy"], copy: ["legacy"], rows: [{ payload: "preserve" }] }]);
+    expect(result).toEqual({ applied: MIGRATIONS.map((m) => m.version), version: 4 });
+    expect(db.prepare("SELECT * FROM legacy").all()).toEqual([{ payload: "preserve" }]);
+  });
+
+  it("validates an unmarked database without writing when there is nothing to apply", () => {
+    const db = legacyDb();
+    const before = db.serialize();
+    expect(migrate(db, { migrations: [] })).toEqual({ applied: [], version: 0 });
+    expect(db.serialize().equals(before)).toBe(true);
+    expect(() =>
+      migrate(db, { migrations: [{ version: 0, name: "bad", sql: "SELECT 1;" }] }),
+    ).toThrow(/Invalid/);
+    expect(db.serialize().equals(before)).toBe(true);
+  });
+
+  it("creates bookkeeping on a truly empty database without a backup", () => {
+    const empty = new Database(":memory:");
+    expect(migrate(empty, { migrations: [] })).toEqual({ applied: [], version: 0 });
+    expect(tables(empty)).toEqual(["schema_migration"]);
+    const fresh = new Database(":memory:");
+    expect(migrate(fresh).applied).toEqual([1, 2, 3, 4]);
+    expect(migrate(fresh)).toEqual({ applied: [], version: 4 });
+  });
 });

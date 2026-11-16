@@ -81,18 +81,22 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
   `findExpired`) throw `RangeError` before any change unless time is a non-negative safe integer
   (epoch ms), TTL is a positive safe integer, and the computed expiry is a safe integer, so NaN
   clocks cannot bypass expiry and non-positive TTLs cannot open same-scope overlaps.
-- MIG-02: existing databases require a successful recovery backup hook before pending migrations. Unknown or renamed recorded migrations, and gaps for migrations not declared order-independent, are refused before backup or SQL.
+- MIG-02: existing databases, including unmarked ones that already have tables, require a
+  successful recovery backup hook before pending migrations. `migrate` inspects existing state
+  read-only; the hook completes before the first schema-changing statement, including creation of
+  the `schema_migration` bookkeeping table, so a refused or failed backup leaves the database
+  byte-identical. Only a truly empty database is initialised without a backup. Unknown or renamed
+  recorded migrations, and gaps for migrations not declared order-independent, are refused before
+  backup or SQL.
   The hook is synchronous; one that returns a Promise or other thenable (for example an un-awaited
   `db.backup()`) is rejected before any migration runs, so callers finish async backups first.
   A rejected native Promise is marked handled; a custom thenable's `then` is never called.
-  The additive `job-lease-generation` migration uses version 3; version 1 and its main-branch
-  foreign-key constraints are unchanged. Version 2 is reserved for PR #18's `sync-core` migration;
-  no sync implementation is included here.
-- Before integrating PR #18 and this branch, reconcile migration ordering and test upgrades from
-  both branch schemas. The current maximum-version runner would skip a subsequently introduced
-  version 2 on a jobs-only version 3 database. If jobs lands first, the later sync migration must
-  be renumbered above 3 (with explicit handling of any existing sync version 2 databases); do not
-  ship the combined list without upgrade-path tests. These branches are development previews.
+- Published migration numbers are stable and never renumbered: version 1 `initial-schema` (with
+  its main-branch foreign-key constraints unchanged), version 2 `sync-core` (PR #18) and version 3
+  `job-lease-generation`. The runner validates every recorded ID and name, not only the maximum.
+  Version 2 is declared order-independent, so a jobs-only database recorded as [1, 3] receives it
+  exactly once after backup ([1, 3] -> [1, 2, 3]); upgrades from [], [1], [1, 2], [1, 3] and
+  [1, 2, 3] are covered by the `migrate.test.ts` upgrade matrix.
 
 ## M1-04 integration notes
 
