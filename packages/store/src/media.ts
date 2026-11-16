@@ -701,6 +701,7 @@ export class MediaStore {
         if (
           !m ||
           !Number.isSafeInteger(last) ||
+          (size !== null && !Number.isSafeInteger(size)) ||
           have === 0 ||
           start !== have ||
           last < start ||

@@ -900,6 +900,31 @@ describe("download integrity (MED-01, CAP-03 fencing)", () => {
     });
   });
 
+  it("rejects a 206 complete length that is not a safe integer", async () => {
+    const { media, dl } = setup();
+    const d = media.enqueue("s1", `${base}/x`);
+    handler = (req, res) => {
+      if (!req.headers.range) {
+        res.writeHead(200, { etag: '"v1"' });
+        res.write("AAAA");
+        setTimeout(() => res.destroy(), 20);
+        return true;
+      }
+      res
+        .writeHead(206, { etag: '"v1"', "content-range": "bytes 4-7/99999999999999999999" })
+        .end("BBBB");
+      return true;
+    };
+    expect(await dl(d.id)).toBe("interrupted");
+    expect(await dl(d.id)).toBe("interrupted");
+    expect(media.getDownload(d.id)).toMatchObject({
+      state: "pending",
+      bytesReceived: 0,
+      totalBytes: null,
+      error: "invalid content-range",
+    });
+  });
+
   it("a stale worker's delayed open cannot truncate the new owner's partial", async () => {
     const ttl = 1_000;
     let t = 1_000;
