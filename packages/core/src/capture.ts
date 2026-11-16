@@ -1,3 +1,4 @@
+import { decodeBody } from "./decode.ts";
 import { guardedFetch, type GapReason, type GuardedFetchOptions } from "./fetcher.ts";
 import { extractPage, type PageContent } from "./links.ts";
 
@@ -11,14 +12,28 @@ export type CaptureResult =
     } & PageContent)
   | { ok: false; reason: GapReason; detail: string; chain: string[]; httpStatus: number | null };
 
-/** Fetch one linked URL under the SSRF guards and extract sanitized text and metadata. Never crawls further. */
+/**
+ * Fetch one linked URL under the SSRF guards, decode it with its declared or sniffed encoding, and
+ * extract sanitized text and metadata. Unsupported or invalid encodings are explicit gaps, never
+ * replacement-character text. Never crawls further.
+ */
 export async function captureLink(
   url: string,
   options: GuardedFetchOptions = {},
 ): Promise<CaptureResult> {
   const r = await guardedFetch(url, options);
   if (!r.ok) return r;
-  const page = extractPage(r.body.toString("utf8"), r.contentType, r.finalUrl);
+  const decoded = decodeBody(r.body, r.contentType, r.charset);
+  if (!decoded.ok) {
+    return {
+      ok: false,
+      reason: decoded.reason,
+      detail: decoded.detail,
+      chain: r.chain,
+      httpStatus: r.httpStatus,
+    };
+  }
+  const page = extractPage(decoded.text, r.contentType, r.finalUrl);
   if (page.text === "") {
     return {
       ok: false,

@@ -13,6 +13,9 @@ export type GapReason =
   | "timeout"
   | "too_large"
   | "unsupported_content_type"
+  | "unsupported_content_encoding"
+  | "unsupported_charset"
+  | "invalid_text_encoding"
   | "restricted"
   | "not_found"
   | "http_error"
@@ -36,6 +39,8 @@ export interface FetchedPage {
   chain: string[];
   httpStatus: number;
   contentType: string;
+  /** Lowercased `charset` parameter of the Content-Type header, if declared; the body bytes are not decoded here. */
+  charset: string | null;
   body: Buffer;
 }
 
@@ -208,6 +213,29 @@ function mimeOf(header: string | undefined): string {
   return (header ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
 }
 
+/** The Content-Type `charset` parameter (quoted or token form), lowercased; null when absent or empty. */
+function charsetOf(header: string | undefined): string | null {
+  for (const m of (header ?? "").matchAll(/;\s*([^\s;=]+)\s*=\s*("(?:[^"\\]|\\.)*"|[^;]*)/g)) {
+    if (m[1]?.toLowerCase() !== "charset") continue;
+    const raw = m[2] ?? "";
+    const value = (raw.startsWith('"') ? raw.slice(1, -1).replace(/\\(.)/g, "$1") : raw).trim();
+    return value === "" ? null : value.toLowerCase();
+  }
+  return null;
+}
+
+/**
+ * Content codings applied to the body, other than `identity`. The request asks for `identity`, and
+ * the fetcher never decompresses, so any other coding means the bytes are not the declared text.
+ */
+function contentCodings(header: string | string[] | undefined): string[] {
+  const value = Array.isArray(header) ? header.join(",") : (header ?? "");
+  return value
+    .split(",")
+    .map((c) => c.trim().toLowerCase())
+    .filter((c) => c !== "" && c !== "identity");
+}
+
 /**
  * Fetch one page with SSRF guards (ENR-03). DNS is resolved once per hop, every answer must be public,
  * the connection is pinned to the validated address, and each redirect hop is re-screened. Never throws;
@@ -269,6 +297,17 @@ export async function guardedFetch(
           status,
         );
       }
+      const codings = contentCodings(res.headers["content-encoding"]);
+      if (codings.length > 0) {
+        // Rejected rather than decompressed: no decoder runs, so the byte and time limits keep
+        // bounding exactly what is read (ENR-02 explicit gap, ENR-03 limits).
+        res.destroy();
+        throw new Gap(
+          "unsupported_content_encoding",
+          `content-encoding ${codings.join(", ").slice(0, 64)} is not supported`,
+          status,
+        );
+      }
       const body = await readBody(res, limits.maxBytes);
       return {
         ok: true,
@@ -277,6 +316,7 @@ export async function guardedFetch(
         chain,
         httpStatus: status,
         contentType,
+        charset: charsetOf(res.headers["content-type"]),
         body,
       };
     }

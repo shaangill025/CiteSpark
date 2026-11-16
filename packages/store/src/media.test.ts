@@ -999,11 +999,13 @@ describe("download integrity (MED-01, CAP-03 fencing)", () => {
     insert.run("s1", h, "legacy/a-copy"); // a legacy duplicate is kept
     insert.run("s2", h, null); // another source shares the content
     let backup: Buffer | undefined;
-    expect(migrate(db, { backup: () => void (backup = db.serialize()) })).toEqual({
-      // Media-store 5 and every later migration of this branch apply on top of the legacy rows.
-      applied: MIGRATIONS.slice(4).map((m) => m.version),
-      version: MIGRATIONS[MIGRATIONS.length - 1]!.version,
-    });
+    // Up to media-store 5 only, so this stays about the media upgrade when later migrations exist.
+    expect(
+      migrate(db, {
+        migrations: MIGRATIONS.slice(0, 5),
+        backup: () => void (backup = db.serialize()),
+      }),
+    ).toEqual({ applied: [5], version: 5 });
     expect(backup?.length).toBeGreaterThan(0);
     const media = new MediaStore(db, {
       root,

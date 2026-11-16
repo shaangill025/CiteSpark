@@ -1,5 +1,6 @@
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { gzipSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { guardedFetch, isBlockedAddress, screenUrl, type GuardedFetchOptions } from "./index.ts";
 
@@ -303,6 +304,57 @@ describe("guardedFetch", () => {
       await settle();
       expect(redirectClosed).toBe(true);
     });
+  });
+
+  it("rejects a non-identity Content-Encoding as an explicit gap instead of returning encoded bytes", async () => {
+    const text = "A synthetic article with meaningful text repeated. ".repeat(20);
+    for (const encoding of ["gzip", "br", "deflate", "x-synthetic", "identity, gzip"]) {
+      handler = (_u, res) =>
+        res
+          .writeHead(200, { "content-type": "text/plain", "content-encoding": encoding })
+          .end(encoding.includes("gzip") ? gzipSync(text) : text);
+      expect(await guardedFetch(`${base}/`, open()), encoding).toMatchObject({
+        ok: false,
+        reason: "unsupported_content_encoding",
+        httpStatus: 200,
+      });
+    }
+  });
+
+  it("accepts identity and absent Content-Encoding unchanged within the byte limit", async () => {
+    for (const encoding of ["identity", "Identity", null]) {
+      handler = (_u, res) =>
+        res
+          .writeHead(200, {
+            "content-type": "text/plain",
+            ...(encoding === null ? {} : { "content-encoding": encoding }),
+          })
+          .end("plain body");
+      const r = await guardedFetch(`${base}/`, open());
+      expect(r.ok && r.body.toString("utf8"), String(encoding)).toBe("plain body");
+    }
+    handler = (_u, res) =>
+      res
+        .writeHead(200, { "content-type": "text/plain", "content-encoding": "identity" })
+        .end("x".repeat(2000));
+    expect(await guardedFetch(`${base}/`, open({ maxBytes: 1000 }))).toMatchObject({
+      reason: "too_large",
+    });
+  });
+
+  it("reports the declared charset parameter without altering the body bytes", async () => {
+    for (const [type, charset] of [
+      ["text/html; charset=ISO-8859-1", "iso-8859-1"],
+      ['text/html; foo="a;b"; Charset="windows-1252"', "windows-1252"],
+      ["text/plain;charset=utf-8", "utf-8"],
+      ["text/html", null],
+      ["text/html; charset=", null],
+    ] as const) {
+      handler = (_u, res) => res.writeHead(200, { "content-type": type }).end(Buffer.from([0xe9]));
+      const r = await guardedFetch(`${base}/`, open());
+      expect(r.ok && r.charset, type).toBe(charset);
+      expect(r.ok && [...r.body], type).toEqual([0xe9]);
+    }
   });
 
   it("reports restricted, missing and failing pages as explicit gaps", async () => {

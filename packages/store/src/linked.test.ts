@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import { captureLink } from "../../core/src/index.ts";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { gzipSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { LinkedSourceStore, migrate, type LinkCapture } from "./index.ts";
 
@@ -9,7 +10,10 @@ let db: Database.Database;
 let server: Server;
 let base: string;
 let hits: string[];
-let pages: Record<string, { status?: number; type?: string; body: string; location?: string }>;
+let pages: Record<
+  string,
+  { status?: number; type?: string; body: string | Buffer; location?: string; encoding?: string }
+>;
 
 const capture = (url: string): Promise<LinkCapture> =>
   captureLink(url, { allowAddress: (ip) => ip === "127.0.0.1" });
@@ -30,6 +34,7 @@ beforeEach(async () => {
     if (!p) return void res.writeHead(404).end();
     const h: Record<string, string> = { "content-type": p.type ?? "text/html" };
     if (p.location) h.location = p.location;
+    if (p.encoding) h["content-encoding"] = p.encoding;
     res.writeHead(p.status ?? 200, h).end(p.body);
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
@@ -60,7 +65,7 @@ describe("LinkedSourceStore", () => {
       final_url: `${base}/a`,
       canonical_url: `${base}/canon`,
       title: "Art",
-      extraction_method: "html-text-v1",
+      extraction_method: "html-dom-v1",
       gap_reason: null,
     });
     expect(f.content_hash).toMatch(/^[0-9a-f]{64}$/);
@@ -153,7 +158,7 @@ describe("LinkedSourceStore", () => {
       )
       .all(v?.id) as { method: string; evidence: string }[];
     expect(obs).toHaveLength(1);
-    expect(obs[0]?.method).toBe("html-text-v1");
+    expect(obs[0]?.method).toBe("html-dom-v1");
     expect(JSON.parse(obs[0]?.evidence ?? "{}")).toMatchObject({
       originalUrl: `${base}/short`,
       finalUrl: `${base}/final`,
@@ -220,6 +225,67 @@ describe("LinkedSourceStore", () => {
     expect(db.prepare("SELECT canonical_url FROM source WHERE id = ?").get(o?.sourceId)).toEqual({
       canonical_url: `${base}/a`,
     });
+  });
+
+  it("attaches metadata-faked and unquoted-canonical pages to the real source only", async () => {
+    db.prepare(
+      "INSERT INTO source (id, source_type, canonical_url) VALUES ('real', 'article', ?), ('wrong', 'article', ?)",
+    ).run(`${base}/real`, `${base}/wrong`);
+    pages["/script"] = {
+      body:
+        '<head><script>const sample=`<meta property="og:title" content="Fake"><link rel="canonical" href="/wrong">`;</script>' +
+        '<title>Real</title><link rel="canonical" href="/real"></head><p>Real article</p>',
+    };
+    pages["/unquoted"] = {
+      body: "<title>Real</title><link rel=canonical href=/real><p>Real article</p>",
+    };
+    const store = new LinkedSourceStore(db, capture);
+    const out = await store.enrich("p1", [
+      { url: `${base}/script`, kind: "web" },
+      { url: `${base}/unquoted`, kind: "web" },
+    ]);
+    expect(out.map((o) => [o.status, o.sourceId])).toEqual([
+      ["reused", "real"],
+      ["reused", "real"],
+    ]);
+    expect(
+      db.prepare("SELECT title, canonical_url, source_id FROM linked_fetch ORDER BY id").all(),
+    ).toEqual([
+      { title: "Real", canonical_url: `${base}/real`, source_id: "real" },
+      { title: "Real", canonical_url: `${base}/real`, source_id: "real" },
+    ]);
+    expect(count("SELECT COUNT(*) n FROM source_version WHERE source_id = 'wrong'")).toBe(0);
+    expect(count("SELECT COUNT(*) n FROM observation WHERE source_id = 'wrong'")).toBe(0);
+    expect(count("SELECT COUNT(*) n FROM source WHERE source_type = 'article'")).toBe(2);
+    expect(db.prepare("SELECT text FROM source_version WHERE source_id = 'real'").all()).toEqual([
+      { text: "Real article" },
+    ]);
+  });
+
+  it("stores decoded declared-charset text and keeps undecodable or compressed bodies as gaps", async () => {
+    pages["/latin1"] = {
+      type: "text/html; charset=iso-8859-1",
+      body: Buffer.from("<title>Caf\xe9</title><p>Caf\xe9</p>", "latin1"),
+    };
+    pages["/bad"] = {
+      type: "text/html; charset=utf-8",
+      body: Buffer.from([0x3c, 0x70, 0x3e, 0xe9]),
+    };
+    pages["/gzip"] = { type: "text/plain", encoding: "gzip", body: gzipSync("compressed text") };
+    const out = await new LinkedSourceStore(db, capture).enrich("p1", [
+      { url: `${base}/latin1`, kind: "web" },
+      { url: `${base}/bad`, kind: "web" },
+      { url: `${base}/gzip`, kind: "web" },
+    ]);
+    expect(out.map((o) => o.gapReason)).toEqual([
+      null,
+      "invalid_text_encoding",
+      "unsupported_content_encoding",
+    ]);
+    expect(db.prepare("SELECT title FROM linked_fetch WHERE source_id IS NOT NULL").all()).toEqual([
+      { title: "Café" },
+    ]);
+    expect(db.prepare("SELECT text FROM source_version").all()).toEqual([{ text: "Café" }]);
   });
 
   it("records explicit gaps once and keeps them visible", async () => {

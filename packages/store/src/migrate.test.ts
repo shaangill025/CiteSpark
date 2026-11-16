@@ -270,6 +270,12 @@ describe("upgrade matrix", () => {
     );
     expect(columns(db, "job")).toContain("lease_generation");
     expect(tables(db)).toEqual(expect.arrayContaining(["blob", "media_download"]));
+    expect(columns(db, "media_download")).toEqual(
+      expect.arrayContaining(["claim_job_id", "claim_generation", "claim_token", "part_file"]),
+    );
+    expect(columns(db, "linked_fetch")).toEqual(
+      expect.arrayContaining(["original_url", "canonical_url", "extraction_method", "gap_reason"]),
+    );
     expect(tables(db)).toEqual(expect.arrayContaining(["capture_pass", "capture_page"]));
     expect(columns(db, "observation")).toContain("capture_page_id");
     // Capture dedupe applies to capture observations only; legacy rows keep their history.
