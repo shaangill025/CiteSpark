@@ -176,6 +176,12 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
   with a null `sourceId` and nothing stored (no article, version, link reference, gap or edge), so
   purge stays final. A capture shared with a live parent is not cancelled; only the live parent is
   attached (`trash.test.ts`, "late linked persistence after the parent is purged").
+- DAT-03: `emptyTrash` retries every queued file removal, including those of sources purged
+  earlier, even when nothing is in trash, and its `filesPending` counts every removal still queued
+  after the call, not only those of the sources it purged. `blobsRemoved` is logical removal, not
+  proof of erasure. Covered with a real unlink denial (non-writable blob directory, then permission
+  restored and database reopened) on POSIX; skipped on Windows and as root, where directory modes do
+  not deny unlink (`trash.test.ts`, "purge integrity").
 
 ## Acceptance tests
 

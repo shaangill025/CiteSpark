@@ -3,6 +3,7 @@
 import Database from "better-sqlite3";
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -345,6 +346,59 @@ describe("purge integrity", () => {
     expect(existsSync(blobFile(HASH_SHARED))).toBe(true);
     expect(after.retryPendingFiles()).toEqual({ removed: 0, pending: 0 });
   });
+
+  // A real permission denial: Windows ignores POSIX directory modes and root bypasses them.
+  const denyUnlink = process.platform === "win32" || process.getuid?.() === 0;
+  it.skipIf(denyUnlink)(
+    "reports queued removals of already purged sources when emptying an empty trash",
+    () => {
+      const shard = join(dir, "blobs", "bb");
+      const t = new TrashStore(db, { mediaRoot: dir });
+      t.trash(A, T0);
+      chmodSync(shard, 0o500);
+      try {
+        expect(t.purge(A, T0).filesPending).toBe(1);
+        expect(t.list()).toEqual([]);
+        expect(t.emptyTrash(T0)).toEqual({
+          purged: [],
+          busy: [],
+          blobsRemoved: [],
+          filesPending: 1,
+        });
+      } finally {
+        chmodSync(shard, 0o700);
+      }
+      expect(existsSync(blobFile(HASH_ONLY_A))).toBe(true);
+    },
+  );
+
+  it.skipIf(denyUnlink)(
+    "retries queued removals when emptying an empty trash after permission returns and restart",
+    () => {
+      const shard = join(dir, "blobs", "bb");
+      const t = new TrashStore(db, { mediaRoot: dir });
+      t.trash(A, T0);
+      chmodSync(shard, 0o500);
+      try {
+        expect(t.purge(A, T0).filesPending).toBe(1);
+      } finally {
+        chmodSync(shard, 0o700);
+      }
+      db.close();
+      db = open();
+      const after = new TrashStore(db, { mediaRoot: dir });
+      expect(after.list()).toEqual([]);
+      expect(after.emptyTrash(T0)).toEqual({
+        purged: [],
+        busy: [],
+        blobsRemoved: [],
+        filesPending: 0,
+      });
+      expect(existsSync(blobFile(HASH_ONLY_A))).toBe(false);
+      expect(existsSync(blobFile(HASH_SHARED))).toBe(true);
+      expect(n("SELECT 1 FROM purge_file")).toBe(0);
+    },
+  );
 
   it("removes partial download files and never reuses a purged download id", () => {
     const pid = Number(

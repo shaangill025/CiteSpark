@@ -29,6 +29,7 @@ export interface EmptyTrashResult {
   /** Sources left in trash because a live job holds one of their downloads. */
   busy: string[];
   blobsRemoved: string[];
+  /** File removals of every purged source still queued after this call, not only this call's. */
   filesPending: number;
 }
 
@@ -191,23 +192,29 @@ export class TrashStore {
     return { sourceId, blobsRemoved: removed, filesPending: n };
   }
 
-  /** Explicitly purge everything currently in trash. Busy sources stay in trash and are reported. */
+  /**
+   * Explicitly purge everything currently in trash. Busy sources stay in trash and are reported.
+   * Always retries every queued file removal, also of sources purged earlier, even when the trash
+   * is empty.
+   */
   emptyTrash(nowMs: number): EmptyTrashResult {
     const purged: string[] = [];
     const busy: string[] = [];
     const blobs = new Set<string>();
-    let filesPending = 0;
     for (const e of this.list()) {
       try {
         const r = this.purge(e.sourceId, nowMs);
         purged.push(e.sourceId);
         r.blobsRemoved.forEach((h) => blobs.add(h));
-        filesPending += r.filesPending;
       } catch (err) {
         if (!(err instanceof PurgeBusyError)) throw err;
         busy.push(e.sourceId);
       }
     }
+    this.retryPendingFiles(nowMs);
+    const { n: filesPending } = this.db.prepare("SELECT COUNT(*) n FROM purge_file").get() as {
+      n: number;
+    };
     return { purged, busy, blobsRemoved: [...blobs].sort(), filesPending };
   }
 
