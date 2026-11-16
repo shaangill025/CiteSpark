@@ -388,6 +388,33 @@ describe("T06: clients that must be refused", () => {
     const r = await drain(t, 2000);
     expect(r).toEqual({ frames: [], closed: true });
   });
+
+  test("a pairing client that stalls before the code exists is dropped and frees the slot", async () => {
+    const desk = await startDesktop({ handshakeTimeoutMs: 300 });
+    const raw = await open(desk.path);
+    let records = 0;
+    // Completes XX and sends pair.request, then never sends pair.nonce.
+    const stalling: MessageTransport = {
+      send: (f) => {
+        if (isRec(f) && ++records > 1) return;
+        raw.send(f);
+      },
+      receive: () => raw.receive(),
+      close: () => raw.close(),
+    };
+    const err = await pairWithDesktop({
+      transport: stalling,
+      identity: identity(),
+      scopes: [S.CaptureWrite],
+      showCode: () => undefined,
+    }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(desk.pairing.pending).toBe(false);
+    const id = identity();
+    await expect(pair(desk, id, [S.CaptureWrite])).resolves.toMatchObject({
+      scopes: [S.CaptureWrite],
+    });
+  });
 });
 
 describe("T06: replay", () => {

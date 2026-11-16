@@ -59,7 +59,7 @@ export interface IpcServerOptions {
   pairing: PairingController;
   handlers?: Readonly<Record<string, MethodHandler>>;
   versions?: VersionRange;
-  /** hello plus the Noise handshake must finish within this time. */
+  /** hello plus the Noise handshake (and, when pairing, the steps up to the code) must finish within this time. */
   handshakeTimeoutMs?: number;
   /** Called for unexpected handler failures; never receives message contents. */
   onInternalError?: (error: unknown) => void;
@@ -131,47 +131,49 @@ export class IpcServer {
 
   async #run(conn: Connection): Promise<void> {
     const timer = setTimeout(() => conn.close(), this.#opts.handshakeTimeoutMs ?? 10_000);
-    let hello: Hello;
-    let prologue: Uint8Array;
+    const disarm = () => clearTimeout(timer);
     try {
-      const parsed = parseHello(await conn.transport.receive());
-      if (!parsed.success) {
-        conn.reject(protocolError(ErrorCode.InvalidMessage, "The first message must be hello."));
-        return;
-      }
-      hello = parsed.data;
-      if (hello.client.kind === "desktop-ui") {
-        conn.reject(protocolError(ErrorCode.Unauthorized, "This client kind cannot connect here."));
-        return;
-      }
-      const negotiated = negotiateVersion(hello.versions, this.#versions);
-      if (!negotiated.ok) {
-        conn.reject(negotiated.error);
-        return;
-      }
-      conn.version = negotiated.version;
-      const reply: HelloReply = {
-        type: "hello.ok",
-        version: negotiated.version,
-        core: { version: this.#opts.coreVersion },
-      };
-      conn.transport.send(reply);
-      prologue = helloPrologue(hello, reply);
-      if (hello.channel === "session") {
-        if (!(await this.#sessionHandshake(conn, hello, prologue))) return;
-      } else {
-        await this.#pairHandshake(conn, prologue);
-      }
-    } catch {
-      return;
-    } finally {
-      clearTimeout(timer);
-    }
-    try {
-      if (hello.channel === "session") await this.#dispatch(conn);
-      else await this.#pair(conn, hello);
+      await this.#runUnderDeadline(conn, disarm);
     } catch {
       // Channel or transport failure: the connection closes without a reply.
+    } finally {
+      disarm();
+    }
+  }
+
+  /** `disarm` stops the connection deadline once the peer has authenticated or the pairing code exists. */
+  async #runUnderDeadline(conn: Connection, disarm: () => void): Promise<void> {
+    const parsed = parseHello(await conn.transport.receive());
+    if (!parsed.success) {
+      conn.reject(protocolError(ErrorCode.InvalidMessage, "The first message must be hello."));
+      return;
+    }
+    const hello = parsed.data;
+    if (hello.client.kind === "desktop-ui") {
+      conn.reject(protocolError(ErrorCode.Unauthorized, "This client kind cannot connect here."));
+      return;
+    }
+    const negotiated = negotiateVersion(hello.versions, this.#versions);
+    if (!negotiated.ok) {
+      conn.reject(negotiated.error);
+      return;
+    }
+    conn.version = negotiated.version;
+    const reply: HelloReply = {
+      type: "hello.ok",
+      version: negotiated.version,
+      core: { version: this.#opts.coreVersion },
+    };
+    conn.transport.send(reply);
+    const prologue = helloPrologue(hello, reply);
+    if (hello.channel === "session") {
+      if (!(await this.#sessionHandshake(conn, hello, prologue))) return;
+      disarm();
+      await this.#dispatch(conn);
+    } else {
+      // A pairing peer holds no credentials, so its deadline keeps running until the code exists.
+      await this.#pairHandshake(conn, prologue);
+      await this.#pair(conn, hello, disarm);
     }
   }
 
@@ -212,7 +214,7 @@ export class IpcServer {
     conn.remoteStatic = keys.remoteStatic;
   }
 
-  async #pair(conn: Connection, hello: Hello): Promise<void> {
+  async #pair(conn: Connection, hello: Hello, disarm: () => void): Promise<void> {
     const { pairing, registry } = this.#opts;
     const fail = (e: ProtocolErrorBody) => {
       conn.sendSealed({ type: "pair.error", error: e } satisfies PairCoreMessage);
@@ -237,6 +239,11 @@ export class IpcServer {
     }
     let ended: (o: PairingOutcome) => void = () => undefined;
     const outcome = new Promise<PairingOutcome>((r) => (ended = r));
+    let opened = false;
+    // If the pairing ends (expiry, cancel) before the code exists, nothing awaits `outcome` yet.
+    void outcome.then(() => {
+      if (!opened) conn.close();
+    });
     let pending: PendingPairing;
     try {
       pending = pairing.begin({ clientKind: hello.client.kind, scopes: req.scopes, onEnd: ended });
@@ -257,6 +264,8 @@ export class IpcServer {
         type: "pair.reveal",
         nonce: toBase64(desktopNonce),
       } satisfies PairCoreMessage);
+      opened = true;
+      disarm();
       pending.open(pairingCode(conn.handshakeHash!, clientNonce, desktopNonce));
 
       // Anything the client sends now (pair.abort, junk, or closing) ends the pairing.
