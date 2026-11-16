@@ -67,4 +67,5 @@ Exact model names per provider are chosen at M4 and recorded with the frozen eva
 | Interface | English |
 | Unicode storage and display | All languages preserved |
 | Keyword search | Good for space-delimited scripts with `unicode61`. CJK and other unsegmented scripts need the optional trigram index (6.8 times larger). Exact-ID lookup always works. |
+| Tokenizer limits (M3-01) | `unicode61 remove_diacritics 2` folds diacritics (`cafe` finds `café`) and treats an unbroken CJK run as one token, so part of a CJK run is not a keyword match. Substring search needs a generation built with trigram and a query of at least 3 characters. Whether trigram is available is recorded per index generation, so changing it means building a new generation. Chunk offsets are UTF-16 indices and never split a grapheme. |
 | Embeddings, OCR, transcription, AI quality | English evaluated. Other languages best effort, not advertised. |

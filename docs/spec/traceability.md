@@ -35,7 +35,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | PLG-02 | Plugin connection states; no independent DB or policy engine | M2 | T06, T14 | not started |  |
 | RET-01 | Unified search; exact-ID, keyword, semantic; visible mode | M3 | T10, T11, T12 | not started |  |
 | RET-02 | Filters; trashed sources excluded at query time | M3 | T07 | not started |  |
-| RET-03 | Exact excerpt/version/offset results; atomic index generations | M3 | T10, T11 | not started |  |
+| RET-03 | Exact excerpt/version/offset results; atomic index generations | M3 | T10, T11 | in progress | M3-01: chunker with exact UTF-16 offsets (`packages/store/src/chunker.ts`); per-generation external-content FTS5, verified single-transaction switch, rollback, crashed-build recovery (`packages/store/src/search-index.ts`). Hits carry excerpt, version ID, offsets, URL, document type, completeness, and generation. Kill-mid-switch test in `packages/store/src/index-crash.test.ts`. T10/T11 pending M3-02 |
 | ORG-01 | User collections/tags/saved searches; AI suggestions need approval | M3 | T15 | not started | Ingestion independent of an LLM |
 | GRF-01 | Interactive graph + accessible list; distinct edge origins | M3 | T13, T15 | not started |  |
 | GRF-02 | Bounded subgraphs; similarity is not a relationship | M3 | T11, T13 | not started |  |
@@ -56,7 +56,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | SEC-06 | Escaping, CSV neutralization, path traversal, quotas, isolation | M1, M5 | T09 | not started | M1-01 adds CI dependency audit and license allowlist; signed updates in M5 |
 | SEC-07 | Threat model | F0, M5 | T05, T06 | not started | Security review in M5 |
 | SEC-08 | No at-rest encryption promise; documented | M5 | T08 | not started | Documentation check |
-| DAT-01 | 100,000-post capacity target; incremental indexing | M1, M3 | T11 | in progress | M1-02: schema and 19-digit ID round-trip (`packages/store`); capacity and incremental indexing pending. F0 100k-post search test |
+| DAT-01 | 100,000-post capacity target; incremental indexing | M1, M3 | T11 | in progress | M1-02: schema and 19-digit ID round-trip (`packages/store`); M3-01: incremental indexing of new versions into the active generation in bounded batches (`IndexStore.indexPending`); 100k capacity pending M3-02. F0 100k-post search test |
 | DAT-02 | 8 GB RAM target for core; bounded batches | M1, M3 | T11 | not started |  |
 | DAT-03 | Recoverable trash; immediate exclusion; recapture suppression; purge | M1 | T07 | not started |  |
 | DAT-04 | Unavailable-evidence reporting after deletion | M1, M3 | T07 | not started |  |
@@ -64,10 +64,10 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | BKP-02 | Password-encrypted backups with maintained AEAD | M2 | T08 | not started | F0 encryption format decision |
 | BKP-03 | Full portable backups; manifests; media-excluded disclosure | M2 | T08 | not started |  |
 | MIG-01 | Import native backups, owner vault, xarchive; dry-run | M1 | T09, T15 | not started |  |
-| MIG-02 | Pre-migration backup; candidate indexes; no destructive generator | M2 | T08, T09 | in progress | M1-02: numbered transactional migrations and pre-migration backup hook; candidate indexes pending. Migration trials in M5 |
+| MIG-02 | Pre-migration backup; candidate indexes; no destructive generator | M2 | T08, T09 | in progress | M1-02: numbered transactional migrations and pre-migration backup hook; M3-01: candidate index generations built beside the active one and verified (coverage, counts, offsets, hashes, FTS integrity) before the switch. Migration trials in M5 |
 | ACC-01 | Keyboard, screen reader, contrast, reduced motion (WCAG 2.2 AA) | M5 | T13 | not started | Incremental from M2 onward |
 | ACC-02 | Names, focus order, announcements, scalable text | M5 | T13 | not started | Assistive-technology testing |
-| LAN-01 | English UI/AI quality; Unicode preserved; documented limits | M5 | T10, T13 | not started |  |
+| LAN-01 | English UI/AI quality; Unicode preserved; documented limits | M5 | T10, T13 | in progress | M3-01: grapheme-safe chunking, opt-in trigram per generation for substring/CJK search, tokenizer limits in `docs/f0/capability-matrix.md`. English UI/AI quality pending |
 
 ## Acceptance tests
 
