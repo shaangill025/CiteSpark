@@ -525,7 +525,8 @@ export function commitXArchive(
   ) {
     jobs.resume(jobId);
   }
-  if (!jobs.acquire(jobId, options.owner, options.nowMs, options.leaseTtlMs ?? 60_000)) {
+  const lease = jobs.acquire(jobId, options.owner, options.nowMs, options.leaseTtlMs ?? 60_000);
+  if (lease === null) {
     throw new ImportBlockedError(`import job ${jobId} is held by another owner`);
   }
 
@@ -549,7 +550,7 @@ export function commitXArchive(
       method: "import",
       records: preview.records.slice(i * PAGE_SIZE, (i + 1) * PAGE_SIZE),
     };
-    const r = capture.commitPage(jobId, options.owner, options.nowMs, page, options.commitOptions);
+    const r = capture.commitPage(jobId, lease, options.nowMs, page, options.commitOptions);
     newRecords += r.newRecords;
     newSources += r.newSources;
     newVersions += r.newVersions;

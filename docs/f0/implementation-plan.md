@@ -1,6 +1,6 @@
 # Implementation plan: M1 to M5
 
-Status: **awaiting owner review.** M0 exits when the owner approves this plan (§16).
+Status: **approved 2026-11-16, M0 exit.** The owner approved this plan as amended. See [owner-decisions.md](owner-decisions.md).
 
 ## How delivery works
 
@@ -40,7 +40,7 @@ Parallel groups: {M1-05 → M1-06} alongside {M1-02 → M1-03 → M1-04}; M1-07 
 
 | Layer | Scope | Requirements | Acceptance tests | After |
 |---|---|---|---|---|
-| M2-01 Electron shell | Electron app hosting the core in a utility process, hardened renderer, electron-builder installers for all OSes, unsigned or signed per owner decision | Q09, Q23, SEC-06 | Installers build in CI; app starts on clean VMs with no developer tools; idle memory recorded on the 8 GB reference machine. | M1-06 |
+| M2-01 Electron shell | Electron app hosting the core in a utility process, hardened renderer, electron-builder installers for all OSes, unsigned previews with documented install steps per owner decision | Q09, Q23, SEC-06 | Installers build in CI; app starts on clean VMs with no developer tools; idle memory recorded on the 8 GB reference machine. | M1-06 |
 | M2-02 core screens | onboarding, library browser, capture control and status, import preview | CAP-04, MIG-01, ACC-01, ACC-02 | Playwright flows with axe-core clean; keyboard-only onboarding and import. | M2-01 |
 | M2-03 credentials and diagnostics | `safeStorage` for keys, redacted previewable support bundle, local health checks, network-use disclosure screen | SEC-04, SEC-05, Q36 | Credential scanner over diagnostics, logs, exports finds nothing; no network calls without user action (asserted by a recording proxy). | M2-01 |
 | M2-04 sync engine core | section-aware diff3 merge, frontmatter per-key merge, identity by ID then hash, conflict records | SYN-01, SYN-02, SYN-03, SYN-06, Q03 to Q06 | **T04** property tests: random concurrent edit sequences never lose user text; same-key metadata changes conflict. | M1-02 |
@@ -87,7 +87,7 @@ Parallel groups: {M1-05 → M1-06} alongside {M1-02 → M1-03 → M1-04}; M1-07 
 | Layer | Scope | Requirements | Acceptance tests | After |
 |---|---|---|---|---|
 | M5-01 accessibility audit | WCAG 2.2 AA review, screen readers on each OS, fixes | ACC-01, ACC-02, Q44 | **T13** in full. | M4-07 |
-| M5-02 compatibility and signing | full matrix, signed builds per owner decision, update channel | Q09, Q20, SEC-06 | **T14** on clean machines. | M5-01 |
+| M5-02 compatibility and signing | full matrix, signed builds per owner decision Q1 (SignPath Foundation, or paid certificates decided before beta), update channel | Q09, Q20, SEC-06 | **T14** on clean machines. | M5-01 |
 | M5-03 migration trials | owner vault and xarchive trials, native backup round trips | MIG-01, MIG-02, Q37 | **T09** in full; owner-run trial report. | M2-07, M1-09 |
 | M5-04 security review | threat model document, review of IPC, importers, renderers, fetchers, prompt injection | SEC-06, SEC-07 | Findings fixed or accepted by the owner; release-blocking suites green. | M4-04 |
 | M5-05 docs and demo | user docs, limitations, synthetic demo library | SEC-08, LAN-01, Q32, §16 | Docs state backup-vs-library encryption and tokenizer limits; demo uses only synthetic data. | M5-02 |
@@ -103,4 +103,4 @@ Every requirement ID in §5 to §13 and every test T01 to T15 appears in at leas
 - **X changes during development**: parsing lives only in M1-07, tested with fixtures. CAP-07 pauses capture honestly.
 - **Local models fail T10 on 8 GB**: publish a higher local-AI requirement (DAT-02 allows it), keep core features on 8 GB.
 - **Electron memory**: measured in M2-01 before UI work grows.
-- **Signing costs**: owner decision before beta (blockers B2).
+- **Signing costs**: unsigned previews now, SignPath Foundation application now, paid certificates decided before beta (owner decision Q1, blockers B2).

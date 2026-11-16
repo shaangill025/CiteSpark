@@ -1,6 +1,6 @@
 # 0006. Local IPC and client pairing
 
-Status: Decided.
+Status: Decided. Owner accepted 2026-11-16: extension pairing in M1-06, plugin pairing in M2-09 (Q4). Noise library: spike `noise-handshake` in M1-06, fallback `@chainsafe/libp2p-noise`, then a superseding wrapped-key ADR if neither works (Q8).
 Requirements: PLG-01, PLG-02, SEC-04, SEC-07, Q54, Q55, T06, §14 (API contract)
 
 ## Context

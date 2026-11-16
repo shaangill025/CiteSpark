@@ -28,9 +28,11 @@ try {
   if (!(e instanceof UnknownJobError)) throw e;
   jobs.create({ id: JOB_ID, kind: "capture", accountId: ACCOUNT, collectionId: COLLECTION });
 }
-// A completed job holds no lease but still acknowledges re-sent pages.
+// Retain the token this acquisition returned; it is the only proof of ownership the commit accepts.
+// A completed job holds no lease (null) but still acknowledges re-sent pages.
 const complete = jobs.get(JOB_ID).state === "complete";
-if (!complete && !jobs.acquire(JOB_ID, owner!, now, LEASE_TTL_MS)) process.exit(EXIT_LEASE_HELD);
+const lease = complete ? null : jobs.acquire(JOB_ID, owner!, now, LEASE_TTL_MS);
+if (!complete && lease === null) process.exit(EXIT_LEASE_HELD);
 
 // Block synchronously at the fault point, inside the open transaction where it applies.
 const hold = (point: FaultPoint): void => {
@@ -43,7 +45,7 @@ const capture = new CaptureStore(db, jobs);
 for (let p = Number(startArg); ; p++) {
   const r = capture.commitPage(
     JOB_ID,
-    owner!,
+    lease,
     now,
     pageAt(passId!, p),
     p === crashPage ? { onFaultPoint: hold } : {},

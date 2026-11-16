@@ -2,6 +2,12 @@ export interface Migration {
   version: number;
   name: string;
   sql: string;
+  /**
+   * Safe to apply after a higher-numbered migration is already recorded (a gap left by a build
+   * that shipped without it). Only for additive statements that no later migration depends on.
+   * Without it, `migrate` refuses such a gap instead of applying SQL out of order.
+   */
+  orderIndependent?: boolean;
 }
 
 // Platform identifiers are TEXT: 19-digit X IDs exceed Number.MAX_SAFE_INTEGER (DAT-01, CAP-02).
@@ -27,7 +33,8 @@ CREATE TABLE source_version (
   completeness TEXT NOT NULL DEFAULT 'unknown',
   published_at TEXT,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-  UNIQUE (source_id, content_hash)
+  UNIQUE (source_id, content_hash),
+  UNIQUE (id, source_id)
 ) STRICT;
 
 CREATE TABLE job (
@@ -50,13 +57,14 @@ CREATE TABLE job (
 CREATE TABLE observation (
   id INTEGER PRIMARY KEY,
   source_id TEXT NOT NULL REFERENCES source(id),
-  version_id INTEGER NOT NULL REFERENCES source_version(id),
+  version_id INTEGER NOT NULL,
   job_id TEXT REFERENCES job(id),
   observed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   method TEXT NOT NULL,
   adapter_version TEXT,
   availability TEXT NOT NULL DEFAULT 'available',
-  evidence TEXT
+  evidence TEXT,
+  FOREIGN KEY (version_id, source_id) REFERENCES source_version(id, source_id)
 ) STRICT;
 
 CREATE TABLE collection (
@@ -74,7 +82,8 @@ CREATE TABLE membership (
   last_observed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   first_job_id TEXT REFERENCES job(id),
   last_job_id TEXT REFERENCES job(id),
-  PRIMARY KEY (account_id, collection_id, source_id)
+  PRIMARY KEY (account_id, collection_id, source_id),
+  FOREIGN KEY (account_id, collection_id) REFERENCES collection(account_id, id)
 ) STRICT;
 
 CREATE TABLE relationship (
@@ -187,9 +196,39 @@ CREATE TABLE backup_manifest (
 ) STRICT;
 `;
 
+// Sync engine core (M2-04, ADR 0007): binding state, compressed base content, write identity, and
+// conflict/review records. Statements only add columns and tables. Published version numbers are
+// never renumbered: a database from the jobs-only build records [1, 3] and receives this migration
+// as a recorded gap (see `migrate`).
+const SYNC_CORE = `
+ALTER TABLE sync_binding ADD COLUMN state TEXT NOT NULL DEFAULT 'bound' CHECK (state IN ('bound', 'unlinked', 'conflict'));
+ALTER TABLE sync_binding ADD COLUMN base_content BLOB;
+ALTER TABLE sync_binding ADD COLUMN last_written_hash TEXT;
+ALTER TABLE sync_binding ADD COLUMN last_txn_id TEXT;
+
+CREATE TABLE sync_conflict (
+  id INTEGER PRIMARY KEY,
+  library_id TEXT NOT NULL,
+  vault_id TEXT NOT NULL,
+  note_id TEXT,
+  path TEXT,
+  kind TEXT NOT NULL CHECK (kind IN ('merge', 'duplicate_id', 'delete_vs_edit', 'restore_candidate', 'unbound_file', 'source_edit')),
+  base_text TEXT,
+  vault_text TEXT,
+  library_text TEXT,
+  details TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'resolved', 'dismissed')),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  resolved_at TEXT
+) STRICT;
+CREATE INDEX sync_conflict_open ON sync_conflict (library_id, vault_id, status);
+`;
+
 // Capture commit bookkeeping (CAP-03, CAP-06). A pass is one scroll of a collection from the top;
-// replay checks are keyed on the pass and the cursor a page started from (ADR 0005).
-const V2 = `
+// replay checks are keyed on the pass and the cursor a page started from (ADR 0005). Version 4
+// follows the published sync-core (2) and job-lease-generation (3) migrations; numbers are never
+// reused. Only additive statements, so existing rows are preserved.
+const CAPTURE_COMMIT = `
 CREATE TABLE capture_pass (
   job_id TEXT NOT NULL REFERENCES job(id),
   pass_id TEXT NOT NULL,
@@ -220,10 +259,19 @@ CREATE TABLE capture_page (
 ) STRICT;
 
 ALTER TABLE observation ADD COLUMN capture_page_id INTEGER REFERENCES capture_page(id);
-CREATE UNIQUE INDEX observation_job_version ON observation (job_id, version_id) WHERE job_id IS NOT NULL;
+-- One capture observation per job and version, so a fresh pass re-reading committed records adds
+-- nothing (ADR 0005). Scoped to capture rows: schemas 1-3 allowed repeated observations of a version
+-- by one job (each with its own time and evidence), and those rows are kept unchanged.
+CREATE UNIQUE INDEX observation_capture_job_version ON observation (job_id, version_id) WHERE capture_page_id IS NOT NULL;
 `;
 
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, name: "initial-schema", sql: V1 },
-  { version: 2, name: "capture-commit", sql: V2 },
+  { version: 2, name: "sync-core", sql: SYNC_CORE, orderIndependent: true },
+  {
+    version: 3,
+    name: "job-lease-generation",
+    sql: "ALTER TABLE job ADD COLUMN lease_generation INTEGER NOT NULL DEFAULT 0;",
+  },
+  { version: 4, name: "capture-commit", sql: CAPTURE_COMMIT },
 ];
