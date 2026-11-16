@@ -330,8 +330,12 @@ export class MediaStore {
    */
   async download(id: number, ctx: LeaseContext): Promise<DownloadOutcome> {
     const run: Run = { ...ctx, renewedAt: Number.NEGATIVE_INFINITY };
-    // A stale or forged token throws here, before any network or file work.
-    const claim = this.fenced(run, () => this.claimRow(run, this.row(id)));
+    // A stale or forged token throws here, before any network or file work. A stopped (`failed`)
+    // entry is not claimed or fetched by a direct call; only its own job's run resumes it.
+    const claim = this.fenced(run, () => {
+      const row = this.row(id);
+      return row.state === "failed" ? "failed" : this.claimRow(run, row);
+    });
     if (typeof claim === "string") return claim;
     return this.downloadIn(claim);
   }

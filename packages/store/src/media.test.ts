@@ -545,6 +545,31 @@ describe("download job on the job store (CAP-04 lease)", () => {
     );
   });
 
+  it("a direct download of a stopped (failed) entry fetches nothing and takes no claim", async () => {
+    const { media, dl, db } = setup();
+    const d = media.enqueue("s1", `${base}/a`);
+    // Stopped by another component (e.g. trash) using the migration 5 `failed` state.
+    db.prepare("UPDATE media_download SET state = 'failed', error = 'stopped' WHERE id = ?").run(
+      d.id,
+    );
+    expect(await dl(d.id)).toBe("failed");
+    expect(requests).toEqual([]);
+    expect(
+      db
+        .prepare(
+          "SELECT state, error, claim_job_id, claim_token, part_file FROM media_download WHERE id = ?",
+        )
+        .get(d.id),
+    ).toEqual({
+      state: "failed",
+      error: "stopped",
+      claim_job_id: null,
+      claim_token: null,
+      part_file: null,
+    });
+    expect(files(join(root, "tmp"))).toEqual([]);
+  });
+
   it("refuses to download an entry claimed by another live lease", async () => {
     const { media, jobs, clock } = setup();
     const d = media.enqueue("s1", `${base}/a`);
