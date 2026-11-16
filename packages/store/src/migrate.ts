@@ -42,9 +42,11 @@ const BOOKKEEPING = `CREATE TABLE IF NOT EXISTS schema_migration (
 
 export function migrate(db: Database.Database, options: MigrateOptions = {}): MigrateResult {
   const migrations = options.migrations ?? MIGRATIONS;
+  // Inspect existing state read-only. Nothing that changes the database file, including the
+  // bookkeeping table, may run before validation and (for existing data) a completed backup.
   const hadTables = hasUserTables(db);
-  db.pragma("foreign_keys = ON");
-  db.exec(BOOKKEEPING);
+  const hadBookkeeping = hasTable(db, "schema_migration");
+  db.pragma("foreign_keys = ON"); // connection setting; does not change the database file
   const known = new Map<number, Migration>();
   for (const m of migrations) {
     if (!Number.isSafeInteger(m.version) || m.version < 1 || known.has(m.version)) {
@@ -55,9 +57,12 @@ export function migrate(db: Database.Database, options: MigrateOptions = {}): Mi
   const latest = Math.max(0, ...known.keys());
   // Validate every recorded ID, not just the highest: a build that shipped without a lower
   // migration leaves a gap that a max-version check would silently skip.
-  const recorded = db
-    .prepare("SELECT version, name FROM schema_migration ORDER BY version")
-    .all() as { version: number; name: string }[];
+  const recorded = hadBookkeeping
+    ? (db.prepare("SELECT version, name FROM schema_migration ORDER BY version").all() as {
+        version: number;
+        name: string;
+      }[])
+    : [];
   const current = recorded.length ? recorded[recorded.length - 1]!.version : 0;
   if (current > latest) {
     throw new Error(
@@ -81,7 +86,14 @@ export function migrate(db: Database.Database, options: MigrateOptions = {}): Mi
   const pending = migrations
     .filter((m) => !done.has(m.version))
     .sort((a, b) => a.version - b.version);
-  if (pending.length === 0) return { applied: [], version: current };
+  // An unmarked database that already has tables is existing data too.
+  const existing = current > 0 || hadTables;
+  if (pending.length === 0) {
+    // Only a truly empty database gets bookkeeping without pending work; existing data is
+    // never written without a backup.
+    if (!hadBookkeeping && !existing) db.exec(BOOKKEEPING);
+    return { applied: [], version: current };
+  }
   for (const m of pending) {
     if (m.version < current && !m.orderIndependent) {
       throw new MigrationStateError(
@@ -89,8 +101,8 @@ export function migrate(db: Database.Database, options: MigrateOptions = {}): Mi
       );
     }
   }
-  // An unmarked database that already has tables is existing data too.
-  if (current > 0 || hadTables) {
+  // The backup must complete before the first schema change, including bookkeeping.
+  if (existing) {
     if (!options.backup) throw new Error("A recovery backup hook is required before migration");
     rejectAsync(
       options.backup(
@@ -101,16 +113,28 @@ export function migrate(db: Database.Database, options: MigrateOptions = {}): Mi
     );
   }
 
-  const record = db.prepare("INSERT INTO schema_migration (version, name) VALUES (?, ?)");
   const applied: number[] = [];
+  let record: Database.Statement | undefined;
   for (const m of pending) {
     db.transaction(() => {
+      // Bookkeeping is created with the first migration so a failure leaves neither behind.
+      if (!record) {
+        if (!hadBookkeeping) db.exec(BOOKKEEPING);
+        record = db.prepare("INSERT INTO schema_migration (version, name) VALUES (?, ?)");
+      }
       db.exec(m.sql);
       record.run(m.version, m.name);
     }).immediate();
     applied.push(m.version);
   }
   return { applied, version: Math.max(current, ...applied) };
+}
+
+function hasTable(db: Database.Database, name: string): boolean {
+  return (
+    db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !==
+    undefined
+  );
 }
 
 function hasUserTables(db: Database.Database): boolean {
