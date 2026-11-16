@@ -2,7 +2,7 @@
 
 Applies to every human and AI agent working in this repository.
 
-1. **Read the spec.** [docs/spec/citspark-spec-v1.0.md](docs/spec/citspark-spec-v1.0.md) is the product authority.
+1. **Read the spec.** [docs/spec/citspark-spec-v1.0.md](docs/spec/citspark-spec-v1.0.md) is the authoritative in-repo copy of the owner-approved spec. The owner resolves discrepancies with the original PDF and records them via an ADR or spec revision.
    **MUST** is an approved obligation. **PROPOSED** is a default or target that still needs validation; do not
    present it as achieved. Do not drop or reduce a MUST; raise a concrete blocker instead.
 2. **Traceability.** Every change cites the requirement IDs it addresses (CAP, ENR, MED, SYN, PLG, RET, ORG, GRF, AI,
