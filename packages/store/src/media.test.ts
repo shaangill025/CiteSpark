@@ -613,6 +613,98 @@ describe("download job on the job store (CAP-04 lease)", () => {
     expect(jobs.get("j")).toMatchObject({ state: "running", leaseOwner: "thief" });
   });
 
+  // A response that makes the worker discard its partial file (record(..., { reset: true })).
+  const resets: [string, (have: number) => Response][] = [
+    ["416 range not satisfiable", () => new Response(null, { status: 416 })],
+    [
+      "invalid content-length",
+      () => new Response(null, { status: 200, headers: { "content-length": "nope" } }),
+    ],
+    [
+      "invalid content-range",
+      (have) =>
+        new Response(new Uint8Array(10), {
+          status: 206,
+          headers: { "content-range": `bytes ${have + 1}-${have + 10}/10000`, etag: '"v1"' },
+        }),
+    ],
+  ];
+  const takeovers = ["the same job reacquired", "another job claiming the entry"] as const;
+
+  it.each(resets.flatMap(([why, res]) => takeovers.map((how) => [why, how, res] as const)))(
+    "a stale worker cannot unlink the partial after takeover (%s, %s)",
+    async (_why, how, resetResponse) => {
+      const ttl = 1_000;
+      let t = 1_000;
+      const calls: ((url: string) => Promise<Response>)[] = [];
+      const ref: { jobs?: JobStore; media?: MediaStore } = {};
+      const { media, jobs, db, dl } = setup({
+        leaseTtlMs: ttl,
+        now: () => t,
+        fetch: (url, init) => {
+          const next = calls.shift();
+          return next ? next(url) : testFetch(url, init);
+        },
+      });
+      ref.jobs = jobs;
+      ref.media = media;
+      const d = media.enqueue("s1", `${base}/a`);
+      dropAfter = 4_000;
+      expect(await dl(d.id)).toBe("interrupted");
+      dropAfter = null;
+      const part = join(root, "tmp", `${d.id}.part`);
+      const kept = readFileSync(part);
+      expect(kept.length).toBeGreaterThan(0);
+      expect(kept.length).toBeLessThan(10_000);
+
+      jobs.create({ id: "stale", kind: "media" });
+      const staleLease = jobs.acquire("stale", "w", t, ttl)!;
+      let thief: { jobId: string; lease: Lease } | undefined;
+      calls.push(async () => {
+        // The stale worker's request stalls past its lease; a new owner takes the entry over and
+        // keeps the partial (a transient 503 records progress without resetting it).
+        t += ttl + 1;
+        const jobId = how === "the same job reacquired" ? "stale" : "thief";
+        if (jobId === "thief") ref.jobs!.create({ id: jobId, kind: "media" });
+        const lease = ref.jobs!.acquire(jobId, "thief", t, 60_000);
+        expect(lease).not.toBeNull();
+        thief = { jobId, lease: lease! };
+        calls.unshift(async () => new Response(null, { status: 503 }));
+        expect(await ref.media!.download(d.id, { jobs: ref.jobs!, ...thief })).toBe("interrupted");
+        return resetResponse(kept.length);
+      });
+
+      expect(await media.download(d.id, { jobs, jobId: "stale", lease: staleLease })).toBe(
+        "lease_lost",
+      );
+      expect(calls).toEqual([]);
+      expect(existsSync(part)).toBe(true);
+      expect(readFileSync(part).equals(kept)).toBe(true);
+      expect(
+        db
+          .prepare(
+            `SELECT state, bytes_received, total_bytes, etag, error, claim_job_id, claim_generation
+             FROM media_download WHERE id = ?`,
+          )
+          .get(d.id),
+      ).toEqual({
+        state: "pending",
+        bytes_received: kept.length,
+        total_bytes: 10_000,
+        etag: '"v1"',
+        error: "http 503",
+        claim_job_id: thief!.jobId,
+        claim_generation: thief!.lease.generation,
+      });
+
+      // The new owner resumes from the surviving partial.
+      ranged = [];
+      expect(await media.download(d.id, { jobs, ...thief! })).toBe("complete");
+      expect(ranged).toEqual([`bytes=${kept.length}-`]);
+      expect(media.blob(sha(blobA))?.sizeBytes).toBe(10_000);
+    },
+  );
+
   it("rejects a stale or forged lease token before any network or file work", async () => {
     const { media, jobs, clock } = setup();
     const d = media.enqueue("s1", `${base}/a`);
