@@ -141,11 +141,39 @@ describe("schema contracts", () => {
     db.prepare(
       "INSERT INTO source (id, source_type, platform_id) VALUES ('x:1', 'x_post', '1')",
     ).run();
+    db.prepare(
+      "INSERT INTO collection (account_id, id) VALUES ('acct-a', 'bookmarks'), ('acct-b', 'bookmarks')",
+    ).run();
     const m = db.prepare(
       "INSERT INTO membership (account_id, collection_id, source_id) VALUES (?, 'bookmarks', ?)",
     );
     m.run("acct-a", "x:1");
     m.run("acct-b", "x:1");
     expect(() => m.run("acct-a", "x:missing")).toThrow();
+    expect(() => m.run("acct-c", "x:1")).toThrow(); // no such collection for this account
+  });
+
+  it("enables foreign keys itself and pairs observations with their own source's version", () => {
+    const db = new Database(":memory:");
+    migrate(db);
+    const src = db.prepare("INSERT INTO source (id, source_type) VALUES (?, 'x_post')");
+    src.run("x:1");
+    src.run("x:2");
+    db.prepare(
+      "INSERT INTO source_version (id, source_id, content_hash, text) VALUES (1, 'x:1', 'h', 't')",
+    ).run();
+    const obs = db.prepare(
+      "INSERT INTO observation (source_id, version_id, method) VALUES (?, ?, 'test')",
+    );
+    obs.run("x:1", 1);
+    expect(() => obs.run("x:2", 1)).toThrow();
+  });
+
+  it("backs up an unmarked database that already has tables", () => {
+    const db = new Database(":memory:");
+    db.exec("CREATE TABLE legacy (x TEXT)");
+    const calls: number[] = [];
+    migrate(db, { backup: (f) => void calls.push(f) });
+    expect(calls).toEqual([0]);
   });
 });
