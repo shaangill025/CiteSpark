@@ -119,6 +119,99 @@ describe("LinkedSourceStore", () => {
     expect(count("SELECT COUNT(*) n FROM source WHERE source_type = 'article'")).toBe(1);
   });
 
+  it("stores the fetched snapshot when a short URL redirects to an existing changed article", async () => {
+    db.prepare(
+      "INSERT INTO source (id, source_type, canonical_url) VALUES ('art', 'article', ?)",
+    ).run(`${base}/final`);
+    db.prepare(
+      "INSERT INTO source_version (source_id, content_hash, text) VALUES ('art', 'old-hash', 'old text')",
+    ).run();
+    pages["/short"] = { status: 301, body: "", location: "/final" };
+    pages["/final"] = { body: "<title>New</title><p>revised text</p>" };
+    const store = new LinkedSourceStore(db, capture);
+    const [o] = await store.enrich("p1", [{ url: `${base}/short`, kind: "web" }]);
+    expect(o).toMatchObject({ status: "reused", sourceId: "art" });
+    const f = db
+      .prepare("SELECT source_id, content_hash, title FROM linked_fetch WHERE original_url = ?")
+      .get(`${base}/short`) as { source_id: string; content_hash: string; title: string };
+    expect(f).toMatchObject({ source_id: "art", title: "New" });
+    // The recorded capture has a matching immutable snapshot and an observation of it.
+    const v = db
+      .prepare("SELECT id, text FROM source_version WHERE source_id = 'art' AND content_hash = ?")
+      .get(f.content_hash) as { id: number; text: string } | undefined;
+    expect(v?.text).toBe("revised text");
+    expect(
+      db
+        .prepare(
+          "SELECT text FROM source_version WHERE source_id = 'art' AND content_hash = 'old-hash'",
+        )
+        .get(),
+    ).toEqual({ text: "old text" });
+    const obs = db
+      .prepare(
+        "SELECT method, evidence FROM observation WHERE source_id = 'art' AND version_id = ?",
+      )
+      .all(v?.id) as { method: string; evidence: string }[];
+    expect(obs).toHaveLength(1);
+    expect(obs[0]?.method).toBe("html-text-v1");
+    expect(JSON.parse(obs[0]?.evidence ?? "{}")).toMatchObject({
+      originalUrl: `${base}/short`,
+      finalUrl: `${base}/final`,
+      chain: [`${base}/short`, `${base}/final`],
+    });
+
+    // A second short link to unchanged content reuses the snapshot and adds only an observation.
+    pages["/short2"] = { status: 302, body: "", location: "/final" };
+    await store.enrich("p2", [{ url: `${base}/short2`, kind: "web" }]);
+    expect(count("SELECT COUNT(*) n FROM source_version WHERE source_id = 'art'")).toBe(2);
+    expect(
+      count(`SELECT COUNT(*) n FROM observation WHERE source_id = 'art' AND version_id = ${v?.id}`),
+    ).toBe(2);
+    // Every captured provenance row joins to a stored snapshot of its source.
+    expect(
+      count(`SELECT COUNT(*) n FROM linked_fetch f WHERE f.source_id IS NOT NULL AND f.content_hash IS NOT NULL
+               AND NOT EXISTS (SELECT 1 FROM source_version v WHERE v.source_id = f.source_id AND v.content_hash = f.content_hash)`),
+    ).toBe(0);
+  });
+
+  it("fetches a destination once when overlapping enrich calls race", async () => {
+    pages["/a"] = { body: "<p>shared</p>" };
+    pages["/gone"] = { status: 403, body: "" };
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const gated = async (url: string): Promise<LinkCapture> => {
+      await gate;
+      return capture(url);
+    };
+    const a = new LinkedSourceStore(db, gated);
+    const b = new LinkedSourceStore(db, gated); // a second store on the same connection
+    const links = [
+      { url: `${base}/a`, kind: "web" as const },
+      { url: `${base}/gone`, kind: "web" as const },
+    ];
+    const pending = Promise.all([
+      a.enrich("p1", links),
+      a.enrich("p2", links),
+      b.enrich("p2", links),
+    ]);
+    release();
+    const [one, two, three] = await pending;
+    expect(hits.sort()).toEqual(["/a", "/gone"]);
+    expect(one?.[0]?.sourceId).toBeTruthy();
+    expect(two?.[0]?.sourceId).toBe(one?.[0]?.sourceId);
+    expect(three?.[0]?.sourceId).toBe(one?.[0]?.sourceId);
+    expect([one, two, three].map((o) => o?.[1]?.gapReason)).toEqual([
+      "restricted",
+      "restricted",
+      "restricted",
+    ]);
+    expect(count("SELECT COUNT(*) n FROM source WHERE source_type = 'article'")).toBe(1);
+    expect(count("SELECT COUNT(*) n FROM source_version")).toBe(1);
+    expect(count("SELECT COUNT(*) n FROM relationship WHERE type = 'links_to'")).toBe(2);
+    expect(a.gaps("p1")).toHaveLength(1);
+    expect(a.gaps("p2")).toHaveLength(1);
+  });
+
   it("ignores a cross-host canonical claim", async () => {
     pages["/a"] = { body: '<link rel="canonical" href="https://victim.example/page"><p>x</p>' };
     const [o] = await new LinkedSourceStore(db, capture).enrich("p1", [

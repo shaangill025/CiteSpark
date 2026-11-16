@@ -47,6 +47,13 @@ const TRANSIENT_GAPS = new Set(["timeout", "network_error", "dns_failure", "http
 
 const RELATION = "links_to";
 
+/**
+ * In-flight captures by destination, shared by every store on the same connection, so overlapping
+ * enrich calls fetch a destination once and each parent attaches to the shared result (ENR-01).
+ * Coordination is per process and connection; separate processes rely on the persisted rows.
+ */
+const IN_FLIGHT = new WeakMap<Database.Database, Map<string, Promise<LinkCapture>>>();
+
 function hostKey(url: string): string {
   return new URL(url).hostname.toLowerCase().replace(/^www\./, "");
 }
@@ -132,12 +139,38 @@ export class LinkedSourceStore {
         gapReason: prior?.gap_reason ?? null,
       };
     }
-    const cap = await this.#capture(link.url);
-    if (!cap.ok) {
-      this.#recordGap(parent, link.url, cap.reason, cap.detail, cap);
-      return { url: link.url, status: "gap", sourceId: null, gapReason: cap.reason };
+    return this.#captureOnce(parent, link.url);
+  }
+
+  /**
+   * Start or join the single in-flight capture of `url` and persist its result for `parent`. The
+   * owner stores synchronously after its capture settles and only then releases the entry, so any
+   * later caller sees either the in-flight capture or the stored row; joiners attach to the same
+   * result through the raced path in `#store` (or the idempotent gap upsert).
+   */
+  async #captureOnce(parent: string, url: string): Promise<LinkOutcome> {
+    let flights = IN_FLIGHT.get(this.#db);
+    if (!flights) {
+      flights = new Map();
+      IN_FLIGHT.set(this.#db, flights);
     }
-    return this.#store(parent, link.url, cap);
+    const joined = flights.get(url);
+    if (joined) return this.#persist(parent, url, await joined);
+    const started = Promise.resolve().then(() => this.#capture(url));
+    flights.set(url, started);
+    try {
+      return this.#persist(parent, url, await started);
+    } finally {
+      if (flights.get(url) === started) flights.delete(url);
+    }
+  }
+
+  #persist(parent: string, url: string, cap: LinkCapture): LinkOutcome {
+    if (!cap.ok) {
+      this.#recordGap(parent, url, cap.reason, cap.detail, cap);
+      return { url, status: "gap", sourceId: null, gapReason: cap.reason };
+    }
+    return this.#store(parent, url, cap);
   }
 
   #findSaved(link: LinkRef): string | null {
@@ -245,23 +278,30 @@ export class LinkedSourceStore {
         this.#db
           .prepare("INSERT INTO source (id, source_type, canonical_url) VALUES (?, 'article', ?)")
           .run(target, canonical);
-        const v = this.#db
-          .prepare(
-            "INSERT INTO source_version (source_id, content_hash, text, completeness) VALUES (?, ?, ?, 'unknown')",
-          )
-          .run(target, cap.contentHash, cap.text);
-        this.#db
-          .prepare(
-            `INSERT INTO observation (source_id, version_id, method, evidence)
-             VALUES (?, ?, ?, ?)`,
-          )
-          .run(
-            target,
-            v.lastInsertRowid,
-            cap.extractionMethod,
-            JSON.stringify({ originalUrl: url, finalUrl: cap.finalUrl, chain: cap.chain }),
-          );
       }
+      // Snapshots are immutable and keyed by (source, content hash): an existing source whose page
+      // changed gains a new version; unchanged content reuses its version. Either way this capture
+      // is observed, so the provenance row below always has a matching stored snapshot (ENR-02).
+      this.#db
+        .prepare(
+          `INSERT INTO source_version (source_id, content_hash, text, completeness)
+           VALUES (?, ?, ?, 'unknown') ON CONFLICT (source_id, content_hash) DO NOTHING`,
+        )
+        .run(target, cap.contentHash, cap.text);
+      const version = this.#db
+        .prepare("SELECT id FROM source_version WHERE source_id = ? AND content_hash = ?")
+        .get(target, cap.contentHash) as { id: number };
+      this.#db
+        .prepare(
+          `INSERT INTO observation (source_id, version_id, method, evidence)
+           VALUES (?, ?, ?, ?)`,
+        )
+        .run(
+          target,
+          version.id,
+          cap.extractionMethod,
+          JSON.stringify({ originalUrl: url, finalUrl: cap.finalUrl, chain: cap.chain }),
+        );
       this.#db
         .prepare(
           `INSERT INTO linked_fetch (original_url, source_id, final_url, canonical_url, redirect_chain, title,
