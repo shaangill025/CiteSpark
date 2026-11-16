@@ -26,6 +26,7 @@ export {
   CursorMismatchError,
   InvalidPageError,
   ReplayConflictError,
+  isWeakerText,
   type CaptureRecord,
   type CapturePage,
   type CaptureSummary,

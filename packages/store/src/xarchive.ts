@@ -54,10 +54,12 @@ export type WarningCode =
   | "legacy-schema"
   | "no-collection-coverage"
   | "unavailable-no-text"
+  | "available-no-text"
   | "invalid-date"
   | "invalid-handle"
   | "invalid-author-id"
   | "duplicate-in-file"
+  | "duplicate-distinct-versions"
   | "folders-not-imported"
   | "unknown-provenance";
 
@@ -241,7 +243,10 @@ export function parseXArchive(
   const counts: Record<string, number> = {};
   const bump = (code: WarningCode): void => void (counts[code] = (counts[code] ?? 0) + 1);
 
-  const byId = new Map<string, Bookmark>();
+  // Records per tweet_id, in file order of first appearance. A duplicate whose text is identical
+  // to, or weaker than (by content, see `isWeakerText`), a kept record is dropped; kept records it
+  // dominates are replaced. Distinct texts are all kept and become versions of one source.
+  const byId = new Map<string, Bookmark[]>();
   data.bookmarks.forEach((b: unknown, i) => {
     const bad = (what: string): never => {
       throw new XArchiveFormatError(`bookmark ${i}: ${what}`);
@@ -291,13 +296,17 @@ export function parseXArchive(
       authorHandle,
       publishedAt,
     };
-    const prior = byId.get(next.platformId);
-    if (prior) {
-      bump("duplicate-in-file");
-      if (prior.text.length >= next.text.length) return;
+    const kept = byId.get(next.platformId);
+    if (!kept) {
+      byId.set(next.platformId, [next]);
+      return;
     }
-    byId.set(next.platformId, next);
+    bump("duplicate-in-file");
+    const texts = kept.map((k) => k.text);
+    if (texts.includes(next.text) || isWeakerText(next.text, texts)) return;
+    byId.set(next.platformId, [...kept.filter((k) => !isWeakerText(k.text, [next.text])), next]);
   });
+  const distinctVersions = [...byId.values()].filter((k) => k.length > 1).length;
 
   const userId = typeof meta.user_id === "string" && ID.test(meta.user_id) ? meta.user_id : null;
   const warnings: ImportWarning[] = [];
@@ -326,8 +335,13 @@ export function parseXArchive(
   );
   warn(
     "duplicate-in-file",
-    "tweet_id repeated in file; fullest record kept",
+    "tweet_id repeated in file; identical or truncated repeats dropped in favor of the fuller text",
     counts["duplicate-in-file"] ?? 0,
+  );
+  warn(
+    "duplicate-distinct-versions",
+    "tweet_id repeated in file with distinct texts; each is kept as a separate version of the post",
+    distinctVersions,
   );
   const folderCount = Array.isArray(data.folders) ? data.folders.length : 0;
   if (
@@ -347,7 +361,7 @@ export function parseXArchive(
     accountId: userId ? `x:account:${userId}` : null,
     exportedAt: toIso(meta.exported_at),
     contentHash: sha256(json),
-    bookmarks: [...byId.values()],
+    bookmarks: [...byId.values()].flat(),
     folderCount,
     warnings,
   };
@@ -384,7 +398,12 @@ export interface ImportPreview {
     newVersions: number;
     /** Incoming content is weaker than a stored version: no version is added; membership is kept. */
     weakerSkipped: number;
-    /** No retained text and no stored copy: nothing to store. */
+    /**
+     * Reported unavailable with no text and no stored text: identity, membership, and an
+     * unavailable observation of an empty snapshot are recorded; no text is captured.
+     */
+    unavailableNoText: number;
+    /** Reported available but with no text and no stored copy: nothing to store. */
     noContentSkipped: number;
     /** Records expected to add or re-observe content (new + duplicates + newVersions). */
     toCommit: number;
@@ -427,6 +446,7 @@ export function previewXArchive(db: Database.Database, parsed: ParsedExport): Im
     duplicates: 0,
     newVersions: 0,
     weakerSkipped: 0,
+    unavailableNoText: 0,
     noContentSkipped: 0,
     toCommit: 0,
   };
@@ -436,30 +456,51 @@ export function previewXArchive(db: Database.Database, parsed: ParsedExport): Im
      WHERE s.source_type = 'x_post' AND s.platform_id = ?`,
   );
   const known = db.prepare("SELECT 1 FROM source WHERE source_type = 'x_post' AND platform_id = ?");
+  // Mirrors the commit, which sees earlier records of the same file as stored when it reaches a
+  // later one (in-file repeats with distinct texts).
+  const pending = new Map<string, string[]>();
   for (const b of parsed.bookmarks) {
-    const versions = (stored.all(b.platformId) as { text: string }[]).map((r) => r.text);
-    const exists = known.get(b.platformId) !== undefined;
-    if (b.text === "" && !exists) {
-      counts.noContentSkipped++;
-    } else if (exists && versions.includes(b.text) && b.text !== "") {
-      counts.duplicates++;
-    } else if (exists && isWeakerText(b.text, versions)) {
+    const earlier = pending.get(b.platformId);
+    const versions = [
+      ...(stored.all(b.platformId) as { text: string }[]).map((r) => r.text),
+      ...(earlier ?? []),
+    ];
+    const exists = earlier !== undefined || known.get(b.platformId) !== undefined;
+    let adds = true;
+    if (exists && isWeakerText(b.text, versions)) {
       counts.weakerSkipped++;
       conflicts.push({ platformId: b.platformId, kind: "weaker-skipped" });
+      adds = false;
+    } else if (b.text === "" && b.status === "unavailable") {
+      counts.unavailableNoText++;
+    } else if (b.text === "" && !exists) {
+      counts.noContentSkipped++;
+      adds = false;
+    } else if (exists && versions.includes(b.text)) {
+      counts.duplicates++;
     } else if (exists) {
       counts.newVersions++;
       conflicts.push({ platformId: b.platformId, kind: "new-version" });
     } else {
       counts.new++;
     }
+    if (adds) pending.set(b.platformId, [...(earlier ?? []), b.text]);
   }
   counts.toCommit = counts.new + counts.duplicates + counts.newVersions;
 
   const warnings = [...parsed.warnings];
-  if (counts.noContentSkipped > 0) {
+  if (counts.unavailableNoText > 0) {
     warnings.push({
       code: "unavailable-no-text",
-      message: "bookmarks with no retained text and no stored copy",
+      message:
+        "unavailable bookmarks with no retained text and no stored copy: identity, membership and unavailability are recorded; no text is captured",
+      count: counts.unavailableNoText,
+    });
+  }
+  if (counts.noContentSkipped > 0) {
+    warnings.push({
+      code: "available-no-text",
+      message: "available bookmarks with no text and no stored copy: nothing is stored",
       count: counts.noContentSkipped,
     });
   }
@@ -497,9 +538,14 @@ export interface ImportReceipt {
   newRecords: number;
   newSources: number;
   newVersions: number;
-  /** Records whose text was weaker than stored content at commit time: membership only. */
+  /**
+   * Records whose text was weaker than stored content at commit time: membership and availability
+   * evidence against the retained version; no version added.
+   */
   weakerSkipped: number;
-  /** Records with no text and no stored copy at commit time: nothing written. */
+  /** Unavailable records with no text and no stored text: identity, membership, evidence only. */
+  unavailableNoText: number;
+  /** Available records with no text and no stored copy at commit time: nothing written. */
   noContentSkipped: number;
   preview: ImportPreview;
 }
@@ -542,6 +588,7 @@ export function commitXArchive(
     newSources: 0,
     newVersions: 0,
     weakerSkipped: 0,
+    unavailableNoText: 0,
     noContentSkipped: 0,
   };
   const receipt = (status: ImportReceipt["status"]): ImportReceipt => ({
@@ -598,6 +645,7 @@ export function commitXArchive(
     totals.newSources += r.newSources;
     totals.newVersions += r.newVersions;
     totals.weakerSkipped += r.weakerSkipped;
+    totals.unavailableNoText += r.unavailableNoText;
     totals.noContentSkipped += r.noContentSkipped;
     if (r.ended) break;
     if (r.cancelRequested || jobs.get(jobId).cancelRequested) {

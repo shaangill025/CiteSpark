@@ -125,10 +125,10 @@ describe("xarchive parsing", () => {
     });
   });
 
-  it("keeps the fullest record when an ID repeats in one file", () => {
+  it("keeps the fuller record when an ID repeats in one file with a truncation", () => {
     const p = parseXArchive(
       exportOf([
-        { tweet_id: "9", full_text: "short" },
+        { tweet_id: "9", full_text: "a much…" },
         { tweet_id: "9", full_text: "a much longer text" },
       ]),
     );

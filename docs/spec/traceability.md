@@ -123,8 +123,21 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 - CAP-03/MIG-01: `CapturePage.method` (`capture` default, `import`) and the optional
   `CaptureRecord.availability` and `CaptureRecord.retainFuller` fields are additive. Their values
   enter a page fingerprint only when they differ from the defaults, so fingerprints of pages already
-  committed by capture adapters are unchanged. `CommitResult` adds `weakerSkipped` and
-  `noContentSkipped` counts (zero for capture pages and replays).
+  committed by capture adapters are unchanged. `CommitResult` adds `weakerSkipped`,
+  `unavailableNoText` and `noContentSkipped` counts (zero for capture pages and replays).
+- MIG-01/T09: text quality is compared by content (`isWeakerText`, exported from the package): a
+  trailing `…` or `...` marks a truncation and is not content, so `abc...` is weaker than `abcd`.
+  In-file repeats of one `tweet_id` keep the fuller text in either order; distinct texts are all
+  kept as versions with an explicit `duplicate-distinct-versions` warning.
+- MIG-01/Q37: availability is evidence independent of text quality. A weaker record adds an
+  observation with its availability against the retained fuller version, with `evidence`
+  `{"kind":"retained-fuller","incoming":"empty"|"truncated","textCaptured":false}`. An unavailable
+  record with no text and no stored text records the identity, account membership and an
+  unavailable observation of an explicit empty snapshot (`completeness` `none`, evidence
+  `{"kind":"unavailable-no-text","textCaptured":false}`); an available record with no text and no
+  stored copy still writes nothing (`available-no-text` warning).
+- Limit for M2 retry flow: a cancelled import of a byte-identical file stays blocked (deterministic
+  job ID); a distinct retry attempt is a product decision, not implemented here.
 - CAP-03: `commitXArchive` takes `clock` (epoch ms, default `Date.now`) instead of a fixed `nowMs`,
   retains the `Lease` from `JobStore.acquire`, and renews it before every page.
 

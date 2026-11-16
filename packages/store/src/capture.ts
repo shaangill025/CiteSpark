@@ -16,9 +16,17 @@ export interface CaptureRecord {
   availability?: "available" | "unavailable";
   /**
    * Never let weaker content displace a fuller stored copy (MIG-01, T09). Decided inside the commit
-   * transaction against the persisted versions of this identity: text that is empty, or a
-   * truncation of a longer stored version, adds no version or observation, but account membership
-   * is still recorded. An empty text for an identity with no stored source writes nothing.
+   * transaction against the persisted versions of this identity (see `isWeakerText`):
+   *
+   * - Text weaker than a stored version adds no version. Account membership is recorded, and so is
+   *   an observation with the incoming availability against the retained fuller version, whose
+   *   `evidence` (`{"kind":"retained-fuller","incoming":"empty"|"truncated","textCaptured":false}`)
+   *   states that this observation did not capture that text.
+   * - An `unavailable` record with empty text and no stored text records the identity, membership,
+   *   and an `unavailable` observation of an explicit empty snapshot (`completeness` `none`,
+   *   evidence `{"kind":"unavailable-no-text","textCaptured":false}`). No text is invented.
+   * - An `available` record with empty text for an identity with no stored source writes nothing.
+   *
    * Importers set this; live capture adapters leave it unset.
    */
   retainFuller?: boolean;
@@ -53,9 +61,17 @@ export interface CommitResult {
   newRecords: number;
   newSources: number;
   newVersions: number;
-  /** `retainFuller` records whose text was weaker than a stored version: membership only. */
+  /**
+   * `retainFuller` records whose text was weaker than a stored version: membership and
+   * availability evidence against the retained version, no new version.
+   */
   weakerSkipped: number;
-  /** `retainFuller` records with no text and no stored source: nothing written. */
+  /**
+   * `retainFuller` records reported unavailable with no text and no stored text: identity,
+   * membership, and an unavailable observation of an empty snapshot. Not counted in `newVersions`.
+   */
+  unavailableNoText: number;
+  /** `retainFuller` records reported available with no text and no stored source: nothing written. */
   noContentSkipped: number;
   cancelRequested: boolean;
 }
@@ -162,17 +178,60 @@ const contentHash = (records: readonly CaptureRecord[]): string =>
 
 const TRUNCATION = /(…|\.\.\.)$/;
 
+/** The content a text carries, without trailing whitespace or a trailing truncation marker. */
+const qualityOf = (text: string): { head: string; truncated: boolean } => {
+  const trimmed = text.trimEnd();
+  const truncated = TRUNCATION.test(trimmed);
+  return { head: truncated ? trimmed.replace(TRUNCATION, "").trimEnd() : trimmed, truncated };
+};
+
 /**
- * Whether `incoming` is weaker than one of the `stored` texts of the same source: empty while a
- * stored text is not, or a truncation (optionally ellipsis-terminated) of a longer stored text. A
- * stored copy that is itself ellipsis-terminated is not treated as fuller than anything it prefixes.
+ * Whether `incoming` is weaker than one of the `stored` texts of the same source (MIG-01, T09).
+ * The comparison is by content, never by raw length (a trailing `…` or `...` marks a truncation
+ * and is not content):
+ *
+ * - empty text is weaker than any nonempty stored text;
+ * - text whose content is a strict prefix of a stored text's content is weaker;
+ * - an ellipsis-marked truncation is weaker than a stored text with the same content, so
+ *   `abc...` is weaker than both `abcd` and `abc`.
+ *
+ * Identical text is not weaker (it is the same version), and neither is text that differs from
+ * every stored text other than by such a prefix: that is a distinct version, kept alongside.
  */
 export function isWeakerText(incoming: string, stored: readonly string[]): boolean {
   if (incoming === "") return stored.some((t) => t !== "");
-  const head = incoming.trimEnd().replace(TRUNCATION, "");
-  return stored.some(
-    (t) => !TRUNCATION.test(t.trimEnd()) && t.length > incoming.length && t.startsWith(head),
-  );
+  const a = qualityOf(incoming);
+  return stored.some((t) => {
+    if (t === incoming || t === "") return false;
+    const b = qualityOf(t);
+    if (!b.head.startsWith(a.head)) return false;
+    return b.head.length > a.head.length || a.truncated;
+  });
+}
+
+/**
+ * Index of the stored version that makes `incoming` weaker and is retained in its place: the one
+ * carrying the most content, a complete text before a marked truncation of the same content, then
+ * the earliest. `null` when `incoming` is not weaker than any stored version.
+ */
+function retainedVersion(incoming: string, stored: readonly string[]): number | null {
+  let best: number | null = null;
+  stored.forEach((t, i) => {
+    if (!isWeakerText(incoming, [t])) return;
+    if (best === null) {
+      best = i;
+      return;
+    }
+    const b = qualityOf(stored[best]!);
+    const c = qualityOf(t);
+    if (
+      c.head.length > b.head.length ||
+      (c.head.length === b.head.length && b.truncated && !c.truncated)
+    ) {
+      best = i;
+    }
+  });
+  return best;
 }
 
 /**
@@ -327,6 +386,7 @@ export class CaptureStore {
       newSources: 0,
       newVersions: 0,
       weakerSkipped: 0,
+      unavailableNoText: 0,
       noContentSkipped: 0,
       cancelRequested: job.cancelRequested,
     };
@@ -398,15 +458,15 @@ export class CaptureStore {
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
     );
     const insVersion = this.db.prepare(
-      `INSERT INTO source_version (source_id, content_hash, text, published_at, created_at)
-       VALUES (?, ?, ?, ?, ?) ON CONFLICT (source_id, content_hash) DO NOTHING`,
+      `INSERT INTO source_version (source_id, content_hash, text, completeness, published_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (source_id, content_hash) DO NOTHING`,
     );
     const getVersion = this.db.prepare(
       "SELECT id FROM source_version WHERE source_id = ? AND content_hash = ?",
     );
     const insObservation = this.db.prepare(
-      `INSERT INTO observation (source_id, version_id, job_id, observed_at, method, adapter_version, availability, capture_page_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO observation (source_id, version_id, job_id, observed_at, method, adapter_version, availability, evidence, capture_page_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (job_id, version_id) WHERE capture_page_id IS NOT NULL DO NOTHING`,
     );
     /**
@@ -441,37 +501,16 @@ export class CaptureStore {
          WHERE membership.last_job_id IS NOT excluded.last_job_id`,
     );
 
-    const storedTexts = this.db.prepare("SELECT text FROM source_version WHERE source_id = ?");
-
-    let newSources = 0;
-    let newVersions = 0;
-    let newRecords = 0;
-    let weakerSkipped = 0;
-    let noContentSkipped = 0;
-    const half = Math.floor(page.records.length / 2);
-    page.records.forEach((r, i) => {
-      if (i === half) fault("mid-page");
-      if (r.retainFuller === true) {
-        const stored = findSource.get(r.sourceType, r.platformId) as { id: string } | undefined;
-        if (!stored && r.text === "") {
-          noContentSkipped++;
-          return;
-        }
-        if (stored) {
-          const texts = (storedTexts.all(stored.id) as { text: string }[]).map((v) => v.text);
-          if (isWeakerText(r.text, texts)) {
-            weakerSkipped++;
-            upMembership.run(page.accountId, page.collectionId, stored.id, iso, iso, jobId, jobId);
-            return;
-          }
-        }
-      }
-      const { id: sourceId, created } = sourceIdFor(r);
-      if (created) newSources++;
-      const textHash = sha256(r.text);
-      newVersions += insVersion.run(sourceId, textHash, r.text, r.publishedAt ?? null, iso).changes;
-      const { id: versionId } = getVersion.get(sourceId, textHash) as { id: number };
-      newRecords += insObservation.run(
+    const storedVersions = this.db.prepare(
+      "SELECT id, text FROM source_version WHERE source_id = ? ORDER BY id",
+    );
+    const observe = (
+      sourceId: string,
+      versionId: number,
+      r: CaptureRecord,
+      evidence: string | null,
+    ): number =>
+      insObservation.run(
         sourceId,
         versionId,
         jobId,
@@ -479,8 +518,74 @@ export class CaptureStore {
         method,
         adapter,
         r.availability ?? "available",
+        evidence,
         pageId,
       ).changes;
+    const addVersion = (sourceId: string, r: CaptureRecord, completeness: string) => {
+      const textHash = sha256(r.text);
+      const added = insVersion.run(
+        sourceId,
+        textHash,
+        r.text,
+        completeness,
+        r.publishedAt ?? null,
+        iso,
+      ).changes;
+      const { id } = getVersion.get(sourceId, textHash) as { id: number };
+      return { id, added };
+    };
+
+    let newSources = 0;
+    let newVersions = 0;
+    let newRecords = 0;
+    let weakerSkipped = 0;
+    let unavailableNoText = 0;
+    let noContentSkipped = 0;
+    const half = Math.floor(page.records.length / 2);
+    page.records.forEach((r, i) => {
+      if (i === half) fault("mid-page");
+      if (r.retainFuller === true) {
+        const stored = findSource.get(r.sourceType, r.platformId) as { id: string } | undefined;
+        const versions = stored
+          ? (storedVersions.all(stored.id) as { id: number; text: string }[])
+          : [];
+        const retained = retainedVersion(
+          r.text,
+          versions.map((v) => v.text),
+        );
+        if (stored && retained !== null) {
+          // Availability and import provenance are evidence independent of text quality; the
+          // observation points at the retained version but says its text was not captured here.
+          weakerSkipped++;
+          const evidence = JSON.stringify({
+            kind: "retained-fuller",
+            incoming: r.text === "" ? "empty" : "truncated",
+            textCaptured: false,
+          });
+          observe(stored.id, versions[retained]!.id, r, evidence);
+          upMembership.run(page.accountId, page.collectionId, stored.id, iso, iso, jobId, jobId);
+          return;
+        }
+        if (r.text === "" && r.availability === "unavailable") {
+          const { id: sourceId, created } = sourceIdFor(r);
+          if (created) newSources++;
+          unavailableNoText++;
+          const { id: versionId } = addVersion(sourceId, r, "none");
+          const evidence = JSON.stringify({ kind: "unavailable-no-text", textCaptured: false });
+          newRecords += observe(sourceId, versionId, r, evidence);
+          upMembership.run(page.accountId, page.collectionId, sourceId, iso, iso, jobId, jobId);
+          return;
+        }
+        if (!stored && r.text === "") {
+          noContentSkipped++;
+          return;
+        }
+      }
+      const { id: sourceId, created } = sourceIdFor(r);
+      if (created) newSources++;
+      const { id: versionId, added } = addVersion(sourceId, r, "unknown");
+      newVersions += added;
+      newRecords += observe(sourceId, versionId, r, null);
       upMembership.run(page.accountId, page.collectionId, sourceId, iso, iso, jobId, jobId);
     });
 
@@ -513,6 +618,7 @@ export class CaptureStore {
       newSources,
       newVersions,
       weakerSkipped,
+      unavailableNoText,
       noContentSkipped,
       cancelRequested,
     };
