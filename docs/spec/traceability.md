@@ -11,11 +11,11 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | ID | Summary | Milestone | Acceptance tests | Plan layers | Status | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
 | CAP-01 | Versioned capture adapters; audited collector evaluation | F0, M1 | T01, T02 | M1-07, M1-08 | not started | F0 licence/dependency audit of xarchive and twitter-web-exporter. F0: ADR 0005; collector licence, dependency, and network audit in `docs/f0/license-inventory.md` |
-| CAP-02 | String platform IDs; account-bound membership; account-switch pause | M1 | T01, T02 | M1-02, M1-04 | in progress | M1-02: string IDs and account-scoped membership schema (`packages/store`); account-switch pause pending. F0: `prototypes/capture-commit` (account-bound page refused; distinct platform IDs) |
-| CAP-03 | Atomic record+cursor commit; idempotent replay; lease | M1 | T01 | M1-03, M1-04 | in progress | M1-03: exclusive per-collection leases, acquisition-generation fencing and durable checkpoints (`packages/store/src/jobs.ts`, `jobs.test.ts`); 50 seeded operation sequences. Atomic page commit remains M1-04. |
+| CAP-02 | String platform IDs; account-bound membership; account-switch pause | M1 | T01, T02 | M1-02, M1-04 | in progress | M1-02: string IDs and account-scoped membership schema (`packages/store`). M1-04: `CaptureStore.commitPage` refuses a page bound to another account or collection before any capture write and pauses the job in the same lease-checked transaction; records attach to the persisted ID of their `(source_type, platform_id)` identity, never to another identity's row (`packages/store/src/capture.ts`, `capture.test.ts`). Account detection in the extension pending (M1-08). F0: `prototypes/capture-commit` |
+| CAP-03 | Atomic record+cursor commit; idempotent replay; lease | M1 | T01 | M1-03, M1-04 | implemented | M1-03: exclusive per-collection leases, acquisition-generation fencing and durable checkpoints (`packages/store/src/jobs.ts`, `jobs.test.ts`); 50 seeded operation sequences. M1-04: records, page, pass cursor and job cursor commit in one IMMEDIATE transaction fenced by the retained `acquire` token through `JobStore.withLease` (check and work share the transaction); replay keyed on pass and cursor, a fresh pass with new cursors adds no canonical rows (ADR 0005); cursor-mismatch, skip and stale-generation rejection (`packages/store/src/capture.ts`); T01 in `packages/store/src/t01.test.ts`. |
 | CAP-04 | Pause/resume/cancel and failure outcomes; loop, schema, disk detection | M1 | T02, T15 | M1-03, M2-02, M2-11, M2-12 | in progress | M1-03: pause/resume/retry and cooperative cancellation preserve committed records; pending cancel wins over resumable/complete outcomes and resume cannot revoke a running lease. Loop/schema/disk detection pending. |
 | CAP-05 | Retry-After, bounded backoff, no auth bypass | M1 | T02 | M1-08, M2-11 | not started |  |
-| CAP-06 | Honest 'complete' definition and termination evidence | M1 | T02 | M1-03, M1-04 | in progress | M1-03: complete is a distinct terminal state with stop reason; exact termination evidence remains M1-04. |
+| CAP-06 | Honest 'complete' definition and termination evidence | M1 | T02 | M1-03, M1-04 | in progress | M1-03: complete is a distinct terminal state with stop reason. M1-04: a page without a continuation completes the job in the same transaction; committed pages, passes, distinct IDs, adapter versions and the terminating page are recorded (`CaptureStore.summary`). T02 coverage-honesty cases pending (M1-08). |
 | CAP-07 | Pause honestly when X changes; library stays usable | M1 | T02 | M1-07, M1-08 | not started | F0: ADR 0005 (passive capture; real-session check owner-run, Q6) |
 | CAP-08 | Thread continuations: identity, order, flagged uncertainty | M1 | T02, T03 | M1-07 | not started |  |
 | CAP-09 | Original vs translation text kept separate | M1 | T03 | M1-07, M3-11 | not started |  |
@@ -66,7 +66,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | BKP-02 | Password-encrypted backups with maintained AEAD | M2 | T08 | M2-08 | not started | F0 encryption format decision. F0: ADR 0008; `prototypes/backup-age`; scrypt accepted (Q3) |
 | BKP-03 | Full portable backups; manifests; media-excluded disclosure | M2 | T08 | M2-08 | not started | F0: ADR 0008 (hashed manifest) |
 | MIG-01 | Import native backups, owner vault, xarchive; dry-run | M1 | T09, T15 | M1-09, M2-02, M2-07, M5-03 | not started | F0: xarchive = `sytelus/xarchive` (Q2); version pinning in M1-09 |
-| MIG-02 | Pre-migration backup; candidate indexes; no destructive generator | M2 | T08, T09 | M1-02, M2-07, M2-10, M3-01, M5-03 | in progress | M1-02: numbered transactional migrations and pre-migration backup hook; every recorded migration ID and name is validated, and a recorded gap (jobs-only databases at [1, 3]) receives the order-independent sync-core migration 2 exactly once after backup (`migrate.test.ts` upgrade matrix); candidate indexes pending. Migration trials in M5 |
+| MIG-02 | Pre-migration backup; candidate indexes; no destructive generator | M2 | T08, T09 | M1-02, M2-07, M2-10, M3-01, M5-03 | in progress | M1-02: numbered transactional migrations and pre-migration backup hook; every recorded migration ID and name is validated, and a recorded gap (jobs-only databases at [1, 3]) receives the order-independent sync-core migration 2 exactly once after backup (`migrate.test.ts` upgrade matrix); M1-04 adds additive `capture-commit` as migration 4 after published 2 and 3; upgrades from fresh, [1], [1, 2], [1, 3] and [1, 2, 3] keep legacy repeated observations (capture de-duplication indexes capture rows only); candidate indexes pending. Migration trials in M5 |
 | ACC-01 | Keyboard, screen reader, contrast, reduced motion (WCAG 2.2 AA) | M5 | T13 | M2-02, M2-06, M3-02, M3-09, M5-01 | not started | Incremental from M2 onward |
 | ACC-02 | Names, focus order, announcements, scalable text | M5 | T13 | M2-02, M5-01 | not started | Assistive-technology testing |
 | LAN-01 | English UI/AI quality; Unicode preserved; documented limits | M5 | T10, T13 | M3-01, M5-05 | not started |  |
@@ -94,11 +94,24 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
   be renumbered above 3 (with explicit handling of any existing sync version 2 databases); do not
   ship the combined list without upgrade-path tests. These branches are development previews.
 
+## M1-04 integration notes
+
+- CAP-03: `CaptureStore.commitPage(jobId, lease, nowMs, page)` takes the `Lease` returned by
+  `JobStore.acquire`, not an owner string. Callers retain that token; rebuilding it from
+  `JobStore.get` would let a stale worker impersonate a newer acquisition. `null` is accepted only
+  to acknowledge a page a `complete` job already committed.
+- CAP-03: `JobStore.withLease(id, lease, nowMs, fn)` is the public boundary for consumers that must
+  write atomically under a lease. It validates the clock (non-negative safe integer) and the
+  owner, generation and expiry, then runs `fn` in the same IMMEDIATE transaction (or savepoint), so
+  no other connection can take over between the check and the work. `assertLease` stays private.
+- MIG-02: capture bookkeeping is migration 4 (`capture-commit`). The unmerged preview numbered it 2;
+  a database that recorded that preview is refused by name before backup or SQL.
+
 ## Acceptance tests
 
 | ID | Name | Milestone gate | Plan layers | Status | F0 evidence |
 | --- | --- | --- | --- | --- | --- |
-| T01 | Capture replay | M1 | M1-04 | not started | F0 prototype: 15 passing tests in `prototypes/capture-commit` (synthetic; production port in M1-04) |
+| T01 | Capture replay | M1 | M1-04 | implemented | M1-04: 18 child-process kill cases (mid-page, before-commit, after-commit × pages 0, 6, 11 × fresh or same-pass resume) in `packages/store/src/t01.test.ts`; see `docs/testing/t01-capture-replay.md`. Verified locally on macOS; CI matrix run pending. F0 prototype: `prototypes/capture-commit` |
 | T02 | Coverage honesty | M1 | M1-08 | not started | — |
 | T03 | Attribution | M1, M3 | M1-07, M3-11, M4-05 | not started | ADR 0010 |
 | T04 | Sync | M2 | M2-04, M2-05 | in progress | M2-04: seeded fast-check property tests (`packages/sync/src/t04.property.test.ts`): random concurrent edit sequences never lose user text; same-key metadata changes conflict. Filesystem harness pending (M2-05) |
