@@ -760,7 +760,8 @@ describe.runIf(isWin)("T06: Windows named pipe DACL", () => {
     const trusted = new Set([acl.me, "S-1-5-18", "S-1-5-32-544", "S-1-3-0"]);
     const writers = acl.rules.filter((r) => r.type === "Allow" && (r.mask & WRITE) !== 0);
     console.info("named pipe DACL", JSON.stringify(acl));
-    expect(acl.owner).toBe(acl.me);
+    // An elevated administrator's objects are owned by Administrators rather than by the user.
+    expect([acl.me, "S-1-5-32-544"]).toContain(acl.owner);
     expect(writers.length).toBeGreaterThan(0);
     for (const w of writers) expect(trusted).toContain(w.sid);
   });

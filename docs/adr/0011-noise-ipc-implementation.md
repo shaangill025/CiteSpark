@@ -86,9 +86,15 @@ The spike ran outside the repository and committed nothing. It found the followi
 
 **Windows named pipe DACL.**
 
-- libuv creates the pipe with the default DACL. SYSTEM, Administrators and the creator owner get full control. Everyone and Anonymous get read access.
-- The Windows CI test asserts that only the current user, SYSTEM, Administrators and the creator owner hold write rights, and that the owner is the current user.
-- Read-only access cannot send `hello`, so it cannot reach the handshake. A tighter DACL needs a native addon and is deferred (see Still to validate).
+- libuv creates the pipe with the default DACL. On the Windows CI runner (an elevated administrator), the observed DACL is:
+  - SYSTEM and Administrators: full control.
+  - Everyone and Anonymous: read only (`0x120089`).
+  - Owner: Administrators. An elevated administrator's objects are owned by Administrators rather than by the user.
+- The Windows CI test asserts three things:
+  - Only the current user, SYSTEM, Administrators and the creator owner hold any write right.
+  - The owner is the current user or Administrators.
+  - At least one writer exists.
+- Read-only access cannot send `hello`, so it cannot reach the handshake. A tighter DACL, without Everyone and Anonymous read, needs a native addon and is deferred (see Still to validate).
 
 **Unix socket.**
 
