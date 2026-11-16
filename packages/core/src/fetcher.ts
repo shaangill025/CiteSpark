@@ -85,8 +85,36 @@ async function defaultResolve(hostname: string): Promise<string[]> {
   return all.map((a) => a.address);
 }
 
+/**
+ * Settle with `work`, or reject with a timeout gap once `signal` aborts. A resolver that never settles
+ * (stalled DNS or a misbehaving injected resolver) cannot hold a fetch past its overall deadline.
+ */
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal, timeoutMs: number): Promise<T> {
+  const expired = () => new Gap("timeout", `exceeded ${timeoutMs} ms`);
+  if (signal.aborted) return Promise.reject(expired());
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(expired());
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(
+      (v) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(v);
+      },
+      (e: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(e instanceof Error ? e : new Error(String(e)));
+      },
+    );
+  });
+}
+
 /** Resolve a hop once and return the single validated address to connect to. */
-async function resolveValidated(url: URL, opts: GuardedFetchOptions): Promise<string> {
+async function resolveValidated(
+  url: URL,
+  opts: GuardedFetchOptions,
+  signal: AbortSignal,
+  timeoutMs: number,
+): Promise<string> {
   const host = bareHostname(url);
   const blocked = (ip: string) => isBlockedAddress(ip) && !(opts.allowAddress?.(ip) ?? false);
   if (isIP(host) !== 0) {
@@ -95,8 +123,15 @@ async function resolveValidated(url: URL, opts: GuardedFetchOptions): Promise<st
   }
   let addresses: string[];
   try {
-    addresses = await (opts.resolve ?? defaultResolve)(host);
-  } catch {
+    const resolve = opts.resolve ?? defaultResolve;
+    addresses = await untilAborted(
+      Promise.resolve().then(() => resolve(host)),
+      signal,
+      timeoutMs,
+    );
+  } catch (e) {
+    if (e instanceof Gap) throw e;
+    if (signal.aborted) throw new Gap("timeout", `exceeded ${timeoutMs} ms`);
     throw new Gap("dns_failure", `could not resolve ${host}`);
   }
   if (addresses.length === 0) throw new Gap("dns_failure", `no addresses for ${host}`);
@@ -128,6 +163,8 @@ function requestHop(
         port: url.port === "" ? (url.protocol === "https:" ? 443 : 80) : Number(url.port),
         path: `${url.pathname}${url.search}`,
         method: "GET",
+        // One socket per hop, never pooled: nothing outlives the fetch or is reused for another name.
+        agent: false,
         headers: {
           accept: "text/html,application/xhtml+xml,text/plain;q=0.9",
           "accept-encoding": "identity",
@@ -195,11 +232,14 @@ export async function guardedFetch(
         );
       }
       chain.push(screened.url.href);
-      const ip = await resolveValidated(screened.url, options);
-      const { res } = await requestHop(screened.url, ip, options, controller.signal);
+      const ip = await resolveValidated(screened.url, options, controller.signal, limits.timeoutMs);
+      const { res, abort } = await requestHop(screened.url, ip, options, controller.signal);
       const status = res.statusCode ?? 0;
       if (REDIRECT_STATUS.has(status)) {
-        res.resume();
+        // Never read a redirect body: close it so an endless body cannot outlive this hop or the
+        // fetch's byte and time limits (ENR-03).
+        res.destroy();
+        abort();
         const location = res.headers.location;
         if (!location) throw new Gap("http_error", "redirect without Location", status);
         if (hop >= limits.maxRedirects) {

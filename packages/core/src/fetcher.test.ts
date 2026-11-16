@@ -237,6 +237,74 @@ describe("guardedFetch", () => {
     expect(Date.now() - t0).toBeLessThan(2000);
   });
 
+  it("bounds DNS resolution by the overall timeout", async () => {
+    const t0 = Date.now();
+    const r = await Promise.race([
+      guardedFetch("http://stall.test/", {
+        resolve: () => new Promise<string[]>(() => {}),
+        timeoutMs: 100,
+      }),
+      new Promise<"hung">((done) => setTimeout(() => done("hung"), 1500).unref()),
+    ]);
+    expect(r).toMatchObject({ ok: false, reason: "timeout", chain: ["http://stall.test/"] });
+    expect(Date.now() - t0).toBeLessThan(1500);
+  });
+
+  it("reports an expired deadline during DNS as a timeout, not a DNS failure", async () => {
+    const r = await guardedFetch("http://slow-dns.test/", {
+      resolve: () =>
+        new Promise<string[]>((_, reject) => setTimeout(() => reject(new Error("late")), 200)),
+      timeoutMs: 50,
+    });
+    expect(r).toMatchObject({ ok: false, reason: "timeout" });
+  });
+
+  describe("redirect responses with endless bodies", () => {
+    let redirectClosed: boolean;
+    let redirectBytes: number;
+    const endlessRedirect = (location: string) => {
+      redirectClosed = false;
+      redirectBytes = 0;
+      handler = (u, res) => {
+        if (u !== "/start") {
+          res.writeHead(200, { "content-type": "text/html" }).end(HTML);
+          return;
+        }
+        res.writeHead(302, { location, "content-type": "text/plain" });
+        const chunk = "z".repeat(16 * 1024);
+        const pump = setInterval(() => {
+          if (res.destroyed || res.writableEnded) return;
+          redirectBytes += chunk.length;
+          res.write(chunk);
+        }, 1);
+        res.on("close", () => {
+          redirectClosed = true;
+          clearInterval(pump);
+        });
+      };
+    };
+    const settle = () => new Promise((done) => setTimeout(done, 100));
+
+    it("closes the redirect response instead of draining it before the next hop", async () => {
+      endlessRedirect("/done");
+      const r = await guardedFetch(`${base}/start`, open({ maxBytes: 64 * 1024 }));
+      expect(r).toMatchObject({ ok: true, finalUrl: `${base}/done` });
+      await settle();
+      expect(redirectClosed).toBe(true);
+      const sent = redirectBytes;
+      await settle();
+      expect(redirectBytes).toBe(sent);
+    });
+
+    it("closes the redirect response when the next hop is blocked", async () => {
+      endlessRedirect("http://169.254.169.254/latest/");
+      const r = await guardedFetch(`${base}/start`, open());
+      expect(r).toMatchObject({ ok: false, reason: "blocked_target" });
+      await settle();
+      expect(redirectClosed).toBe(true);
+    });
+  });
+
   it("reports restricted, missing and failing pages as explicit gaps", async () => {
     for (const [status, reason] of [
       [403, "restricted"],
