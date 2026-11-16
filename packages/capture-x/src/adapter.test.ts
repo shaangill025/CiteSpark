@@ -474,6 +474,7 @@ describe("thread order and ancestry evidence (CAP-08 review regressions)", () =>
   const R = "1900000000000000921";
   const S = "1900000000000000922";
   const T = "1900000000000000923";
+  const M = "1900000000000000929";
 
   function modulePage(items: [string, unknown][]): ParsedPage {
     return okPage(
@@ -517,5 +518,28 @@ describe("thread order and ancestry evidence (CAP-08 review regressions)", () =>
       `ambiguous_sequence:${S}`,
       `ambiguous_sequence:${T}`,
     ]);
+  });
+
+  test("an omitted opening ancestor is flagged, not promoted to a confirmed root (F3)", () => {
+    const page = modulePage([
+      [`m-${S}`, tweet(S, M, R)],
+      [`m-${T}`, tweet(T, S, R)],
+    ]);
+    for (const id of [S, T]) {
+      expect(post(page, id).role).toBe("thread_continuation");
+      expect(post(page, id).thread).toEqual({ rootId: R, sequence: null, membership: "uncertain" });
+    }
+    expect(page.threads).toHaveLength(1);
+    expect(page.threads[0]?.rootId).toBe(R);
+    expect(page.threads[0]?.flags).toContain("root_unavailable");
+    expect(page.threads[0]?.flags).toContain(`missing_parent:${M}`);
+
+    // Not a reply, but X places it in another conversation whose opening post is absent.
+    const detached = modulePage([
+      [`m-${S}`, tweet(S, null, R)],
+      [`m-${T}`, tweet(T, S, R)],
+    ]);
+    expect(post(detached, S).thread?.membership).toBe("uncertain");
+    expect(detached.threads[0]?.flags).toContain(`missing_root:${R}`);
   });
 });

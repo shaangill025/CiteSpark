@@ -192,9 +192,9 @@ function parseItem(
 
 /**
  * Same-author replies join a thread only with explicit reply-chain evidence (CAP-08).
- * `rootUnavailable` means X delivered the opening post as a tombstone: the first surviving post
- * is then not a root, its author cannot be compared with the real root author, and every
- * surviving member is uncertain.
+ * `rootUnavailable` means X delivered the opening post as a tombstone. The opening post is also
+ * unavailable when the first available post itself replies to, or belongs to, an absent post.
+ * Either way the first surviving post is not a root and every surviving member is uncertain.
  */
 function resolveThread(
   items: ModuleItem[],
@@ -204,10 +204,16 @@ function resolveThread(
   const first = items[0];
   if (!first) throw new SchemaError("empty module");
   const root = first.post;
-  const rootId = rootUnavailable ? (root.conversationId ?? root.inReplyToId ?? root.id) : root.id;
+  // The first available post is the opening post only when its own evidence says so: it is not a
+  // reply and does not belong to another conversation. Otherwise X omitted its ancestry.
+  const rootProven =
+    !rootUnavailable &&
+    root.inReplyToId === null &&
+    (root.conversationId === null || root.conversationId === root.id);
+  const rootId = rootProven ? root.id : (root.conversationId ?? root.inReplyToId ?? root.id);
   const ids = new Set(items.map((i) => i.post.id));
   // Confirmed post ID -> depth along the proven reply chain from the root.
-  const confirmed = new Map<string, number>(rootUnavailable ? [] : [[root.id, 0]]);
+  const confirmed = new Map<string, number>(rootProven ? [[root.id, 0]] : []);
   for (let changed = true; changed;) {
     changed = false;
     for (const { post, replyToUserId } of items) {
@@ -230,7 +236,10 @@ function resolveThread(
   let ambiguousFrom = Infinity;
   for (const [depth, count] of depthCounts)
     if (count > 1) ambiguousFrom = Math.min(ambiguousFrom, depth);
-  const flags: string[] = rootUnavailable ? ["root_unavailable"] : [];
+  const flags: string[] = rootProven ? [] : ["root_unavailable"];
+  if (!rootUnavailable && root.inReplyToId === null && !ids.has(rootId)) {
+    flags.push(`missing_root:${rootId}`);
+  }
   const excludedReplyIds: string[] = [];
   const posts: CapturedPost[] = [];
   for (const { post } of items) {

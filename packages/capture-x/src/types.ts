@@ -60,8 +60,10 @@ export interface CapturedPost {
 }
 
 export interface ThreadObservation {
-  /** Opening post ID. When the opening post is unavailable this is X's conversation ID (or the
-   * first surviving post's parent) and `flags` contains `root_unavailable`. */
+  /** Opening post ID. When the opening post is unavailable (tombstoned, or omitted while the
+   * first available post replies to or belongs to an absent post) this is X's conversation ID
+   * (or the first surviving post's parent) and `flags` contains `root_unavailable` plus
+   * `missing_parent:<id>` or `missing_root:<id>` for the absent ancestry. */
   rootId: string;
   postIds: string[];
   excludedReplyIds: string[];
