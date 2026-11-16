@@ -268,6 +268,9 @@ CREATE UNIQUE INDEX observation_capture_job_version ON observation (job_id, vers
 // Media store (M1-10; MED-01, MED-04, Q28). Version 5 follows the published sync-core (2),
 // job-lease-generation (3) and capture-commit (4) migrations; numbers are never reused. An unmerged
 // PR #9 preview numbered this 2; such a database records 2 as "media-store" and is refused by name.
+// Only additive statements. Schema 1-4 never constrained media (source_id, content_hash), so new
+// duplicates are refused by trigger while any legacy duplicate rows are kept unchanged. Downloads are
+// claimed by (job, lease generation) so concurrent media jobs never share a partial file.
 const MEDIA_STORE = `
 CREATE TABLE blob (
   content_hash TEXT PRIMARY KEY,
@@ -276,21 +279,36 @@ CREATE TABLE blob (
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 ) STRICT;
 
-CREATE UNIQUE INDEX media_source_hash ON media (source_id, content_hash);
+CREATE INDEX media_source_hash ON media (source_id, content_hash);
+CREATE TRIGGER media_source_hash_insert BEFORE INSERT ON media
+WHEN EXISTS (SELECT 1 FROM media WHERE source_id = NEW.source_id AND content_hash = NEW.content_hash)
+BEGIN
+  SELECT RAISE(ABORT, 'UNIQUE constraint failed: media.source_id, media.content_hash');
+END;
+CREATE TRIGGER media_source_hash_update BEFORE UPDATE OF source_id, content_hash ON media
+WHEN EXISTS (SELECT 1 FROM media WHERE id <> NEW.id AND source_id = NEW.source_id AND content_hash = NEW.content_hash)
+BEGIN
+  SELECT RAISE(ABORT, 'UNIQUE constraint failed: media.source_id, media.content_hash');
+END;
 
 CREATE TABLE media_download (
   id INTEGER PRIMARY KEY,
   source_id TEXT NOT NULL REFERENCES source(id),
   url TEXT NOT NULL,
   state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'downloading', 'paused_budget', 'paused_disk', 'complete', 'failed')),
-  bytes_received INTEGER NOT NULL DEFAULT 0,
-  total_bytes INTEGER,
+  bytes_received INTEGER NOT NULL DEFAULT 0 CHECK (bytes_received >= 0),
+  total_bytes INTEGER CHECK (total_bytes IS NULL OR total_bytes >= 0),
   etag TEXT,
   mime_type TEXT,
   media_id INTEGER REFERENCES media(id),
   error TEXT,
+  claim_job_id TEXT REFERENCES job(id),
+  claim_generation INTEGER,
+  CHECK ((claim_job_id IS NULL) = (claim_generation IS NULL)),
+  CHECK (state <> 'complete' OR media_id IS NOT NULL),
   UNIQUE (source_id, url)
 ) STRICT;
+CREATE INDEX media_download_state ON media_download (state, id);
 `;
 
 export const MIGRATIONS: readonly Migration[] = [

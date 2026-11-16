@@ -22,10 +22,10 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | ENR-01 | Linked posts/articles as separate sources; no recursive crawl | M1 | T15 | M1-11 | not started |  |
 | ENR-02 | Link provenance fields; explicit gaps | M1 | T02, T03 | M1-11 | not started |  |
 | ENR-03 | SSRF/local-file blocking; size/time/type limits; sanitization | M1 | T02 | M1-11 | not started | Security review in M5 (SEC-06/07) |
-| MED-01 | Media preservation with hashes; resumable jobs | M1 | T01, T15 | M1-10 | not started |  |
+| MED-01 | Media preservation with hashes; resumable jobs | M1 | T01, T15 | M1-10 | in progress | M1-10: sha256 content-addressed blobs with reference counts, MIME type and size; Range-resumable downloads that validate `Content-Range` against the representation length and resume only with a strong validator; download jobs on the retained `acquire` lease with per-entry (job, generation) claims, per-chunk lease fencing and blob/media commit through `JobStore.withLease`; failed entries keep a job `partial` (`packages/store/src/media.ts`, `media.test.ts`, store migration 5). Source relationships beyond `source_id`, acquisition-status UI and wiring to capture pending; network guarding (ENR-03) is the injected fetcher from M1-11 |
 | MED-02 | Opt-in OCR/transcription with provenance | M3 | T03, T15 | M3-05, M3-06 | not started | F0 resource behaviour test. F0: ADR 0004; resource test pending (blockers B5) |
 | MED-03 | Derived text separate from original; user corrections as versions | M3 | T03 | M3-05, M3-06, M3-11 | not started |  |
-| MED-04 | Media limit pauses downloads without eviction | M1 | T02 | M1-10 | not started |  |
+| MED-04 | Media limit pauses downloads without eviction | M1 | T02 | M1-10 | in progress | M1-10: budget pause keeps resumable entries and evicts nothing, with each chunk reserved against one shared budget so concurrent jobs stay within it; free-space floor and ENOSPC from open, write, mkdir or rename pause all writes and keep recoverable partial state (`packages/store/src/media.ts`, `media.test.ts`). Disk-full is simulated through injected file operations; default budget (PROPOSED) is a helper, not yet wired to setup |
 | MED-05 | Bounded concurrency/memory; no automatic model downloads | M1, M3 | T11 | M3-03, M3-05, M3-06, M4-01 | not started | F0 resource behaviour test. F0: ADR 0004; resource test pending (blockers B5) |
 | SYN-01 | Plugin-free two-way sync; stable IDs; scoped access | M2 | T04, T15 | M2-04, M2-05 | in progress | M2-04: identity by frontmatter ID, then unique base-hash fallback; moves, duplicates, deletions, restore candidates (`packages/sync/src/identity.ts`). Scope, scan, and IO pending (M2-05). F0: ADR 0007 |
 | SYN-02 | Immutable originals; separately attributed user content | M2 | T03, T04 | M2-04, M3-11 | in progress | M2-04: vault edits to the source section are reported as a user-authored version (`sourceEdit`, `source_edit` review record); the captured original is never changed. Multi-round source edits are kept against the immutable library rendering; a new capture version that would overwrite user source text is a conflict (`review.test.ts`, T04 source-section rounds). Attribution through search and citation pending (M3-11). F0: ADR 0007 |
@@ -66,7 +66,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | BKP-02 | Password-encrypted backups with maintained AEAD | M2 | T08 | M2-08 | not started | F0 encryption format decision. F0: ADR 0008; `prototypes/backup-age`; scrypt accepted (Q3) |
 | BKP-03 | Full portable backups; manifests; media-excluded disclosure | M2 | T08 | M2-08 | not started | F0: ADR 0008 (hashed manifest) |
 | MIG-01 | Import native backups, owner vault, xarchive; dry-run | M1 | T09, T15 | M1-09, M2-02, M2-07, M5-03 | not started | F0: xarchive = `sytelus/xarchive` (Q2); version pinning in M1-09 |
-| MIG-02 | Pre-migration backup; candidate indexes; no destructive generator | M2 | T08, T09 | M1-02, M2-07, M2-10, M3-01, M5-03 | in progress | M1-02: numbered transactional migrations and pre-migration backup hook; every recorded migration ID and name is validated, and a recorded gap (jobs-only databases at [1, 3]) receives the order-independent sync-core migration 2 exactly once after backup (`migrate.test.ts` upgrade matrix); M1-04 adds additive `capture-commit` as migration 4 after published 2 and 3; upgrades from fresh, [1], [1, 2], [1, 3] and [1, 2, 3] keep legacy repeated observations (capture de-duplication indexes capture rows only); candidate indexes pending. Migration trials in M5 |
+| MIG-02 | Pre-migration backup; candidate indexes; no destructive generator | M2 | T08, T09 | M1-02, M2-07, M2-10, M3-01, M5-03 | in progress | M1-02: numbered transactional migrations and pre-migration backup hook; every recorded migration ID and name is validated, and a recorded gap (jobs-only databases at [1, 3]) receives the order-independent sync-core migration 2 exactly once after backup (`migrate.test.ts` upgrade matrix); M1-04 adds additive `capture-commit` as migration 4 after published 2 and 3; upgrades from fresh, [1], [1, 2], [1, 3] and [1, 2, 3] keep legacy repeated observations (capture de-duplication indexes capture rows only); M1-10 adds additive `media-store` as migration 5 (upgrades from every earlier state, legacy duplicate media rows kept while new duplicates are refused, the unmerged PR #9 preview that recorded it as 2 is refused by name); candidate indexes pending. Migration trials in M5 |
 | ACC-01 | Keyboard, screen reader, contrast, reduced motion (WCAG 2.2 AA) | M5 | T13 | M2-02, M2-06, M3-02, M3-09, M5-01 | not started | Incremental from M2 onward |
 | ACC-02 | Names, focus order, announcements, scalable text | M5 | T13 | M2-02, M5-01 | not started | Assistive-technology testing |
 | LAN-01 | English UI/AI quality; Unicode preserved; documented limits | M5 | T10, T13 | M3-01, M5-05 | not started |  |
@@ -110,6 +110,18 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
   no other connection can take over between the check and the work. `assertLease` stays private.
 - MIG-02: capture bookkeeping is migration 4 (`capture-commit`). The unmerged preview numbered it 2;
   a database that recorded that preview is refused by name before backup or SQL.
+
+## M1-10 integration notes
+
+- MED-01/CAP-03: `MediaStore.runJob` retains the `Lease` returned by `JobStore.acquire` and passes
+  that token to every renew, checkpoint, transition and `withLease` call; `download(id, ctx)` takes
+  the caller's retained lease and throws `LeaseError` for a stale or forged token before any network
+  or file work. The clock is injected (`now`) and must advance; the lease renews after a third of
+  its TTL, and a lost lease stops the transfer (`lease_lost`) without committing.
+- MED-01: entries are claimed by (job, lease generation) in a lease-checked transaction, so
+  concurrent media jobs never share a partial file; a claim held by another live lease returns
+  `claimed`. The fetch boundary is required and redirects are never followed by the media store.
+- MIG-02: the media store is migration 5 after published 1-4; numbers are never reused.
 
 ## Acceptance tests
 
@@ -173,7 +185,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | Q25 | SEC-01, SEC-02 | M3, M4 | M3-03 | not started |
 | Q26 | DAT-01 | M1, M3 | M1-02 | in progress |
 | Q27 | DAT-02 | M1, M3 | M4-01 | not started |
-| Q28 | MED-04 | M1 | M1-10 | not started |
+| Q28 | MED-04 | M1 | M1-10 | in progress |
 | Q29 | BKP-01 | M2 | M2-08 | not started |
 | Q30 | BKP-02 | M2 | M2-08 | not started |
 | Q31 | CAP-07 | M1 | M1-08 | not started |
