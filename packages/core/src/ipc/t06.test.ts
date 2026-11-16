@@ -728,9 +728,11 @@ describe.runIf(isWin)("T06: Windows named pipe DACL", () => {
   test("only the current user, SYSTEM, Administrators and the owner may write to the pipe", async () => {
     const desk = await startDesktop();
     const name = desk.path.slice("\\\\.\\pipe\\".length);
+    // .NET directly rather than Get-Acl: the runner's PSModulePath may not autoload Microsoft.PowerShell.Security.
     const script = `
       $ErrorActionPreference = 'Stop'
-      $acl = Get-Acl -LiteralPath '\\\\.\\pipe\\${name}'
+      $sections = [System.Security.AccessControl.AccessControlSections]'Access,Owner'
+      $acl = New-Object System.Security.AccessControl.FileSecurity -ArgumentList '\\\\.\\pipe\\${name}', $sections
       $rules = $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
       $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
       @{ me = $me; owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value;
