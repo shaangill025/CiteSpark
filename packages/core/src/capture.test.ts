@@ -125,3 +125,25 @@ describe("captureLink text decoding", () => {
     expect(await captureLink(base, open)).toMatchObject({ ok: true, text: text.trim() });
   });
 });
+
+describe("captureLink HTML extraction bounds", () => {
+  it("captures text and metadata from deeply nested markup within the byte limit", async () => {
+    const depth = 6000;
+    serve(
+      { "content-type": "text/html" },
+      `<title>T</title>${"<div>".repeat(depth)}article${"</div>".repeat(depth)}`,
+    );
+    expect(await captureLink(base, open)).toMatchObject({ ok: true, title: "T", text: "article" });
+  });
+
+  it("reports markup whose parse work exceeds the extraction bound as an explicit gap", async () => {
+    const depth = 20_000;
+    serve({ "content-type": "text/html" }, `${"<div>".repeat(depth)}article`);
+    expect(await captureLink(base, open)).toMatchObject({
+      ok: false,
+      reason: "extraction_limit",
+      httpStatus: 200,
+      chain: [`${base}/`],
+    });
+  });
+});

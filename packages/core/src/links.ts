@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { parse, type DefaultTreeAdapterTypes } from "parse5";
+import { defaultTreeAdapter, parse, type DefaultTreeAdapterTypes } from "parse5";
 
 /** ENR-01/ENR-02: link extraction and page metadata. No recursive crawling happens here or downstream. */
 
@@ -70,6 +70,19 @@ export interface PageContent {
 
 /** Text and metadata come from a spec-compliant HTML parse (parse5), not from markup patterns. */
 export const EXTRACTION_METHOD = "html-dom-v1";
+
+/**
+ * PROPOSED (ENR-03): the parser rescans its stack of open elements as elements open and close, so its work
+ * grows with element count times nesting depth, independent of the byte limit. Parsing stops once the
+ * open-element depths summed over every push exceed this budget (about 1-2 s of parsing). A 5 MiB page of
+ * repeated 500-deep nesting or a single nest about 15 000 deep still fits.
+ */
+export const MAX_PARSE_NESTING_WORK = 128_000_000;
+
+/** Extraction stopped at a resource bound; reported by `captureLink` as an explicit gap, never partial text. */
+export class ExtractionLimitError extends Error {
+  override readonly name = "ExtractionLimitError";
+}
 
 type Node = DefaultTreeAdapterTypes.Node;
 type Element = DefaultTreeAdapterTypes.Element;
@@ -148,12 +161,16 @@ function isElement(node: Node): node is Element {
   return "tagName" in node;
 }
 
-/** HTML-namespace elements in tree order. Template contents are a separate fragment and are never visited. */
+/**
+ * HTML-namespace elements in tree order. Template contents are a separate fragment and are never visited.
+ * Iterative with an explicit stack, so nesting depth is bounded by the byte limit, not the call stack.
+ */
 function* htmlElements(node: ParentNode): Generator<Element> {
-  for (const child of node.childNodes) {
+  const stack: Node[] = [...node.childNodes].reverse();
+  for (let child = stack.pop(); child !== undefined; child = stack.pop()) {
     if (!isElement(child)) continue;
     if (child.namespaceURI === HTML_NS) yield child;
-    yield* htmlElements(child);
+    for (let i = child.childNodes.length - 1; i >= 0; i--) stack.push(child.childNodes[i] as Node);
   }
 }
 
@@ -217,15 +234,21 @@ function titleOf(doc: ParentNode, head: Element | undefined): string | null {
   return null;
 }
 
+/** Text in tree order; block elements are wrapped in separators. Iterative, like `htmlElements`. */
 function collectText(node: ParentNode, out: string[]): void {
-  for (const child of node.childNodes) {
-    if (child.nodeName === "#text" && "value" in child) {
-      out.push(child.value);
-    } else if (isElement(child) && !SKIP_TEXT.has(child.tagName)) {
-      const block = BLOCK.has(child.tagName);
-      if (block) out.push("\n");
-      collectText(child, out);
-      if (block) out.push("\n");
+  // A string entry is a pending block-end separator; a node entry is still to be visited.
+  const stack: (Node | string)[] = [...node.childNodes].reverse();
+  for (let item = stack.pop(); item !== undefined; item = stack.pop()) {
+    if (typeof item === "string") {
+      out.push(item);
+    } else if (item.nodeName === "#text" && "value" in item) {
+      out.push(item.value);
+    } else if (isElement(item) && !SKIP_TEXT.has(item.tagName)) {
+      if (BLOCK.has(item.tagName)) {
+        out.push("\n");
+        stack.push("\n");
+      }
+      for (let i = item.childNodes.length - 1; i >= 0; i--) stack.push(item.childNodes[i] as Node);
     }
   }
 }
@@ -240,7 +263,24 @@ export function extractPage(body: string, contentType: string, finalUrl: string)
   } else {
     // Parsed as a browser would (scripting enabled), so script, style, comment, noscript and
     // attribute contents are never mistaken for metadata or text elements.
-    const doc = parse(body);
+    let depth = 0;
+    let work = 0;
+    const doc = parse(body, {
+      treeAdapter: {
+        ...defaultTreeAdapter,
+        onItemPush: () => {
+          work += ++depth;
+          if (work > MAX_PARSE_NESTING_WORK) {
+            throw new ExtractionLimitError(
+              `HTML nesting exceeded the parse work budget of ${MAX_PARSE_NESTING_WORK}`,
+            );
+          }
+        },
+        onItemPop: () => {
+          depth--;
+        },
+      },
+    });
     const html = doc.childNodes.find((n): n is Element => isElement(n) && n.tagName === "html");
     const head = html?.childNodes.find((n): n is Element => isElement(n) && n.tagName === "head");
     title = titleOf(doc, head);
