@@ -13,6 +13,7 @@ const hello = {
   type: "hello",
   versions: { min: 1, max: 1 },
   client: { kind: "extension", version: "0.1.0" },
+  channel: "session",
 };
 
 describe("hello negotiation", () => {
@@ -36,6 +37,7 @@ describe("hello negotiation", () => {
     expect(parseHello({ ...hello, versions: { min: 3, max: 1 } }).success).toBe(false);
     expect(parseHello({ ...hello, client: { kind: "rogue", version: "1" } }).success).toBe(false);
     expect(parseHello({ ...hello, extra: 1 }).success).toBe(false);
+    expect(parseHello({ ...hello, channel: "admin" }).success).toBe(false);
   });
 });
 

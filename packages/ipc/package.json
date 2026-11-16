@@ -1,0 +1,22 @@
+{
+  "name": "@citspark/ipc",
+  "version": "0.0.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "dependencies": {
+    "@citspark/protocol": "workspace:*",
+    "noise-handshake": "4.2.1",
+    "sodium-universal": "5.0.1"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./node": {
+      "types": "./dist/node.d.ts",
+      "default": "./dist/node.js"
+    }
+  }
+}

@@ -10,6 +10,9 @@ export const ErrorCode = {
   Unauthorized: "unauthorized",
   Forbidden: "forbidden",
   NotFound: "not_found",
+  PairingFailed: "pairing_failed",
+  PairingLocked: "pairing_locked",
+  PairingExpired: "pairing_expired",
   Internal: "internal",
 } as const;
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
