@@ -36,10 +36,17 @@ export function helloPrologue(helloFrame: Uint8Array, replyFrame: Uint8Array): B
 
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 
-/** Incremental decoder. Any error is fatal: the stream is desynchronised and the connection must close. */
+/**
+ * Incremental decoder. Any error is fatal: the stream is desynchronised and the connection must close.
+ * Each input byte is copied exactly once: header bytes into a fixed 4-byte buffer, body bytes into a buffer
+ * allocated once the (size-checked) header is complete. Fragmented frames therefore cost linear work.
+ */
 export class FrameDecoder {
   readonly #max: number;
-  #buf: Buffer = Buffer.alloc(0);
+  readonly #header = new Uint8Array(HEADER_BYTES);
+  #headerFill = 0;
+  #body: Uint8Array | undefined;
+  #bodyFill = 0;
   #failed: FrameError | undefined;
 
   constructor(opts: { maxFrameBytes?: number } = {}) {
@@ -48,27 +55,44 @@ export class FrameDecoder {
 
   push(chunk: Uint8Array): unknown[] {
     if (this.#failed) throw this.#failed;
-    this.#buf = this.#buf.length === 0 ? Buffer.from(chunk) : Buffer.concat([this.#buf, chunk]);
     const out: unknown[] = [];
     try {
-      while (this.#buf.length >= HEADER_BYTES) {
-        const len = this.#buf.readUInt32BE(0);
-        // Reject on the header so an attacker cannot make us buffer an oversized body.
-        if (len > this.#max) {
-          throw new FrameError(
-            ErrorCode.FrameTooLarge,
-            `frame of ${len} bytes exceeds limit ${this.#max}`,
-          );
+      let off = 0;
+      while (off < chunk.length) {
+        if (this.#body === undefined) {
+          const n = Math.min(HEADER_BYTES - this.#headerFill, chunk.length - off);
+          this.#header.set(chunk.subarray(off, off + n), this.#headerFill);
+          this.#headerFill += n;
+          off += n;
+          if (this.#headerFill < HEADER_BYTES) break;
+          const len = new DataView(this.#header.buffer).getUint32(0, false);
+          // Reject on the header so an attacker cannot make us buffer an oversized body.
+          if (len > this.#max) {
+            throw new FrameError(
+              ErrorCode.FrameTooLarge,
+              `frame of ${len} bytes exceeds limit ${this.#max}`,
+            );
+          }
+          if (len === 0) throw new FrameError(ErrorCode.MalformedFrame, "empty frame");
+          this.#body = new Uint8Array(len);
+          this.#bodyFill = 0;
+          continue;
         }
-        if (len === 0) throw new FrameError(ErrorCode.MalformedFrame, "empty frame");
-        if (this.#buf.length < HEADER_BYTES + len) break;
-        const body = this.#buf.subarray(HEADER_BYTES, HEADER_BYTES + len);
-        this.#buf = this.#buf.subarray(HEADER_BYTES + len);
-        out.push(parseBody(body));
+        const n = Math.min(this.#body.length - this.#bodyFill, chunk.length - off);
+        this.#body.set(chunk.subarray(off, off + n), this.#bodyFill);
+        this.#bodyFill += n;
+        off += n;
+        if (this.#bodyFill === this.#body.length) {
+          const body = this.#body;
+          this.#body = undefined;
+          this.#headerFill = 0;
+          out.push(parseBody(body));
+        }
       }
     } catch (e) {
       this.#failed = e as FrameError;
-      this.#buf = Buffer.alloc(0);
+      this.#body = undefined;
+      this.#headerFill = 0;
       throw e;
     }
     return out;
