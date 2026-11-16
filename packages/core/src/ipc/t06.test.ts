@@ -728,23 +728,27 @@ describe.runIf(isWin)("T06: Windows named pipe DACL", () => {
   test("only the current user, SYSTEM, Administrators and the owner may write to the pipe", async () => {
     const desk = await startDesktop();
     const name = desk.path.slice("\\\\.\\pipe\\".length);
-    // .NET directly rather than Get-Acl: the runner's PSModulePath may not autoload Microsoft.PowerShell.Security.
+    // Reads the DACL from a connected handle: Get-Acl may not autoload on the runner, and FileSecurity
+    // rejects \\.\pipe\ paths. The core sees this connection as a silent client and drops it.
     const script = `
       $ErrorActionPreference = 'Stop'
-      $sections = [System.Security.AccessControl.AccessControlSections]'Access,Owner'
-      $acl = New-Object System.Security.AccessControl.FileSecurity -ArgumentList '\\\\.\\pipe\\${name}', $sections
+      $pipe = New-Object System.IO.Pipes.NamedPipeClientStream -ArgumentList '.', '${name}', ([System.IO.Pipes.PipeDirection]::InOut)
+      $pipe.Connect(5000)
+      $acl = $pipe.GetAccessControl()
+      $pipe.Dispose()
       $rules = $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
       $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
       @{ me = $me; owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value;
          rules = @($rules | ForEach-Object { @{ sid = $_.IdentityReference.Value;
-           mask = [int64]$_.FileSystemRights; type = [string]$_.AccessControlType } }) } |
+           mask = [int64]$_.PipeAccessRights; type = [string]$_.AccessControlType } }) } |
         ConvertTo-Json -Depth 4 -Compress`;
-    const { stdout } = await promisify(execFile)("powershell.exe", [
-      "-NoProfile",
-      "-NonInteractive",
-      "-Command",
-      script,
-    ]);
+    const env = { ...process.env };
+    delete env.PSModulePath;
+    const { stdout } = await promisify(execFile)(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", script],
+      { env },
+    );
     const acl = JSON.parse(stdout) as {
       me: string;
       owner: string;
