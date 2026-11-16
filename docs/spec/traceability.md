@@ -27,12 +27,12 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | MED-03 | Derived text separate from original; user corrections as versions | M3 | T03 | M3-05, M3-06, M3-11 | not started |  |
 | MED-04 | Media limit pauses downloads without eviction | M1 | T02 | M1-10 | not started |  |
 | MED-05 | Bounded concurrency/memory; no automatic model downloads | M1, M3 | T11 | M3-03, M3-05, M3-06, M4-01 | not started | F0 resource behaviour test. F0: ADR 0004; resource test pending (blockers B5) |
-| SYN-01 | Plugin-free two-way sync; stable IDs; scoped access | M2 | T04, T15 | M2-04, M2-05 | not started | F0: ADR 0007 |
-| SYN-02 | Immutable originals; separately attributed user content | M2 | T03, T04 | M2-04, M3-11 | not started | F0: ADR 0007 |
-| SYN-03 | Three-way merge; conflicts preserved for review | M2 | T04, T13 | M2-04, M2-06 | not started | F0: ADR 0007 |
+| SYN-01 | Plugin-free two-way sync; stable IDs; scoped access | M2 | T04, T15 | M2-04, M2-05 | in progress | M2-04: identity by frontmatter ID, then unique base-hash fallback; moves, duplicates, deletions, restore candidates (`packages/sync/src/identity.ts`). Scope, scan, and IO pending (M2-05). F0: ADR 0007 |
+| SYN-02 | Immutable originals; separately attributed user content | M2 | T03, T04 | M2-04, M3-11 | in progress | M2-04: vault edits to the source section are reported as a user-authored version (`sourceEdit`, `source_edit` review record); the captured original is never changed. Multi-round source edits are kept against the immutable library rendering; a new capture version that would overwrite user source text is a conflict (`review.test.ts`, T04 source-section rounds). Attribution through search and citation pending (M3-11). F0: ADR 0007 |
+| SYN-03 | Three-way merge; conflicts preserved for review | M2 | T04, T13 | M2-04, M2-06 | in progress | M2-04: section-aware diff3 body merge, per-key frontmatter merge, conflict records with all three variants (`packages/sync`, store migration 2). Rendered YAML is reparsed and structurally checked against intended merged values; anchor collateral mutations conflict with raw variants preserved (`review.test.ts`). Review UI pending (M2-06). F0: ADR 0007 |
 | SYN-04 | Vault delete unlinks; trash suppresses re-import | M2 | T04, T07 | M2-05 | not started | F0: ADR 0007 |
 | SYN-05 | Watcher events as hints; atomic writes; no feedback loops; symlink policy | M2 | T04 | M2-05 | not started | F0: ADR 0007 |
-| SYN-06 | Portable Markdown with versioned frontmatter | M2 | T04 | M2-04 | not started | F0: ADR 0007 (frontmatter schema) |
+| SYN-06 | Portable Markdown with versioned frontmatter | M2 | T04 | M2-04 | in progress | M2-04: `citspark.schema` version check (newer schema is a conflict, never rewritten; invalid mappings, sequences and null return safe diagnostics without object coercion), section markers, reversible marker escaping documented in ADR 0007. Written-file portability checks pending (M2-05). F0: ADR 0007 (frontmatter schema) |
 | PLG-01 | Optional Obsidian companion plugin | M2, M4 | T06, T14, T15 | M2-09, M4-07 | not started | Research UI lands in M4. F0: ADR 0006 |
 | PLG-02 | Plugin connection states; no independent DB or policy engine | M2 | T06, T14 | M2-09 | not started | F0: ADR 0006 |
 | RET-01 | Unified search; exact-ID, keyword, semantic; visible mode | M3 | T10, T11, T12 | M3-02, M3-03 | not started | F0: ADR 0002, ADR 0003; keyword and vector cost measured (`docs/f0/benchmarks.md`) |
@@ -78,7 +78,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | T01 | Capture replay | M1 | M1-04 | not started | F0 prototype: 15 passing tests in `prototypes/capture-commit` (synthetic; production port in M1-04) |
 | T02 | Coverage honesty | M1 | M1-08 | not started | — |
 | T03 | Attribution | M1, M3 | M1-07, M3-11, M4-05 | not started | ADR 0010 |
-| T04 | Sync | M2 | M2-04, M2-05 | not started | ADR 0007 |
+| T04 | Sync | M2 | M2-04, M2-05 | in progress | M2-04: seeded fast-check property tests (`packages/sync/src/t04.property.test.ts`): random concurrent edit sequences never lose user text; same-key metadata changes conflict. Filesystem harness pending (M2-05) |
 | T05 | Privacy | M3, M4 | M3-04 | not started | — |
 | T06 | Pairing | M2 | M1-06, M2-09 | not started | ADR 0006 |
 | T07 | Deletion | M1, M2 | M1-12, M3-02 | not started | — |
@@ -97,7 +97,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | --- | --- | --- | --- | --- |
 | M0 | Feasibility | Measured prototypes, licence inventory, architecture decisions, capability matrix; owner-reviewed plan | complete | [ADRs 0001–0010](../adr/README.md), [F0 results](../f0/README.md), [owner decisions](../f0/owner-decisions.md); plan approved 2026-11-16 |
 | M1 | Data foundation | Archive, versioning, jobs, capture, import, media, recoverable storage (preview only) | not started | M1-01 to M1-12 |
-| M2 | Desktop and vault | Packaged apps, pairing, two-way sync, conflicts, plugin controls, backups, restore | not started | M2-01 to M2-12 |
+| M2 | Desktop and vault | Packaged apps, pairing, two-way sync, conflicts, plugin controls, backups, restore | in progress | M2-01 to M2-12 (M2-04 sync core in progress) |
 | M3 | Knowledge layer | Search, OCR/transcripts, organization, graph/list, exact citations, privacy filtering | not started | M3-01 to M3-11 |
 | M4 | Intelligence | Local runtime, cloud adapters, quick answers, bounded research, plugin research UI, frozen evaluation | not started | M4-01 to M4-08 |
 | M5 | Release hardening | Accessibility, compatibility, migration trials, security review, docs, demo, clean-machine acceptance | not started | M5-01 to M5-07 |
@@ -108,10 +108,10 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | --- | --- | --- | --- | --- |
 | Q01 | All of CAP/RET/AI | M1-M5 | whole plan | not started |
 | Q02 | SYN-01, PLG-01 | M2 | whole plan | not started |
-| Q03 | SYN-01..SYN-03 | M2 | M2-04 | not started |
-| Q04 | SYN-02 | M2 | M2-04, M3-11 (via SYN-02) | not started |
+| Q03 | SYN-01..SYN-03 | M2 | M2-04 | in progress |
+| Q04 | SYN-02 | M2 | M2-04, M3-11 (via SYN-02) | in progress |
 | Q05 | SYN-04 | M2 | M2-05 (via SYN-04) | not started |
-| Q06 | SYN-03 | M2 | M2-04 | not started |
+| Q06 | SYN-03 | M2 | M2-04 | in progress |
 | Q07 | SYN-01 | M2 | M2-05 | not started |
 | Q08 | SYN-01 | M2 | M2-05 | not started |
 | Q09 | T14 | M5 | M2-01, M5-02 | not started |
