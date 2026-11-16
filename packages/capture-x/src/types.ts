@@ -79,8 +79,8 @@ export interface ParsedPage {
   threads: ThreadObservation[];
   unavailable: UnavailableEntry[];
   cursorOut: string | null;
-  /** True only when X explicitly terminated the bottom of the timeline, delivered no bottom
-   * cursor, or delivered no content entries. Tombstone-only pages are not exhausted. */
+  /** True only when X explicitly terminated the bottom of the timeline or delivered no bottom
+   * cursor. Tombstone-only and cursor-only pages are not exhausted. */
   exhausted: boolean;
 }
 

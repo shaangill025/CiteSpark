@@ -325,6 +325,21 @@ describe("termination evidence (CAP-06, CAP-07 review regressions)", () => {
     ]);
     expect(okPage(body).exhausted).toBe(true);
   });
+
+  test("a cursor-only page without bottom termination keeps scrolling (F1)", () => {
+    for (const extra of [[], [{ type: "TimelineTerminateTimeline", direction: "Top" }]]) {
+      const body = bookmarksBody([
+        { type: "TimelineAddEntries", entries: [cursor("Bottom", "SYNTHETIC_CURSOR_ONLY")] },
+        ...extra,
+      ]);
+      const page = okPage(body);
+      expect(page.exhausted).toBe(false);
+      expect(xAdapter.nextRequest(page)).toEqual({
+        kind: "scroll",
+        expectCursor: "SYNTHETIC_CURSOR_ONLY",
+      });
+    }
+  });
 });
 
 describe("unavailable thread ancestry (CAP-08 review regressions)", () => {

@@ -253,7 +253,6 @@ function parseEntries(entries: unknown[]) {
   const threads: ThreadObservation[] = [];
   const unavailable: UnavailableEntry[] = [];
   let cursorOut: string | null = null;
-  let contentEntries = 0;
   for (const entry of entries) {
     const entryId = reqString(dig(entry, "entryId"), "entryId");
     const content = dig(entry, "content");
@@ -265,7 +264,6 @@ function parseEntries(entries: unknown[]) {
         break;
       }
       case "TimelineTimelineItem": {
-        contentEntries++;
         const parsed = parseItem(dig(content, "itemContent"), entryId, unavailable);
         if (parsed) posts.push(parsed.post);
         break;
@@ -273,7 +271,6 @@ function parseEntries(entries: unknown[]) {
       case "TimelineTimelineModule": {
         const rawItems = dig(content, "items");
         if (!Array.isArray(rawItems)) throw new SchemaError("module without items");
-        contentEntries++;
         const items: ModuleItem[] = [];
         const moduleUnavailable: UnavailableEntry[] = [];
         for (const raw of rawItems) {
@@ -300,7 +297,7 @@ function parseEntries(entries: unknown[]) {
         throw new SchemaError("unknown entry type");
     }
   }
-  return { posts, threads, unavailable, cursorOut, contentEntries };
+  return { posts, threads, unavailable, cursorOut };
 }
 
 function isLeadingTombstone(rawItems: unknown[], moduleUnavailable: UnavailableEntry[]): boolean {
@@ -334,12 +331,14 @@ export function parsePage(body: unknown, collection: CollectionRef): ParseResult
     // Cache control alone says nothing about where the collection ends (CAP-06).
     if (!sawEntries && !terminatedBottom)
       throw new ControlOnlyError("no page entries or termination");
-    const { contentEntries, ...parsed } = parseEntries(entries);
+    const parsed = parseEntries(entries);
     const page: ParsedPage = {
       adapterVersion: ADAPTER_VERSION,
       collection,
       ...parsed,
-      exhausted: terminatedBottom || parsed.cursorOut === null || contentEntries === 0,
+      // A bottom cursor without bottom termination is a continuation, even on a page with no
+      // content entries (CAP-06): zero entries is no evidence that the collection ended.
+      exhausted: terminatedBottom || parsed.cursorOut === null,
     };
     return { status: "ok", page };
   } catch (err) {
