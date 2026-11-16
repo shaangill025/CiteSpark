@@ -149,7 +149,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | ID | Name | Scope | Status | Evidence |
 | --- | --- | --- | --- | --- |
 | M0 | Feasibility | Measured prototypes, licence inventory, architecture decisions, capability matrix; owner-reviewed plan | complete | [ADRs 0001–0010](../adr/README.md), [F0 results](../f0/README.md), [owner decisions](../f0/owner-decisions.md); plan approved 2026-11-16 |
-| M1 | Data foundation | Archive, versioning, jobs, capture, import, media, recoverable storage (preview only) | in progress | M1-01 to M1-12 (M1-01 to M1-07 merged; M1-08 to M1-12 not started) |
+| M1 | Data foundation | Archive, versioning, jobs, capture, import, media, recoverable storage (preview only) | in progress | M1-01 to M1-12 (M1-01 to M1-07 merged; M1-08 to M1-12 not merged) |
 | M2 | Desktop and vault | Packaged apps, pairing, two-way sync, conflicts, plugin controls, backups, restore | in progress | M2-01 to M2-12 (M2-04 sync core in progress) |
 | M3 | Knowledge layer | Search, OCR/transcripts, organization, graph/list, exact citations, privacy filtering | not started | M3-01 to M3-11 |
 | M4 | Intelligence | Local runtime, cloud adapters, quick answers, bounded research, plugin research UI, frozen evaluation | not started | M4-01 to M4-08 |
