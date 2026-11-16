@@ -1,0 +1,19 @@
+{
+  "name": "@citspark/sync",
+  "version": "0.0.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "dependencies": {
+    "@citspark/store": "workspace:*",
+    "better-sqlite3": "^12.11.1",
+    "node-diff3": "4.0.0",
+    "yaml": "2.9.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "fast-check": "4.10.2"
+  }
+}

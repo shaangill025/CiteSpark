@@ -7,12 +7,12 @@ Requirements: Node.js 24 or later (the scripts run TypeScript through Node's typ
 ```sh
 cd prototypes
 pnpm install
-pnpm test            # T01 capture replay + T08 backup encryption checks
+pnpm test            # T01 capture replay, T08 backup encryption, FTS5 index-mode check
 pnpm bench:fts5      # builds a 100,000-post corpus in /tmp/citspark-f0 and measures search (about 2 minutes)
 pnpm bench:vector    # exact vector scan at 100,000 and 216,283 vectors (about 1 minute)
 ```
 
-Add `-- --trigram` to `bench:fts5` to also build and measure the trigram index. Add `-- --rebuild` to regenerate the corpus.
+Add `-- --trigram` to `bench:fts5` to also build and measure the trigram index. An existing database built in the other mode is rebuilt automatically. Add `-- --rebuild` to regenerate the corpus.
 
 | Directory | What it proves | Spec |
 |---|---|---|

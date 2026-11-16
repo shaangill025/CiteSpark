@@ -110,11 +110,12 @@ export class MediaStore {
   private diskFull = false;
   private readonly freeBytes: () => number;
   private readonly doFetch: typeof fetch;
+  private readonly db: Database.Database;
+  private readonly opts: MediaStoreOptions;
 
-  constructor(
-    private readonly db: Database.Database,
-    private readonly opts: MediaStoreOptions,
-  ) {
+  constructor(db: Database.Database, opts: MediaStoreOptions) {
+    this.db = db;
+    this.opts = opts;
     this.budget = opts.budgetBytes;
     mkdirSync(join(opts.root, "blobs"), { recursive: true });
     mkdirSync(join(opts.root, "tmp"), { recursive: true });
@@ -412,7 +413,9 @@ export class MediaStore {
   /** Run pending downloads under a job lease. Pauses the job on budget or disk pressure. */
   async runJob(jobs: JobStore, jobId: string, owner: string, nowMs: number): Promise<JobOutcome> {
     const ttl = this.opts.leaseTtlMs ?? 60_000;
-    if (!jobs.acquire(jobId, owner, nowMs, ttl)) return "not_acquired";
+    // Retain the token minted by this acquisition; every later call is fenced by it.
+    const lease = jobs.acquire(jobId, owner, nowMs, ttl);
+    if (!lease) return "not_acquired";
     const ids = (
       this.db
         .prepare(
@@ -423,13 +426,13 @@ export class MediaStore {
     let interrupted = 0;
     let done = 0;
     for (const id of ids) {
-      jobs.renew(jobId, owner, nowMs, ttl);
+      jobs.renew(jobId, lease, nowMs, ttl);
       const outcome = await this.download(id);
       if (outcome === "paused_budget" || outcome === "paused_disk") {
-        jobs.checkpoint(jobId, owner, nowMs, { progress: `${done}/${ids.length}` });
+        jobs.checkpoint(jobId, lease, nowMs, { progress: `${done}/${ids.length}` });
         jobs.transition(
           jobId,
-          owner,
+          lease,
           nowMs,
           "paused",
           outcome === "paused_budget" ? "media budget reached" : "disk space low",
@@ -438,20 +441,20 @@ export class MediaStore {
       }
       if (outcome === "interrupted") interrupted++;
       else done++;
-      const cancelRequested = jobs.checkpoint(jobId, owner, nowMs, {
+      const cancelRequested = jobs.checkpoint(jobId, lease, nowMs, {
         cursor: String(id),
         progress: `${done}/${ids.length}`,
       });
       if (cancelRequested) {
-        jobs.transition(jobId, owner, nowMs, "cancelled", "cancelled by user");
+        jobs.transition(jobId, lease, nowMs, "cancelled", "cancelled by user");
         return "cancelled";
       }
     }
     if (interrupted > 0) {
-      jobs.transition(jobId, owner, nowMs, "partial", `${interrupted} download(s) interrupted`);
+      jobs.transition(jobId, lease, nowMs, "partial", `${interrupted} download(s) interrupted`);
       return "partial";
     }
-    jobs.transition(jobId, owner, nowMs, "complete");
+    jobs.transition(jobId, lease, nowMs, "complete");
     return "complete";
   }
 }

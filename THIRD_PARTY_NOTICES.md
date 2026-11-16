@@ -6,4 +6,6 @@ datasets are listed separately because their terms differ from the code license.
 
 | Component | Version / revision | License | Used in |
 | --- | --- | --- | --- |
-| (none) | | | |
+| [better-sqlite3](https://github.com/WiseLibs/better-sqlite3) (bundles SQLite, public domain) | 12.11.1 | MIT | `packages/store` |
+| [node-diff3](https://github.com/bhousel/node-diff3) | 4.0.0 | MIT | `packages/sync` |
+| [yaml](https://github.com/eemeli/yaml) | 2.9.1 | ISC | `packages/sync` |
