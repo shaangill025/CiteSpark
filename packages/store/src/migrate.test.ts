@@ -264,6 +264,10 @@ describe("upgrade matrix", () => {
     expect(tables(db)).toEqual(expect.arrayContaining(["linked_fetch", "link_ref"]));
     expect(columns(db, "source")).toContain("purged_at");
     expect(views(db)).toEqual(["active_chunk", "active_source", "active_version"]);
+    // Media-store 5 attempt isolation fields survive alongside linked 6 and trash 7.
+    expect(columns(db, "media_download")).toEqual(
+      expect.arrayContaining(["claim_job_id", "claim_generation", "claim_token", "part_file"]),
+    );
     expect(columns(db, "job")).toContain("lease_generation");
     expect(tables(db)).toEqual(expect.arrayContaining(["blob", "media_download"]));
     expect(tables(db)).toEqual(expect.arrayContaining(["capture_pass", "capture_page"]));
