@@ -223,7 +223,52 @@ ALTER TABLE observation ADD COLUMN capture_page_id INTEGER REFERENCES capture_pa
 CREATE UNIQUE INDEX observation_job_version ON observation (job_id, version_id) WHERE job_id IS NOT NULL;
 `;
 
+// Media store (MED-01..). Blobs are content-addressed and reference counted.
+const V3 = `
+CREATE TABLE blob (
+  content_hash TEXT PRIMARY KEY,
+  size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
+  ref_count INTEGER NOT NULL DEFAULT 0 CHECK (ref_count >= 0),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+) STRICT;
+
+CREATE UNIQUE INDEX media_source_hash ON media (source_id, content_hash);
+
+CREATE TABLE media_download (
+  id INTEGER PRIMARY KEY,
+  source_id TEXT NOT NULL REFERENCES source(id),
+  url TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'downloading', 'paused_budget', 'paused_disk', 'complete', 'failed')),
+  bytes_received INTEGER NOT NULL DEFAULT 0,
+  total_bytes INTEGER,
+  etag TEXT,
+  mime_type TEXT,
+  media_id INTEGER REFERENCES media(id),
+  error TEXT,
+  UNIQUE (source_id, url)
+) STRICT;
+`;
+
+// Trash and purge (DAT-03, DAT-04). A purged source keeps a tombstone row so recapture stays
+// suppressed and retained citations resolve to "unavailable" rather than to another source.
+const V4 = `
+ALTER TABLE source ADD COLUMN purged_at TEXT;
+
+CREATE VIEW active_source AS SELECT * FROM source WHERE trashed_at IS NULL;
+
+CREATE VIEW active_version AS
+  SELECT v.* FROM source_version v JOIN source s ON s.id = v.source_id WHERE s.trashed_at IS NULL;
+
+CREATE VIEW active_chunk AS
+  SELECT c.* FROM chunk c
+  JOIN source_version v ON v.id = c.version_id
+  JOIN source s ON s.id = v.source_id
+  WHERE s.trashed_at IS NULL;
+`;
+
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, name: "initial-schema", sql: V1 },
   { version: 2, name: "capture-commit", sql: V2 },
+  { version: 3, name: "media-store", sql: V3 },
+  { version: 4, name: "trash-purge", sql: V4 },
 ];

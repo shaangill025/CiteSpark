@@ -331,6 +331,10 @@ export class CaptureStore {
          WHERE membership.last_job_id IS NOT excluded.last_job_id`,
     );
 
+    const isTrashed = this.db.prepare(
+      "SELECT 1 FROM source WHERE id = ? AND trashed_at IS NOT NULL",
+    );
+
     let newSources = 0;
     let newVersions = 0;
     let newRecords = 0;
@@ -338,6 +342,8 @@ export class CaptureStore {
     page.records.forEach((r, i) => {
       if (i === half) fault("mid-page");
       const sourceId = `${r.sourceType}:${r.platformId}`;
+      // Trashed and purged sources are not recaptured until restored (DAT-03).
+      if (isTrashed.get(sourceId)) return;
       newSources += insSource.run(
         sourceId,
         r.sourceType,
