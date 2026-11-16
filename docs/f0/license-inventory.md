@@ -49,7 +49,7 @@ Q33: original Citspark code is Apache-2.0. Dependencies and models keep their ow
 | Project | License | Pinned commit | Decision |
 |---|---|---|---|
 | twitter-web-exporter (`prinsss`) | MIT | `ddf2b0c823680b904daae166f3eb05b81950ce7e` | Reference only (ADR 0005). Runtime dependencies loaded from a CDN; per-dependency licenses must be checked before copying any code. |
-| xarchive (`sytelus/xarchive`, identity to confirm) | MIT | `ae9d0263617a200ce142e64fb2ddc6301ebf19cf` | Reference only. Its export format is the first import target (Q38). Vendors Dexie (Apache-2.0). |
+| xarchive (`sytelus/xarchive`, confirmed by owner, Q2) | MIT | `ae9d0263617a200ce142e64fb2ddc6301ebf19cf` | Reference only. Its export format is the first import target (Q38). Vendors Dexie (Apache-2.0). |
 
 Any copied code keeps its MIT notice in NOTICE with the source commit.
 

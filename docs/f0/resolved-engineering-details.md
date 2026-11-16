@@ -26,6 +26,6 @@
 | Research budget defaults | 25 tool calls, 5 minutes elapsed, 60,000 input tokens, context 16,000 tokens | PROPOSED | AI-05. Adjust after T10 runs. |
 | Heavy job concurrency on 8 GB | 1 heavy job (model inference, OCR, transcription) at a time | PROPOSED | DAT-02, MED-05 |
 | SQLite durability | WAL, `synchronous=FULL` on capture and sync writes | PROPOSED. T01 measured atomicity against process crashes only. | ADR 0002. Power-loss durability needs an OS-level crash test. |
-| scrypt work factor | `logN = 18`, tuned to about 1 s on the reference machine | PROPOSED | ADR 0008 |
+| scrypt work factor | `logN = 18`, tuned to about 1 s on the reference machine. scrypt accepted instead of Argon2id (owner decision Q3). | Decided; timing PROPOSED | ADR 0008 |
 | Diagnostics bundle | JSON with versions, settings (keys redacted), job states, last 1,000 log lines with credentials and source text redacted; preview before export | PROPOSED | SEC-04, SEC-05 |
-| Reference machine (T11) | Apple M1, 8 GB (measured). A Windows x64 8 GB machine is also needed. | Partly met | See `blockers.md` |
+| Reference machine (T11) | Apple M1 8 GB (measured) and an 8 GB Windows x64 laptop (contributor or rented VM, labelled). Linux in CI only. Owner decision Q5. | Decided; Windows run pending | See `blockers.md` |
