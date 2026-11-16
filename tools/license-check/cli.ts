@@ -7,7 +7,7 @@ const out = execFileSync("pnpm", ["licenses", "list", "--json"], {
   shell: process.platform === "win32",
 });
 const violations = findViolations(
-  flattenPnpmLicenses(JSON.parse(out) as Record<string, LicenseEntry[]>),
+  flattenPnpmLicenses(JSON.parse(out) as Record<string, (Partial<LicenseEntry> | string)[]>),
 );
 if (violations.length > 0) {
   console.error("License check failed. Packages outside the allowlist:");
