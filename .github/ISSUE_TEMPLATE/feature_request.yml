@@ -1,0 +1,14 @@
+name: Feature or spec change
+description: Propose a change. Scope changes require owner approval.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or goal
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal and affected requirement IDs

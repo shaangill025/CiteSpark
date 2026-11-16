@@ -1,0 +1,22 @@
+.DS_Store
+node_modules/
+dist/
+build/
+target/
+coverage/
+*.log
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Private data must never be committed; fixtures are synthetic only.
+/private/
+/vault/
+/library/
+*.sqlite
+*.sqlite3
+*.db
+*.csbackup
+twitter-*.zip
