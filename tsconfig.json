@@ -1,4 +1,8 @@
 {
   "files": [],
-  "references": [{ "path": "packages/core" }, { "path": "tools/license-check" }]
+  "references": [
+    { "path": "packages/core" },
+    { "path": "packages/store" },
+    { "path": "tools/license-check" }
+  ]
 }
