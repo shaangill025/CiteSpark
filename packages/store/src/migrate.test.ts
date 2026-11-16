@@ -31,7 +31,7 @@ describe("migrations", () => {
       "INSERT INTO job (id, kind, state, cursor) VALUES ('old', 'capture', 'queued', 'saved'); INSERT INTO source (id, source_type) VALUES ('s', 'post');",
     );
     const backups: number[] = [];
-    expect(migrate(db, { backup: (from) => void backups.push(from) }).applied).toEqual([3]);
+    expect(migrate(db, { backup: (from) => void backups.push(from) }).applied).toEqual([2, 3]);
     expect(backups).toEqual([1]);
     expect(db.prepare("SELECT cursor, lease_generation FROM job WHERE id = 'old'").get()).toEqual({
       cursor: "saved",
@@ -59,6 +59,7 @@ describe("migrations", () => {
         "chunk",
         "job",
         "sync_binding",
+        "sync_conflict",
         "answer",
         "privacy_policy",
         "backup_manifest",
