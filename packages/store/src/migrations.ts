@@ -187,4 +187,32 @@ CREATE TABLE backup_manifest (
 ) STRICT;
 `;
 
-export const MIGRATIONS: readonly Migration[] = [{ version: 1, name: "initial-schema", sql: V1 }];
+const V2 = `
+CREATE TABLE blob (
+  content_hash TEXT PRIMARY KEY,
+  size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
+  ref_count INTEGER NOT NULL DEFAULT 0 CHECK (ref_count >= 0),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+) STRICT;
+
+CREATE UNIQUE INDEX media_source_hash ON media (source_id, content_hash);
+
+CREATE TABLE media_download (
+  id INTEGER PRIMARY KEY,
+  source_id TEXT NOT NULL REFERENCES source(id),
+  url TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'downloading', 'paused_budget', 'paused_disk', 'complete', 'failed')),
+  bytes_received INTEGER NOT NULL DEFAULT 0,
+  total_bytes INTEGER,
+  etag TEXT,
+  mime_type TEXT,
+  media_id INTEGER REFERENCES media(id),
+  error TEXT,
+  UNIQUE (source_id, url)
+) STRICT;
+`;
+
+export const MIGRATIONS: readonly Migration[] = [
+  { version: 1, name: "initial-schema", sql: V1 },
+  { version: 2, name: "media-store", sql: V2 },
+];

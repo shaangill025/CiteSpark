@@ -20,10 +20,10 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | ENR-01 | Linked posts/articles as separate sources; no recursive crawl | M1 | T15 | not started |  |
 | ENR-02 | Link provenance fields; explicit gaps | M1 | T02, T03 | not started |  |
 | ENR-03 | SSRF/local-file blocking; size/time/type limits; sanitization | M1 | T02 | not started | Security review in M5 (SEC-06/07) |
-| MED-01 | Media preservation with hashes; resumable jobs | M1 | T01, T15 | not started |  |
+| MED-01 | Media preservation with hashes; resumable jobs | M1 | T01, T15 | in progress | M1-10: sha256 content-addressed blobs, ref counts, Range-resumable download job (`packages/store/src/media.ts`); source relationships beyond source_id, acquisition-status UI and link enrichment pending |
 | MED-02 | Opt-in OCR/transcription with provenance | M3 | T03, T15 | not started | F0 resource behaviour test |
 | MED-03 | Derived text separate from original; user corrections as versions | M3 | T03 | not started |  |
-| MED-04 | Media limit pauses downloads without eviction | M1 | T02 | not started |  |
+| MED-04 | Media limit pauses downloads without eviction | M1 | T02 | in progress | M1-10: budget pause with pending entries retained, no eviction, free-space floor and ENOSPC pause all writes (`packages/store/src/media.ts`); default budget (PROPOSED) is a helper, not yet wired to setup |
 | MED-05 | Bounded concurrency/memory; no automatic model downloads | M1, M3 | T11 | not started | F0 resource behaviour test |
 | SYN-01 | Plugin-free two-way sync; stable IDs; scoped access | M2 | T04, T15 | not started |  |
 | SYN-02 | Immutable originals; separately attributed user content | M2 | T03, T04 | not started |  |
@@ -131,7 +131,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | Q25 | SEC-01, SEC-02 | M3, M4 | not started |
 | Q26 | DAT-01 | M1, M3 | in progress |
 | Q27 | DAT-02 | M1, M3 | not started |
-| Q28 | MED-04 | M1 | not started |
+| Q28 | MED-04 | M1 | in progress |
 | Q29 | BKP-01 | M2 | not started |
 | Q30 | BKP-02 | M2 | not started |
 | Q31 | CAP-07 | M1 | not started |

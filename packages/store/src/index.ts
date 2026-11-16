@@ -13,3 +13,14 @@ export {
   type JobState,
   type NewJob,
 } from "./jobs.ts";
+export {
+  MediaStore,
+  defaultMediaBudget,
+  type BlobInfo,
+  type DownloadOutcome,
+  type DownloadState,
+  type JobOutcome,
+  type MediaDownload,
+  type MediaStoreOptions,
+  type StorageStatus,
+} from "./media.ts";
