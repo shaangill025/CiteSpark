@@ -324,7 +324,11 @@ export class IpcServer {
         conn.respondError(id, protocolError(ErrorCode.InvalidMessage, "Malformed request."));
         continue;
       }
-      void this.#handle(conn, ledger, parsed.data);
+      // Requests run concurrently; a failure that escapes one ends this connection, never the process.
+      void this.#handle(conn, ledger, parsed.data).catch((e: unknown) => {
+        this.#opts.onInternalError?.(e);
+        conn.close();
+      });
     }
   }
 
@@ -413,9 +417,19 @@ class Connection {
     }
   }
 
+  /**
+   * Seals and sends one message. A message that cannot be serialised throws before the channel moves.
+   * A transport that fails mid-send leaves the peer's record counter behind ours, so the connection
+   * closes (the peer sees it end and fails its pending requests) and nothing is retried over it.
+   */
   sendSealed(message: unknown): void {
     if (this.#closed || !this.channel || this.channel.failed) return;
-    for (const frame of this.channel.seal(message)) this.transport.send(frame);
+    const frames = this.channel.seal(message);
+    try {
+      for (const frame of frames) this.transport.send(frame);
+    } catch {
+      this.close();
+    }
   }
 
   respond(id: string, result: Json): void {

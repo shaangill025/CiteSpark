@@ -238,6 +238,11 @@ export class ClientSession {
     if (this.#closed) return Promise.reject(this.#closed);
     const id = opts.id ?? crypto.randomUUID();
     if (this.#pending.has(id)) return Promise.reject(new Error("request ID already in flight"));
+    // Reserve the ID before serialising: a payload's toJSON or getters may call request() again, and
+    // must find this ID taken. From here on the returned promise is tracked until it settles.
+    let entry!: Pending;
+    const p = new Promise<unknown>((resolve, reject) => (entry = { resolve, reject }));
+    this.#pending.set(id, entry);
     let frames: RecordFrame[];
     try {
       // Sealing serialises and size-checks before it encrypts; a refused message leaves the channel as it was.
@@ -249,10 +254,14 @@ export class ClientSession {
         payload,
       });
     } catch (e) {
-      if (this.#channel.failed) this.#shutdown(e instanceof Error ? e : new Error(String(e)));
-      return Promise.reject(e instanceof Error ? e : new Error(String(e)));
+      const err = e instanceof Error ? e : new Error(String(e));
+      if (this.#pending.get(id) === entry) this.#pending.delete(id);
+      if (this.#channel.failed) this.#shutdown(err);
+      entry.reject(err);
+      return p;
     }
-    const p = new Promise<unknown>((resolve, reject) => this.#pending.set(id, { resolve, reject }));
+    // Serialisation may have closed the session; shutdown has already rejected the request then.
+    if (this.#closed) return p;
     try {
       for (const frame of frames) this.#transport.send(frame);
     } catch (e) {

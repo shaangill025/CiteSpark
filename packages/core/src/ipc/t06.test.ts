@@ -397,6 +397,155 @@ describe("T06: happy path", () => {
   });
 });
 
+/** Resolves to how `p` settled, or "pending" if it has not settled within `ms`. */
+function settlement(p: Promise<unknown> | undefined, ms = 2000) {
+  return Promise.race([
+    Promise.resolve(p).then(
+      () => "resolved" as const,
+      () => "rejected" as const,
+    ),
+    new Promise<"pending">((r) => setTimeout(() => r("pending"), ms)),
+  ]);
+}
+
+describe("T06: request lifecycle", () => {
+  test("a payload that re-enters request() while serialising cannot steal or orphan its ID", async () => {
+    const desk = await startDesktop();
+    const { id, paired } = await pairedClient(desk);
+    const s = await session(desk.path, id, paired);
+    let inner: Promise<unknown> | undefined;
+    const payload = {
+      toJSON() {
+        inner ??= s.request("search.query", { which: "inner" }, { id: "reentry" });
+        inner.catch(() => undefined);
+        return { which: "outer" };
+      },
+    };
+    const outer = s.request("search.query", payload, { id: "reentry" });
+    await expect(outer).resolves.toEqual({ ok: true, echo: { which: "outer" } });
+    await expect(settlement(inner)).resolves.toBe("rejected");
+    await expect(inner).rejects.toThrow("request ID already in flight");
+    expect(desk.calls.map((c) => c.payload)).toEqual([{ which: "outer" }]);
+  });
+
+  test("a payload that fails after re-entering frees only its own ID and the inner request completes", async () => {
+    const desk = await startDesktop();
+    const { id, paired } = await pairedClient(desk);
+    const s = await session(desk.path, id, paired);
+    let other: Promise<unknown> | undefined;
+    let same: Promise<unknown> | undefined;
+    const payload = {
+      toJSON() {
+        other = s.request("search.query", { which: "other" }, { id: "other" });
+        same = s.request("search.query", { which: "same" }, { id: "outer" });
+        same.catch(() => undefined);
+        throw new Error("payload refused");
+      },
+    };
+    await expect(s.request("search.query", payload, { id: "outer" })).rejects.toThrow(
+      "payload refused",
+    );
+    await expect(same).rejects.toThrow("request ID already in flight");
+    await expect(other).resolves.toEqual({ ok: true, echo: { which: "other" } });
+    await expect(s.request("search.query", { n: 1 }, { id: "outer" })).resolves.toEqual({
+      ok: true,
+      echo: { n: 1 },
+    });
+    expect(desk.calls.map((c) => c.payload)).toEqual([{ which: "other" }, { n: 1 }]);
+  });
+
+  test("closing the session while a payload serialises rejects the request and sends nothing", async () => {
+    const desk = await startDesktop();
+    const { id, paired } = await pairedClient(desk);
+    const s = await session(desk.path, id, paired);
+    const outer = s.request(
+      "search.query",
+      {
+        toJSON() {
+          s.close();
+          return {};
+        },
+      },
+      { id: "closing" },
+    );
+    await expect(settlement(outer)).resolves.toBe("rejected");
+    await expect(outer).rejects.toBeInstanceOf(TransportClosedError);
+    expect(desk.calls).toHaveLength(0);
+  });
+
+  test("a response the core cannot send closes the connection and every pending request fails", async () => {
+    const desk = await startDesktop();
+    const { id, paired } = await pairedClient(desk);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let calls = 0;
+    const server = new IpcServer({
+      staticKeyPair: desk.staticKeyPair,
+      coreVersion: "0.0.0-test",
+      registry: desk.registry,
+      pairing: desk.pairing,
+      handlers: {
+        "search.query": {
+          scope: S.SearchRead,
+          mutation: false,
+          handle: async (payload) => {
+            calls++;
+            if ((payload as { wait?: boolean }).wait) await gate;
+            return { ok: true };
+          },
+        },
+      },
+    });
+    cleanups.push(() => server.close());
+    // A real socket whose server side starts failing encrypted sends, as a broken pipe would.
+    let failing = false;
+    let sendFailures = 0;
+    let serverClosedTransport = false;
+    const path = endpoint();
+    await prepareListenPath(path);
+    const listener = createServer((sock) => {
+      sock.on("error", () => undefined);
+      const t = socketTransport(sock);
+      void server.serve({
+        receive: () => t.receive(),
+        close: () => {
+          serverClosedTransport = true;
+          t.close();
+        },
+        send: (m) => {
+          if (failing && isRec(m)) {
+            sendFailures++;
+            throw new Error("injected response send failure");
+          }
+          t.send(m);
+        },
+      });
+    });
+    await new Promise<void>((r) => listener.listen(path, r));
+    cleanups.push(() => new Promise<void>((r) => listener.close(() => r())));
+    const unhandled: unknown[] = [];
+    const onUnhandled = (e: unknown) => void unhandled.push(e);
+    process.on("unhandledRejection", onUnhandled);
+    cleanups.push(() => void process.off("unhandledRejection", onUnhandled));
+
+    const s = await session(path, id, paired);
+    failing = true;
+    const waiting = s.request("search.query", { wait: true }, { id: "waiting" });
+    await expect.poll(() => calls).toBe(1);
+    const answered = s.request("search.query", {}, { id: "answered" });
+    await expect(settlement(answered)).resolves.toBe("rejected");
+    await expect(settlement(waiting)).resolves.toBe("rejected");
+    await expect(settlement(s.closed)).resolves.toBe("resolved");
+    expect(serverClosedTransport).toBe(true);
+    release();
+    await new Promise((r) => setTimeout(r, 50));
+    // One failed send, no retry over the broken transport, and nothing escapes as an unhandled rejection.
+    expect(sendFailures).toBe(1);
+    expect(calls).toBe(2);
+    expect(unhandled).toEqual([]);
+  });
+});
+
 describe("T06: clients that must be refused", () => {
   test("incompatible protocol version gets a structured error and nothing else", async () => {
     const desk = await startDesktop();

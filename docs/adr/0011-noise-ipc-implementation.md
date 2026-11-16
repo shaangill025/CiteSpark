@@ -79,6 +79,11 @@ The spike ran outside the repository and committed nothing. It found the followi
 - Each request is checked for scope, method and version.
 - Requests that change data are kept in a per-client idempotency ledger. The ledger is keyed on the request ID, and a reused ID with a different method or payload is rejected.
 - The client registry owns each client's ledger, so it lives exactly as long as the registration: a retry after a reconnect, or through a restarted listener, gets the stored outcome. Revocation drops it with the key. The ledger never forgets an accepted ID; when full (10,000 IDs by default) it refuses new mutations with `idempotency_exhausted`. M1-06 ships the in-memory registry, so ledger and registry are lost together on restart; the durable registry in M2 must persist the ledger outcomes with the key.
+- A response the core cannot send closes the connection; it is never retried over the same transport, and the client then fails every pending request. A failure that escapes one request handler closes only that connection.
+
+**Client request lifecycle.**
+
+- The client reserves a request ID before it serializes the payload, so a payload whose `toJSON` or getters call `request()` again finds the ID taken. Every promise `request()` returns is tracked until it settles, and closing the session rejects all of them.
 
 **Native messaging host.**
 
