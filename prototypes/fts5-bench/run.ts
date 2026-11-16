@@ -22,7 +22,12 @@ const { values: args } = parseArgs({
 
 const spec = { ...DEFAULT_SPEC, posts: Number(args.posts), articles: Number(args.articles) };
 const statsPath = `${args.db}.build.json`;
-if (args.rebuild || !existsSync(args.db)) {
+const builtWithTrigram = (): boolean | null =>
+  existsSync(args.db) && existsSync(statsPath)
+    ? (JSON.parse(readFileSync(statsPath, 'utf8')) as BuildStats).trigramBuildMs !== null
+    : null;
+// An existing database is reused only if it was built in the requested index mode.
+if (args.rebuild || builtWithTrigram() !== args.trigram) {
   mkdirSync(dirname(args.db), { recursive: true });
   for (const f of [args.db, `${args.db}-wal`, `${args.db}-shm`, statsPath]) rmSync(f, { force: true });
   console.error(`building corpus: ${spec.posts} posts, ${spec.articles} articles`);
@@ -40,6 +45,11 @@ const round = (o: unknown): unknown =>
   JSON.parse(JSON.stringify(o, (_, v) => (typeof v === 'number' && !Number.isInteger(v) ? Math.round(v * 100) / 100 : v)));
 
 const db = openReadOnly(args.db);
+const trigramTables = (db.prepare("SELECT count(*) n FROM sqlite_master WHERE name = 'chunk_tri'").get() as { n: number }).n;
+if (hasTrigram !== args.trigram || (trigramTables > 0) !== args.trigram) {
+  console.error(`index mode mismatch: requested trigram=${args.trigram}, stats=${hasTrigram}, tables=${trigramTables}`);
+  process.exit(1);
+}
 const sizes = Object.fromEntries(
   (db.prepare(
     `SELECT CASE WHEN name LIKE 'chunk_fts%' THEN 'fts_unicode61' WHEN name LIKE 'chunk_tri%' THEN 'fts_trigram'
