@@ -25,6 +25,8 @@ export interface CapturePage {
   /** Continuation returned with the page; `null` marks the recognized end of the collection (CAP-06). */
   cursorOut: string | null;
   adapter: { id: string; version: string };
+  /** How the observations were obtained; defaults to `capture`. Importers pass `import` (MIG-01). */
+  method?: "capture" | "import";
   records: readonly CaptureRecord[];
 }
 
@@ -95,6 +97,9 @@ function validate(page: CapturePage): void {
   if (page.cursorIn !== null && !nonEmpty(page.cursorIn)) fail("cursorIn");
   if (page.cursorOut !== null && !nonEmpty(page.cursorOut)) fail("cursorOut");
   if (!nonEmpty(page.adapter?.id) || !nonEmpty(page.adapter?.version)) fail("adapter");
+  if (page.method !== undefined && page.method !== "capture" && page.method !== "import") {
+    fail("method");
+  }
   if (!Array.isArray(page.records)) fail("records");
   page.records.forEach((r, i) => {
     if (!nonEmpty(r.sourceType) || !nonEmpty(r.platformId) || typeof r.text !== "string") {
@@ -281,6 +286,7 @@ export class CaptureStore {
     }
     const seq = pass?.pages ?? 0;
     const adapter = `${page.adapter.id}@${page.adapter.version}`;
+    const method = page.method ?? "capture";
 
     const pageId = Number(
       this.db
@@ -320,7 +326,7 @@ export class CaptureStore {
     );
     const insObservation = this.db.prepare(
       `INSERT OR IGNORE INTO observation (source_id, version_id, job_id, observed_at, method, adapter_version, capture_page_id)
-       VALUES (?, ?, ?, ?, 'capture', ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     );
     // A job re-reading a source it already recorded changes nothing (replay across passes).
     const upMembership = this.db.prepare(
@@ -350,7 +356,15 @@ export class CaptureStore {
       const textHash = sha256(r.text);
       newVersions += insVersion.run(sourceId, textHash, r.text, r.publishedAt ?? null, iso).changes;
       const { id: versionId } = getVersion.get(sourceId, textHash) as { id: number };
-      newRecords += insObservation.run(sourceId, versionId, jobId, iso, adapter, pageId).changes;
+      newRecords += insObservation.run(
+        sourceId,
+        versionId,
+        jobId,
+        iso,
+        method,
+        adapter,
+        pageId,
+      ).changes;
       upMembership.run(page.accountId, page.collectionId, sourceId, iso, iso, jobId, jobId);
     });
 

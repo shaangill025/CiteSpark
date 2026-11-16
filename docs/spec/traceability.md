@@ -53,7 +53,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | SEC-03 | Local-only limitation explanation and explicit local rerun | M4 | T05 | not started |  |
 | SEC-04 | OS credential storage; credentials excluded from logs/backups | M2 | T05, T08 | not started |  |
 | SEC-05 | No telemetry; redacted previewable support bundle | M5 | T05 | not started |  |
-| SEC-06 | Escaping, CSV neutralization, path traversal, quotas, isolation | M1, M5 | T09 | not started | M1-01 adds CI dependency audit and license allowlist; signed updates in M5 |
+| SEC-06 | Escaping, CSV neutralization, path traversal, quotas, isolation | M1, M5 | T09 | in progress | M1-01 adds CI dependency audit and license allowlist; signed updates in M5. M1-09: import source must be a regular non-symlink `.json` file; size, record-count, text-length, and nesting limits reject archive bombs; handles and IDs validated before building URLs. CSV neutralization and renderer escaping pending |
 | SEC-07 | Threat model | F0, M5 | T05, T06 | not started | Security review in M5 |
 | SEC-08 | No at-rest encryption promise; documented | M5 | T08 | not started | Documentation check |
 | DAT-01 | 100,000-post capacity target; incremental indexing | M1, M3 | T11 | in progress | M1-02: schema and 19-digit ID round-trip (`packages/store`); capacity and incremental indexing pending. F0 100k-post search test |
@@ -63,7 +63,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | BKP-01 | Manual and scheduled backups; verification; restore | M2 | T08, T15 | not started |  |
 | BKP-02 | Password-encrypted backups with maintained AEAD | M2 | T08 | not started | F0 encryption format decision |
 | BKP-03 | Full portable backups; manifests; media-excluded disclosure | M2 | T08 | not started |  |
-| MIG-01 | Import native backups, owner vault, xarchive; dry-run | M1 | T09, T15 | not started |  |
+| MIG-01 | Import native backups, owner vault, xarchive; dry-run | M1 | T09, T15 | in progress | M1-09: xarchive importer (`packages/store/src/xarchive.ts`) with dry-run counts, mapping, duplicates, warnings, and conflicts; commit through `CaptureStore.commitPage` with method `import`; deterministic per-file job so a repeat is a no-op; unsupported schemas rejected. Tested against `sytelus/xarchive` 1.1.0 (`ae9d026`), schema 1 and 2, synthetic fixtures in `fixtures/xarchive/`. Folder assignments are reported, not stored; native backup and owner-vault importers pending |
 | MIG-02 | Pre-migration backup; candidate indexes; no destructive generator | M2 | T08, T09 | in progress | M1-02: numbered transactional migrations and pre-migration backup hook; candidate indexes pending. Migration trials in M5 |
 | ACC-01 | Keyboard, screen reader, contrast, reduced motion (WCAG 2.2 AA) | M5 | T13 | not started | Incremental from M2 onward |
 | ACC-02 | Names, focus order, announcements, scalable text | M5 | T13 | not started | Assistive-technology testing |
@@ -81,7 +81,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | T06 | Pairing | M2 | not started |
 | T07 | Deletion | M1, M2 | not started |
 | T08 | Backup | M2 | not started |
-| T09 | Import | M1 | not started |
+| T09 | Import | M1 | in progress (xarchive part implemented in `packages/store/src/xarchive.test.ts`; native backup and vault parts pending) |
 | T10 | AI | M4 | not started |
 | T11 | Performance | M3 | not started |
 | T12 | Quality | M4 | not started |
@@ -140,8 +140,8 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | Q34 | F0 | F0 | not started |
 | Q35 | Release policy | All | not started |
 | Q36 | SEC-05 | M5 | not started |
-| Q37 | MIG-01 | M1 | not started |
-| Q38 | MIG-01 | M1 | not started |
+| Q37 | MIG-01 | M1 | in progress |
+| Q38 | MIG-01 | M1 | in progress |
 | Q39 | Section 7 identity rules | M1 | in progress |
 | Q40 | Scope: read-only X | M1 | not started |
 | Q41 | AI-02 | M4 | not started |
