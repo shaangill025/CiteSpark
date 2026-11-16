@@ -32,7 +32,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | SYN-05 | Watcher events as hints; atomic writes; no feedback loops; symlink policy | M2 | T04 | not started |  |
 | SYN-06 | Portable Markdown with versioned frontmatter | M2 | T04 | not started |  |
 | PLG-01 | Optional Obsidian companion plugin | M2, M4 | T06, T14, T15 | not started | Research UI lands in M4 |
-| PLG-02 | Plugin connection states; no independent DB or policy engine | M2 | T06, T14 | in progress | M1-05: `packages/protocol` hello version negotiation with structured `incompatible` error (unit tests only); handshake, scopes and UI pending |
+| PLG-02 | Plugin connection states; no independent DB or policy engine | M2 | T06, T14 | in progress | M1-05: hello version negotiation with structured `incompatible` error. M1-06: core socket server enforces scopes and revocation for every client (T06 integration tests); plugin and its UI pending (M2) |
 | RET-01 | Unified search; exact-ID, keyword, semantic; visible mode | M3 | T10, T11, T12 | not started |  |
 | RET-02 | Filters; trashed sources excluded at query time | M3 | T07 | not started |  |
 | RET-03 | Exact excerpt/version/offset results; atomic index generations | M3 | T10, T11 | not started |  |
@@ -51,10 +51,10 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | SEC-01 | Local archive/embeddings/OCR; per-library provider approval | M3, M4 | T05 | not started |  |
 | SEC-02 | Local-only enforcement across all derived artifacts before dispatch | M3, M4 | T05 | not started |  |
 | SEC-03 | Local-only limitation explanation and explicit local rerun | M4 | T05 | not started |  |
-| SEC-04 | OS credential storage; credentials excluded from logs/backups | M2 | T05, T08 | not started |  |
+| SEC-04 | OS credential storage; credentials excluded from logs/backups | M2 | T05, T08 | in progress | M1-06: no shared secrets; desktop registry holds only client public keys; client static key wrapped by a non-extractable WebCrypto key (ADR 0011, unit tests). Desktop `safeStorage` and credential scanner pending (M2) |
 | SEC-05 | No telemetry; redacted previewable support bundle | M5 | T05 | not started |  |
 | SEC-06 | Escaping, CSV neutralization, path traversal, quotas, isolation | M1, M5 | T09 | not started | M1-01 adds CI dependency audit and license allowlist; signed updates in M5 |
-| SEC-07 | Threat model | F0, M5 | T05, T06 | not started | Security review in M5 |
+| SEC-07 | Threat model | F0, M5 | T05, T06 | in progress | M1-06: unauthorized local clients covered by the T06 suite (ADR 0006, 0011). Security review in M5 |
 | SEC-08 | No at-rest encryption promise; documented | M5 | T08 | not started | Documentation check |
 | DAT-01 | 100,000-post capacity target; incremental indexing | M1, M3 | T11 | not started | F0 100k-post search test |
 | DAT-02 | 8 GB RAM target for core; bounded batches | M1, M3 | T11 | not started |  |
@@ -78,7 +78,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | T03 | Attribution | M1, M3 | not started |
 | T04 | Sync | M2 | not started |
 | T05 | Privacy | M3, M4 | not started |
-| T06 | Pairing | M2 | in progress |
+| T06 | Pairing | M2 | in progress (M1-06: socket, channel and pairing suite passing on CI; desktop UI and plugin in M2) |
 | T07 | Deletion | M1, M2 | not started |
 | T08 | Backup | M2 | not started |
 | T09 | Import | M1 | not started |
@@ -157,7 +157,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | Q51 | SYN-04 | M2 | not started |
 | Q52 | SYN-01, PLG-01 | M2, M4 | not started |
 | Q53 | PLG-01 | M4 | not started |
-| Q54 | PLG-02, Section 4 | M2 | not started |
+| Q54 | PLG-02, Section 4 | M2 | in progress (M1-06: per-client keys, scopes, revocation, pairing code) |
 | Q55 | Section 4, MIG-02 | M2 | in progress |
 | Q56 | SEC-01, SEC-02 | M3, M4 | not started |
 | Q57 | SEC-03 | M4 | not started |
@@ -168,4 +168,5 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 
 ## Implementation notes
 
-- **§14 API contract (M1-05, `packages/protocol`)**: zod schemas, length-prefixed framing with oversize rejection, `hello` negotiation, request IDs with an idempotency ledger, structured errors and stream sequence numbers are implemented with unit tests. Scope checks, the Noise handshake (ADR 0006) and transport wiring are M1-06; the T06 suite is not yet written. Frame limits (1 MB toward the extension, 8 MB toward the core) remain PROPOSED.
+- **§14 API contract (M1-05, `packages/protocol`)**: zod schemas, length-prefixed framing with oversize rejection, `hello` negotiation, request IDs with an idempotency ledger, structured errors and stream sequence numbers are implemented with unit tests. Frame limits (1 MB toward the extension, 8 MB toward the core) remain PROPOSED.
+- **M1-06 IPC and pairing (`packages/ipc`, `packages/core/src/ipc`, `packages/native-host`)**: Noise XX pairing confirmed by a 6-digit code that the client shows and the user types into the desktop, Noise IK per connection, encrypted records, scopes, revocation, a Unix socket or named pipe server and a native messaging relay (ADR 0011). The T06 suite runs in `packages/core/src/ipc/t06.test.ts`. The client registry is in memory until M2; desktop key storage and pairing UI are M2; extension UI is M1-08.

@@ -1,6 +1,6 @@
 # 0006. Local IPC and client pairing
 
-Status: Decided.
+Status: Decided. Partly superseded by [ADR 0011](0011-noise-ipc-implementation.md) (Noise library, IK instead of KK, pairing code direction, client key storage).
 Requirements: PLG-01, PLG-02, SEC-04, SEC-07, Q54, Q55, T06, §14 (API contract)
 
 ## Context
