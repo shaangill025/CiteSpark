@@ -29,6 +29,7 @@ describe("migrations", () => {
         "chunk",
         "job",
         "sync_binding",
+        "sync_conflict",
         "answer",
         "privacy_policy",
         "backup_manifest",

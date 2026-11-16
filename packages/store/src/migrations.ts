@@ -187,4 +187,35 @@ CREATE TABLE backup_manifest (
 ) STRICT;
 `;
 
-export const MIGRATIONS: readonly Migration[] = [{ version: 1, name: "initial-schema", sql: V1 }];
+// Sync engine core (M2-04, ADR 0007): binding state, compressed base content, write identity, and
+// conflict/review records. Sibling M1 layers add migrations on other branches; whichever merges
+// later renumbers to the next free version. Statements only add columns and tables, so order with
+// those migrations does not matter.
+const SYNC_CORE = `
+ALTER TABLE sync_binding ADD COLUMN state TEXT NOT NULL DEFAULT 'bound' CHECK (state IN ('bound', 'unlinked', 'conflict'));
+ALTER TABLE sync_binding ADD COLUMN base_content BLOB;
+ALTER TABLE sync_binding ADD COLUMN last_written_hash TEXT;
+ALTER TABLE sync_binding ADD COLUMN last_txn_id TEXT;
+
+CREATE TABLE sync_conflict (
+  id INTEGER PRIMARY KEY,
+  library_id TEXT NOT NULL,
+  vault_id TEXT NOT NULL,
+  note_id TEXT,
+  path TEXT,
+  kind TEXT NOT NULL CHECK (kind IN ('merge', 'duplicate_id', 'delete_vs_edit', 'restore_candidate', 'unbound_file', 'source_edit')),
+  base_text TEXT,
+  vault_text TEXT,
+  library_text TEXT,
+  details TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'resolved', 'dismissed')),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  resolved_at TEXT
+) STRICT;
+CREATE INDEX sync_conflict_open ON sync_conflict (library_id, vault_id, status);
+`;
+
+export const MIGRATIONS: readonly Migration[] = [
+  { version: 1, name: "initial-schema", sql: V1 },
+  { version: 2, name: "sync-core", sql: SYNC_CORE },
+];

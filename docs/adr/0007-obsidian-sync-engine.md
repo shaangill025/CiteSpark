@@ -41,6 +41,8 @@ Body sections are delimited by HTML comments, which render invisibly in Obsidian
 
 Text outside the markers belongs to the user. Edits inside the source section never change the captured original (SYN-02). They become a user-authored version for review.
 
+Escaping (SYN-06, M2-04): text Citspark writes into a section never contains a marker. `<!-- citspark:` is written as `&lt;!-- citspark:`, which Markdown renders as the original characters. Text that already contains `&lt;!-- citspark:` gains one `amp;` (`&amp;lt;!-- citspark:`), and so on, so reading back reverses it exactly. If markers are unbalanced, nested, repeated, or differ in order between versions, the body merges as a whole instead of per section. A `citspark.schema` newer than the build supports is a conflict, and the file is not rewritten.
+
 **Included user notes (SYN-01, Q07)**: notes the user wrote, in folders the user explicitly includes, are not managed notes. They have no section markers and the whole body belongs to the user.
 
 - By default they are indexed read-only. Citspark never writes to them.
