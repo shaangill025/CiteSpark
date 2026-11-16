@@ -31,7 +31,7 @@ describe("migrations", () => {
       "INSERT INTO job (id, kind, state, cursor) VALUES ('old', 'capture', 'queued', 'saved'); INSERT INTO source (id, source_type) VALUES ('s', 'post');",
     );
     const backups: number[] = [];
-    expect(migrate(db, { backup: (from) => void backups.push(from) }).applied).toEqual([2, 3]);
+    expect(migrate(db, { backup: (from) => void backups.push(from) }).applied).toEqual([2, 3, 4]);
     expect(backups).toEqual([1]);
     expect(db.prepare("SELECT cursor, lease_generation FROM job WHERE id = 'old'").get()).toEqual({
       cursor: "saved",
@@ -205,6 +205,10 @@ describe("upgrade matrix", () => {
       INSERT INTO job (id, kind, state, cursor) VALUES ('j1', 'capture', 'running', 'c42');
       INSERT INTO sync_binding (library_id, vault_id, note_id, source_id, path, last_common_hash, suppression)
         VALUES ('lib', 'vault', 'n1', 'x:1', 'Notes/x1.md', 'base', 'unlinked');
+      -- Schema 1-3 allow repeated observations of one version by one job (review: V1 duplicates).
+      INSERT INTO observation (id, source_id, version_id, job_id, observed_at, method, evidence)
+        VALUES (1, 'x:1', 1, 'j1', '2026-01-01T00:00:00.000Z', 'import', 'first'),
+               (2, 'x:1', 1, 'j1', '2026-01-02T00:00:00.000Z', 'import', 'second');
     `);
   };
   const expectSeedPreserved = (db: Database.Database): void => {
@@ -224,14 +228,52 @@ describe("upgrade matrix", () => {
       { id: "j1", state: "running", cursor: "c42" },
     ]);
     expect(
+      db.prepare("SELECT id, job_id, version_id, observed_at, evidence FROM observation").all(),
+    ).toEqual([
+      {
+        id: 1,
+        job_id: "j1",
+        version_id: 1,
+        observed_at: "2026-01-01T00:00:00.000Z",
+        evidence: "first",
+      },
+      {
+        id: 2,
+        job_id: "j1",
+        version_id: 1,
+        observed_at: "2026-01-02T00:00:00.000Z",
+        evidence: "second",
+      },
+    ]);
+    expect(
       db.prepare("SELECT note_id, path, last_common_hash, suppression FROM sync_binding").all(),
     ).toEqual([
       { note_id: "n1", path: "Notes/x1.md", last_common_hash: "base", suppression: "unlinked" },
     ]);
   };
   const expectFullSchema = (db: Database.Database): void => {
-    expect(recordedIds(db)).toEqual([1, 2, 3]);
+    expect(recordedIds(db)).toEqual([1, 2, 3, 4]);
     expect(columns(db, "job")).toContain("lease_generation");
+    expect(tables(db)).toEqual(expect.arrayContaining(["capture_pass", "capture_page"]));
+    expect(columns(db, "observation")).toContain("capture_page_id");
+    // Capture dedupe applies to capture observations only; legacy rows keep their history.
+    db.exec(`
+      INSERT INTO capture_pass (job_id, pass_id, started_at) VALUES ('j1', 'p', 't');
+      INSERT INTO capture_page (id, job_id, pass_id, seq, page_key, content_hash, record_count, new_records, adapter_id, adapter_version, committed_at)
+        VALUES (9, 'j1', 'p', 0, '', 'h', 1, 1, 'a', '1', 't');
+      INSERT INTO observation (source_id, version_id, job_id, method, capture_page_id) VALUES ('x:1', 1, 'j1', 'capture', 9);
+      INSERT INTO observation (source_id, version_id, job_id, method) VALUES ('x:1', 1, 'j1', 'import');
+    `);
+    expect(() =>
+      db.exec(
+        "INSERT INTO observation (source_id, version_id, job_id, method, capture_page_id) VALUES ('x:1', 1, 'j1', 'capture', 9)",
+      ),
+    ).toThrow(/UNIQUE/);
+    expect(() =>
+      db.exec(
+        "INSERT INTO observation (source_id, version_id, job_id, method, capture_page_id) VALUES ('x:1', 1, NULL, 'capture', 999)",
+      ),
+    ).toThrow(/FOREIGN KEY/);
     expect(columns(db, "sync_binding")).toEqual(
       expect.arrayContaining(["state", "base_content", "last_written_hash", "last_txn_id"]),
     );
@@ -257,20 +299,21 @@ describe("upgrade matrix", () => {
     return { calls, hook };
   };
 
-  it("fresh database -> [1, 2, 3] without a backup", () => {
+  it("fresh database -> [1, 2, 3, 4] without a backup", () => {
     const db = new Database(":memory:");
     const calls: unknown[] = [];
     const r = migrate(db, { backup: () => void calls.push(1) });
-    expect(r).toEqual({ applied: [1, 2, 3], version: 3 });
+    expect(r).toEqual({ applied: [1, 2, 3, 4], version: 4 });
     expect(calls).toEqual([]);
     seed(db);
     expectFullSchema(db);
   });
 
   it.each([
-    ["v1", [1], [2, 3]],
-    ["sync-v2", [1, 2], [3]],
-    ["historical jobs-only v3 (recorded gap)", [1, 3], [2]],
+    ["v1", [1], [2, 3, 4]],
+    ["sync-v2 (main)", [1, 2], [3, 4]],
+    ["historical jobs-only v3 (recorded gap)", [1, 3], [2, 4]],
+    ["jobs+sync v3", [1, 2, 3], [4]],
   ] as const)(
     "%s -> applies exactly the missing migrations after a completed backup",
     (_, from, missing) => {
@@ -285,9 +328,9 @@ describe("upgrade matrix", () => {
       const { calls, hook } = recordingBackup(db);
 
       const r = migrate(db, { backup: hook });
-      expect(r).toEqual({ applied: [...missing], version: 3 });
+      expect(r).toEqual({ applied: [...missing], version: 4 });
       expect(calls).toEqual([
-        { from: Math.max(...from), to: 3, pending: [...missing], ids: [...from] },
+        { from: Math.max(...from), to: 4, pending: [...missing], ids: [...from] },
       ]);
       expectSeedPreserved(db);
       expectFullSchema(db);
@@ -317,11 +360,11 @@ describe("upgrade matrix", () => {
       });
 
       // Idempotent: nothing pending, no further backup, every migration recorded exactly once.
-      expect(migrate(db, { backup: hook })).toEqual({ applied: [], version: 3 });
+      expect(migrate(db, { backup: hook })).toEqual({ applied: [], version: 4 });
       expect(calls).toHaveLength(1);
       expect(
         db.prepare("SELECT COUNT(*) n, COUNT(DISTINCT version) d FROM schema_migration").get(),
-      ).toEqual({ n: 3, d: 3 });
+      ).toEqual({ n: 4, d: 4 });
     },
   );
 
@@ -346,7 +389,7 @@ describe("upgrade matrix", () => {
     expect(columns(db, "sync_binding")).not.toContain("state");
     expectSeedPreserved(db);
 
-    expect(migrate(db, { backup: () => undefined })).toEqual({ applied: [2], version: 3 });
+    expect(migrate(db, { backup: () => undefined })).toEqual({ applied: [2, 4], version: 4 });
     expectSeedPreserved(db);
     expectFullSchema(db);
   });
@@ -386,11 +429,41 @@ describe("upgrade matrix", () => {
     expect(columns(db, "job")).not.toContain("lease_generation");
   });
 
+  it("refuses an unreleased capture preview database that recorded capture-commit as 2", () => {
+    // PR #14's pre-integration preview numbered capture-commit 2; sync-core owns 2 when published.
+    const db = historical([1], [1]);
+    db.exec(
+      "CREATE TABLE capture_pass (job_id TEXT); INSERT INTO schema_migration (version, name) VALUES (2, 'capture-commit');",
+    );
+    const calls: unknown[] = [];
+    expect(() => migrate(db, { backup: () => void calls.push(1) })).toThrow(
+      /migration 2 as "capture-commit".*"sync-core"/,
+    );
+    expect(calls).toEqual([]);
+    expect(recordedIds(db)).toEqual([1, 2]);
+    expect(columns(db, "job")).not.toContain("lease_generation");
+  });
+
+  it("rolls back a failed capture migration and leaves 1-3 and legacy observations intact", () => {
+    const db = historical([1, 2, 3]);
+    seed(db);
+    const broken: Migration[] = MIGRATIONS.map((m) =>
+      m.version === 4 ? { ...m, sql: `${m.sql}\nSELECT * FROM missing_table;` } : m,
+    );
+    expect(() => migrate(db, { migrations: broken, backup: () => undefined })).toThrow(
+      /missing_table/,
+    );
+    expect(recordedIds(db)).toEqual([1, 2, 3]);
+    expect(tables(db)).not.toContain("capture_page");
+    expect(columns(db, "observation")).not.toContain("capture_page_id");
+    expectSeedPreserved(db);
+  });
+
   it("still rejects a newer database, including one with a gap", () => {
     const db = historical([1, 3]);
-    db.prepare("INSERT INTO schema_migration (version, name) VALUES (4, 'future')").run();
+    db.prepare("INSERT INTO schema_migration (version, name) VALUES (5, 'future')").run();
     expect(() => migrate(db, { backup: () => undefined })).toThrow(/newer/);
-    expect(recordedIds(db)).toEqual([1, 3, 4]);
+    expect(recordedIds(db)).toEqual([1, 3, 5]);
     expect(tables(db)).not.toContain("sync_conflict");
   });
 });

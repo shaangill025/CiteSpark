@@ -1,4 +1,7 @@
 import Database from "better-sqlite3";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   InvalidTransitionError,
@@ -376,4 +379,107 @@ describe("property: random operation sequences", () => {
       }
     }
   }, 30_000);
+});
+
+describe("withLease (atomic lease-checked work for consumers such as capture)", () => {
+  const job = (db: Database.Database) =>
+    db
+      .prepare("SELECT state, cursor, lease_owner, lease_generation FROM job WHERE id = 'j1'")
+      .get();
+
+  it("runs work with the validated job inside the same transaction", () => {
+    const { db, jobs } = setup();
+    mk(jobs, "j1");
+    const lease = acquired(jobs, "j1", "A", 0, 1000);
+    const seen = jobs.withLease("j1", lease, 999, (j) => {
+      expect(db.inTransaction).toBe(true);
+      db.prepare("UPDATE job SET cursor = 'c1' WHERE id = ?").run(j.id);
+      return j.leaseGeneration;
+    });
+    expect(seen).toBe(lease.generation);
+    expect(jobs.get("j1").cursor).toBe("c1");
+  });
+
+  it.each([Number.NaN, -1, 0.5, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects clock %s with RangeError before running work",
+    (bad) => {
+      const { jobs } = setup();
+      mk(jobs, "j1");
+      const lease = acquired(jobs, "j1", "A", 0, 1000);
+      let ran = false;
+      expect(() => jobs.withLease("j1", lease, bad, () => (ran = true))).toThrow(RangeError);
+      expect(ran).toBe(false);
+    },
+  );
+
+  it("rejects stale generations, other owners, expiry and non-running jobs before running work", () => {
+    const { db, jobs } = setup();
+    mk(jobs, "j1");
+    const stale = acquired(jobs, "j1", "A", 0, 1000);
+    let ran = 0;
+    const work = () => void ran++;
+    expect(() => jobs.withLease("j1", stale, 1000, work)).toThrow(LeaseError); // exact expiry
+    const fresh = acquired(jobs, "j1", "A", 1000, 1000);
+    expect(() => jobs.withLease("j1", stale, 1001, work)).toThrow(LeaseError);
+    expect(() =>
+      jobs.withLease("j1", { owner: "B", generation: fresh.generation }, 1001, work),
+    ).toThrow(LeaseError);
+    expect(() =>
+      jobs.withLease(
+        "j1",
+        { owner: "A", generation: String(fresh.generation) } as unknown as Lease,
+        1001,
+        work,
+      ),
+    ).toThrow(LeaseError);
+    expect(() => jobs.withLease("j1", null as unknown as Lease, 1001, work)).toThrow(LeaseError);
+    jobs.transition("j1", fresh, 1001, "paused");
+    expect(() => jobs.withLease("j1", fresh, 1002, work)).toThrow(LeaseError);
+    expect(ran).toBe(0);
+    expect(job(db)).toMatchObject({ state: "paused", lease_owner: null, lease_generation: 2 });
+  });
+
+  it("rolls back the work if it throws and refuses asynchronous work", () => {
+    const { db, jobs } = setup();
+    mk(jobs, "j1");
+    const lease = acquired(jobs, "j1", "A", 0, 1000);
+    expect(() =>
+      jobs.withLease("j1", lease, 1, () => {
+        db.prepare("UPDATE job SET cursor = 'lost' WHERE id = 'j1'").run();
+        throw new Error("boom");
+      }),
+    ).toThrow("boom");
+    expect(jobs.get("j1").cursor).toBeNull();
+    expect(() => jobs.withLease("j1", lease, 1, async () => undefined)).toThrow(/promise/i);
+    expect(db.inTransaction).toBe(false);
+  });
+
+  it("holds the write lock from the check to the end of the work (no time-of-check race)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "citspark-lease-"));
+    try {
+      const path = join(dir, "lib.db");
+      const a = new Database(path);
+      a.pragma("journal_mode = WAL");
+      migrate(a);
+      const jobsA = new JobStore(a);
+      mk(jobsA, "j1");
+      const lease = acquired(jobsA, "j1", "A", 0, 1000);
+      const b = new Database(path);
+      b.pragma("busy_timeout = 0");
+      const jobsB = new JobStore(b);
+      jobsA.withLease("j1", lease, 999, () => {
+        // Another process whose clock already passed expiry cannot take over mid-work.
+        expect(() => jobsB.acquire("j1", "B", 5000, 1000)).toThrow(/locked|busy/i);
+        a.prepare("UPDATE job SET cursor = 'c' WHERE id = 'j1'").run();
+      });
+      // Afterwards the takeover proceeds and fences the earlier token.
+      expect(jobsB.acquire("j1", "B", 5000, 1000)).toEqual({ owner: "B", generation: 2 });
+      expect(() => jobsA.withLease("j1", lease, 5001, () => undefined)).toThrow(LeaseError);
+      expect(jobsA.get("j1").cursor).toBe("c");
+      a.close();
+      b.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

@@ -204,6 +204,18 @@ export class JobStore {
       .immediate();
   }
 
+  /**
+   * Run `fn` atomically under the retained `lease`. Validation and `fn` share one IMMEDIATE
+   * transaction (a savepoint when already inside one), so the lease cannot expire, be taken over or
+   * change generation between the check and the work: `fn` sees exactly the validated job. Throws
+   * RangeError for an invalid clock and LeaseError for a stale owner, generation or expired lease
+   * before `fn` runs. A throw from `fn` rolls back everything it wrote. `fn` must be synchronous.
+   */
+  withLease<T>(id: string, lease: Lease, nowMs: number, fn: (job: Job) => T): T {
+    checkTime(nowMs);
+    return this.db.transaction(() => fn(this.assertLease(id, lease, nowMs))).immediate();
+  }
+
   /** Persist cursor/checkpoint/progress durably; fenced by the live lease. Returns whether cancel was requested. */
   checkpoint(id: string, owner: Lease, nowMs: number, data: CheckpointData): boolean {
     checkTime(nowMs);
@@ -307,12 +319,14 @@ export class JobStore {
     const job = this.get(id);
     if (
       job.state !== "running" ||
-      job.leaseOwner !== owner.owner ||
-      job.leaseGeneration !== owner.generation ||
+      job.leaseOwner !== owner?.owner ||
+      job.leaseGeneration !== owner?.generation ||
       job.leaseExpiresAt === null ||
       job.leaseExpiresAt <= nowMs
     ) {
-      throw new LeaseError(`${owner} does not hold a live lease on ${id}`);
+      throw new LeaseError(
+        `lease ${String(owner?.owner)}#${String(owner?.generation)} is not the live lease on ${id}`,
+      );
     }
     return job;
   }

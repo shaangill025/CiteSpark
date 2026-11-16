@@ -225,7 +225,9 @@ CREATE INDEX sync_conflict_open ON sync_conflict (library_id, vault_id, status);
 `;
 
 // Capture commit bookkeeping (CAP-03, CAP-06). A pass is one scroll of a collection from the top;
-// replay checks are keyed on the pass and the cursor a page started from (ADR 0005).
+// replay checks are keyed on the pass and the cursor a page started from (ADR 0005). Version 4
+// follows the published sync-core (2) and job-lease-generation (3) migrations; numbers are never
+// reused. Only additive statements, so existing rows are preserved.
 const CAPTURE_COMMIT = `
 CREATE TABLE capture_pass (
   job_id TEXT NOT NULL REFERENCES job(id),
@@ -257,7 +259,10 @@ CREATE TABLE capture_page (
 ) STRICT;
 
 ALTER TABLE observation ADD COLUMN capture_page_id INTEGER REFERENCES capture_page(id);
-CREATE UNIQUE INDEX observation_job_version ON observation (job_id, version_id) WHERE job_id IS NOT NULL;
+-- One capture observation per job and version, so a fresh pass re-reading committed records adds
+-- nothing (ADR 0005). Scoped to capture rows: schemas 1-3 allowed repeated observations of a version
+-- by one job (each with its own time and evidence), and those rows are kept unchanged.
+CREATE UNIQUE INDEX observation_capture_job_version ON observation (job_id, version_id) WHERE capture_page_id IS NOT NULL;
 `;
 
 export const MIGRATIONS: readonly Migration[] = [

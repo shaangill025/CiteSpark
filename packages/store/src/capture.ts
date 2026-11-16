@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
-import { LeaseError, type JobStore } from "./jobs.ts";
+import { LeaseError, type Job, type JobStore, type Lease } from "./jobs.ts";
 
 /** One captured item, as produced by any capture adapter or importer. Platform IDs are strings (CAP-02). */
 export interface CaptureRecord {
@@ -146,29 +146,55 @@ export class CaptureStore {
    * - A page bound to another account or collection is refused before any write, and the job is
    *   paused (CAP-02).
    * - A page without a continuation completes the job with termination evidence (CAP-06).
+   *
+   * `lease` is the token `JobStore.acquire` returned for this attempt. Retain it; never rebuild it
+   * from `JobStore.get`, which would let a stale worker impersonate a newer acquisition. It is
+   * checked against the live owner, generation and expiry inside the commit transaction. Only a
+   * `complete` job, which holds no lease, accepts `null` (or any token), and then only to
+   * acknowledge a page it already committed. Time is validated before anything is read.
    */
   commitPage(
     jobId: string,
-    owner: string,
+    lease: Lease | null,
     nowMs: number,
     page: CapturePage,
     options: CommitOptions = {},
   ): CommitResult {
+    if (!Number.isSafeInteger(nowMs) || nowMs < 0) {
+      throw new RangeError(`time must be a non-negative safe integer (ms), got ${nowMs}`);
+    }
     validate(page);
     const fault = options.onFaultPoint ?? (() => {});
-    let result: CommitResult;
-    try {
-      result = this.db
-        .transaction(() => this.commitInTransaction(jobId, owner, nowMs, page, fault))
-        .immediate();
-    } catch (err) {
-      if (err instanceof AccountMismatchError && this.jobs.get(jobId).state === "running") {
-        this.jobs.transition(jobId, owner, nowMs, "paused", err.message);
-      }
-      throw err;
-    }
-    if (result.status === "committed") fault("after-commit");
-    return result;
+    const outcome = this.db
+      .transaction((): CommitResult | AccountMismatchError => {
+        const job = this.jobs.get(jobId);
+        // A completed job holds no lease; it still acknowledges a re-sent page, which writes nothing.
+        if (job.state === "complete") {
+          const mismatch = this.bindingError(job, page);
+          if (mismatch) throw mismatch;
+          return this.replayOf(job, page) ?? this.completedRejection(jobId);
+        }
+        if (lease === null) {
+          throw new LeaseError(
+            `job ${jobId} is ${job.state}; committing a page needs its live lease`,
+          );
+        }
+        // Validation and every write below share one IMMEDIATE transaction: the retained lease
+        // cannot expire or be superseded between the check and the commit.
+        return this.jobs.withLease(jobId, lease, nowMs, (live) => {
+          const mismatch = this.bindingError(live, page);
+          if (mismatch) {
+            // Refuse before any capture write; pause in the same transaction (CAP-02).
+            this.jobs.transition(jobId, lease, nowMs, "paused", mismatch.message);
+            return mismatch;
+          }
+          return this.replayOf(live, page) ?? this.commitNew(live, lease, nowMs, page, fault);
+        });
+      })
+      .immediate();
+    if (outcome instanceof AccountMismatchError) throw outcome;
+    if (outcome.status === "committed") fault("after-commit");
+    return outcome;
   }
 
   summary(jobId: string): CaptureSummary {
@@ -210,57 +236,58 @@ export class CaptureStore {
     };
   }
 
-  private commitInTransaction(
-    jobId: string,
-    owner: string,
-    nowMs: number,
-    page: CapturePage,
-    fault: (point: FaultPoint) => void,
-  ): CommitResult {
-    // A completed job holds no lease; it still acknowledges a re-sent page, which writes nothing.
-    const job = this.jobs.get(jobId);
-    if (job.state !== "complete") this.jobs.assertLease(jobId, owner, nowMs);
-    if (job.accountId !== page.accountId || job.collectionId !== page.collectionId) {
-      throw new AccountMismatchError(
-        `account mismatch: job ${jobId} is bound to ${job.accountId}/${job.collectionId}, page belongs to ${page.accountId}/${page.collectionId}`,
-      );
-    }
+  private bindingError(job: Job, page: CapturePage): AccountMismatchError | null {
+    if (job.accountId === page.accountId && job.collectionId === page.collectionId) return null;
+    return new AccountMismatchError(
+      `account mismatch: job ${job.id} is bound to ${job.accountId}/${job.collectionId}, page belongs to ${page.accountId}/${page.collectionId}`,
+    );
+  }
 
-    const pageKey = page.cursorIn ?? "";
-    const hash = contentHash(page.records);
+  private completedRejection(jobId: string): never {
+    throw new LeaseError(`job ${jobId} is complete and accepts only replays of committed pages`);
+  }
+
+  /** Acknowledges a page already committed in the same pass, or returns null for a new page. */
+  private replayOf(job: Job, page: CapturePage): CommitResult | null {
     const prior = this.db
       .prepare(
         "SELECT seq, cursor_out, content_hash FROM capture_page WHERE job_id = ? AND pass_id = ? AND page_key = ?",
       )
-      .get(jobId, page.passId, pageKey) as PageRow | undefined;
-    if (prior) {
-      if (prior.cursor_out !== page.cursorOut) {
-        throw new CursorMismatchError(
-          `page ${prior.seq} of pass ${page.passId} replayed with a different continuation`,
-        );
-      }
-      if (prior.content_hash !== hash) {
-        throw new ReplayConflictError(
-          `page ${prior.seq} of pass ${page.passId} replayed with different records`,
-        );
-      }
-      return {
-        status: "replayed",
-        passId: page.passId,
-        seq: prior.seq,
-        cursor: prior.cursor_out,
-        ended: prior.cursor_out === null,
-        newRecords: 0,
-        newSources: 0,
-        newVersions: 0,
-        cancelRequested: job.cancelRequested,
-      };
+      .get(job.id, page.passId, page.cursorIn ?? "") as PageRow | undefined;
+    if (!prior) return null;
+    if (prior.cursor_out !== page.cursorOut) {
+      throw new CursorMismatchError(
+        `page ${prior.seq} of pass ${page.passId} replayed with a different continuation`,
+      );
     }
-
-    if (job.state === "complete") {
-      throw new LeaseError(`job ${jobId} is complete and accepts only replays of committed pages`);
+    if (prior.content_hash !== contentHash(page.records)) {
+      throw new ReplayConflictError(
+        `page ${prior.seq} of pass ${page.passId} replayed with different records`,
+      );
     }
+    return {
+      status: "replayed",
+      passId: page.passId,
+      seq: prior.seq,
+      cursor: prior.cursor_out,
+      ended: prior.cursor_out === null,
+      newRecords: 0,
+      newSources: 0,
+      newVersions: 0,
+      cancelRequested: job.cancelRequested,
+    };
+  }
 
+  private commitNew(
+    job: Job,
+    lease: Lease,
+    nowMs: number,
+    page: CapturePage,
+    fault: (point: FaultPoint) => void,
+  ): CommitResult {
+    const jobId = job.id;
+    const pageKey = page.cursorIn ?? "";
+    const hash = contentHash(page.records);
     const iso = new Date(nowMs).toISOString();
     const pass = this.db
       .prepare("SELECT cursor, pages, ended_at FROM capture_pass WHERE job_id = ? AND pass_id = ?")
@@ -307,21 +334,49 @@ export class CaptureStore {
     this.db
       .prepare("INSERT OR IGNORE INTO collection (account_id, id) VALUES (?, ?)")
       .run(page.accountId, page.collectionId);
+    const findSource = this.db.prepare(
+      "SELECT id FROM source WHERE source_type = ? AND platform_id = ?",
+    );
+    const idTaken = this.db.prepare("SELECT 1 FROM source WHERE id = ?");
     const insSource = this.db.prepare(
-      `INSERT OR IGNORE INTO source (id, source_type, platform_id, canonical_url, author_id, author_handle, created_at)
+      `INSERT INTO source (id, source_type, platform_id, canonical_url, author_id, author_handle, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
     );
     const insVersion = this.db.prepare(
-      `INSERT OR IGNORE INTO source_version (source_id, content_hash, text, published_at, created_at)
-       VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO source_version (source_id, content_hash, text, published_at, created_at)
+       VALUES (?, ?, ?, ?, ?) ON CONFLICT (source_id, content_hash) DO NOTHING`,
     );
     const getVersion = this.db.prepare(
       "SELECT id FROM source_version WHERE source_id = ? AND content_hash = ?",
     );
     const insObservation = this.db.prepare(
-      `INSERT OR IGNORE INTO observation (source_id, version_id, job_id, observed_at, method, adapter_version, capture_page_id)
-       VALUES (?, ?, ?, ?, 'capture', ?, ?)`,
+      `INSERT INTO observation (source_id, version_id, job_id, observed_at, method, adapter_version, capture_page_id)
+       VALUES (?, ?, ?, ?, 'capture', ?, ?)
+       ON CONFLICT (job_id, version_id) WHERE capture_page_id IS NOT NULL DO NOTHING`,
     );
+    /**
+     * The canonical identity is (source_type, platform_id). Reuse whatever ID it was stored under
+     * (an importer or older build may use another scheme). A new identity gets a derived ID whose
+     * type part is escaped so distinct identities cannot derive the same ID; if an unrelated row
+     * still holds it, a deterministic suffix is added rather than attaching to that row.
+     */
+    const sourceIdFor = (r: CaptureRecord): { id: string; created: boolean } => {
+      const existing = findSource.get(r.sourceType, r.platformId) as { id: string } | undefined;
+      if (existing) return { id: existing.id, created: false };
+      const base = `${encodeURIComponent(r.sourceType)}:${r.platformId}`;
+      let id = base;
+      for (let n = 1; idTaken.get(id) !== undefined; n++) id = `${base}#${n}`;
+      insSource.run(
+        id,
+        r.sourceType,
+        r.platformId,
+        r.canonicalUrl ?? null,
+        r.authorId ?? null,
+        r.authorHandle ?? null,
+        iso,
+      );
+      return { id, created: true };
+    };
     // A job re-reading a source it already recorded changes nothing (replay across passes).
     const upMembership = this.db.prepare(
       `INSERT INTO membership (account_id, collection_id, source_id, first_observed_at, last_observed_at, first_job_id, last_job_id)
@@ -337,16 +392,8 @@ export class CaptureStore {
     const half = Math.floor(page.records.length / 2);
     page.records.forEach((r, i) => {
       if (i === half) fault("mid-page");
-      const sourceId = `${r.sourceType}:${r.platformId}`;
-      newSources += insSource.run(
-        sourceId,
-        r.sourceType,
-        r.platformId,
-        r.canonicalUrl ?? null,
-        r.authorId ?? null,
-        r.authorHandle ?? null,
-        iso,
-      ).changes;
+      const { id: sourceId, created } = sourceIdFor(r);
+      if (created) newSources++;
       const textHash = sha256(r.text);
       newVersions += insVersion.run(sourceId, textHash, r.text, r.publishedAt ?? null, iso).changes;
       const { id: versionId } = getVersion.get(sourceId, textHash) as { id: number };
@@ -361,11 +408,11 @@ export class CaptureStore {
         "UPDATE capture_pass SET cursor = ?, pages = pages + 1, ended_at = ? WHERE job_id = ? AND pass_id = ?",
       )
       .run(page.cursorOut, ended ? iso : null, jobId, page.passId);
-    const cancelRequested = this.jobs.checkpoint(jobId, owner, nowMs, { cursor: page.cursorOut });
+    const cancelRequested = this.jobs.checkpoint(jobId, lease, nowMs, { cursor: page.cursorOut });
     if (ended) {
       this.jobs.transition(
         jobId,
-        owner,
+        lease,
         nowMs,
         "complete",
         `recognized end: pass ${page.passId} page ${seq} returned no continuation (${adapter})`,
