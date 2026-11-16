@@ -41,7 +41,8 @@ The spike ran outside the repository and committed nothing. It found the followi
 
 - At rest, the client's X25519 private key is encrypted with AES-GCM. The wrapping key is a non-extractable WebCrypto key.
 - The additional data is `citspark/client-static-key/v1 || publicKey`, so a wrapped blob cannot be swapped onto a different public key.
-- **Weaker property, recorded as Q8 requires:** the raw private key is in memory while a handshake runs. Code running inside the extension, or a debugger attached to it, can read the key at that point. Script cannot export it from IndexedDB at rest.
+- **Weaker property, recorded as Q8 requires:** the raw private key is in memory while a handshake runs. Code running inside the extension, or a debugger attached to it, can read the key at that point.
+- **What non-extractability does and does not protect.** Only the AES wrapping key is non-extractable. Script running in the extension's origin can load the stored `CryptoKey` and the wrapped blob from IndexedDB and call `unwrapStaticKey` at any time, without waiting for a handshake, and so obtain the raw X25519 key. The wrapping protects a copied profile or a disk image from yielding the key without the browser's key store; it does not protect against code running in the extension's origin. Keeping hostile script out of the extension (MV3 CSP, no remote code) is the control for that.
 - The extension still needs to bundle `sodium-javascript` for the browser build. That is M1-08.
 
 **IK instead of KK for every connection.**
@@ -55,6 +56,7 @@ The spike ran outside the repository and committed nothing. It found the followi
 
 - **The flaw in ADR 0006 step 3.** The user types the code into the client, and the client then sends `pair.confirm`. A rogue local process can open the socket, derive the code from its own handshake hash, and send `pair.confirm` itself. The desktop would never learn whether a person compared anything.
 - **The fix.** The client shows the code. The user types it into the desktop's pairing dialog, and the desktop compares it in constant time. One user action now proves that a person approved this client and detects a man in the middle. A rogue process cannot type into the desktop dialog. `pair.confirm` is removed from the protocol, and the code never travels on the wire.
+- **The desktop proves itself to the client too.** The client's code proves to the desktop that a person approved this client, but it proves nothing to the client: a process that took the socket path or the pipe name (pipe names are machine-global on Windows) can run XX with its own key, follow commit and reveal honestly, and send `pair.ok`. The client would pin that key and later encrypt captures to it. So, once the user's code is accepted, the desktop sends `pair.approved` and its dialog shows a second 6-digit code, BLAKE2b-256(`citspark/pair/desktop-code/v1`, H, Nc, Nd) read the same way. The user types it into the client. The client compares it in constant time, pins the desktop key and sends `pair.accept` only if it matches, and treats a `pair.ok` before that as an attack. The desktop registers the client only on `pair.accept`. A squatter can compute the code but cannot show it in the real Citspark window, so the person has nothing that would match. A wrong code on the client ends the pairing (`pair.abort`); the 2-minute deadline covers both steps.
 - **Commit and reveal.** After XX, the desktop sends `pair.commit` = BLAKE2b-256(`citspark/pair/commit/v1`, H, Nd). The client then sends its nonce Nc, and the desktop reveals Nd.
   - The code is BLAKE2b-256(`citspark/pair/code/v1`, H, Nc, Nd), read as its first 8 bytes mod 10^6 and shown as 6 digits.
   - The client checks the commitment before showing the code. This stops a man in the middle from trying many keys until the codes on both sides match.
@@ -68,14 +70,15 @@ The spike ran outside the repository and committed nothing. It found the followi
 
 - The plaintext `hello` and its reply are bound into the Noise prologue as canonical JSON (sorted keys). Chrome re-serializes native messaging JSON, so we cannot bind the raw bytes.
 - `hello` gains a `channel` field, `pair` or `session`, that selects XX or IK. Because the field is in the prologue, a downgrade fails the handshake.
-- After the handshake, only `rec` frames are accepted. Each record carries a flag byte and is chunked at 65,518 bytes of plaintext (one Noise message minus the tag and flag).
+- After the handshake, only `rec` frames are accepted. Each record carries a flag byte and is chunked at 65,518 bytes of plaintext (one Noise message minus the tag and flag). Every non-final record must be exactly that full size, as the sender emits it, so the number of records retained for one message is bounded by the message size limit.
 - The nonce is capped below 2^32, because the library writes a 32-bit counter. Any decrypt failure ends the channel for good.
 
 **Server checks per frame.**
 
 - The registry is re-checked for every frame, so revocation also closes live connections.
 - Each request is checked for scope, method and version.
-- Requests that change data are kept in a per-client idempotency ledger. The ledger is keyed on the request ID, and a reused ID with a different payload is rejected.
+- Requests that change data are kept in a per-client idempotency ledger. The ledger is keyed on the request ID, and a reused ID with a different method or payload is rejected.
+- The client registry owns each client's ledger, so it lives exactly as long as the registration: a retry after a reconnect, or through a restarted listener, gets the stored outcome. Revocation drops it with the key. The ledger never forgets an accepted ID; when full (10,000 IDs by default) it refuses new mutations with `idempotency_exhausted`. M1-06 ships the in-memory registry, so ledger and registry are lost together on restart; the durable registry in M2 must persist the ledger outcomes with the key.
 
 **Native messaging host.**
 
@@ -105,7 +108,7 @@ The spike ran outside the repository and committed nothing. It found the followi
 
 - One Noise library runs in Node, the extension and the plugin. The browser build needs `sodium-javascript`.
 - The extension's key protection is weaker than ADR 0006 hoped, as stated above.
-- Pairing UX is reversed: the code appears in the client, and the user types it in the desktop. M1-08 (extension UI) and M2 (desktop UI) must follow this.
+- Pairing UX has two steps: the code appears in the client and the user types it in the desktop; then a code appears in the desktop and the user types it in the client. M1-08 (extension UI) and M2 (desktop UI) must follow this.
 - Desktop key storage through `safeStorage` and a persistent client registry land in M2. M1-06 ships an in-memory registry.
 
 ## Still to validate

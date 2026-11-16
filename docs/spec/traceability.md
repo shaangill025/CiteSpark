@@ -80,7 +80,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | T03 | Attribution | M1, M3 | M1-07, M3-11, M4-05 | not started | ADR 0010 |
 | T04 | Sync | M2 | M2-04, M2-05 | in progress | M2-04: seeded fast-check property tests (`packages/sync/src/t04.property.test.ts`): random concurrent edit sequences never lose user text; same-key metadata changes conflict. Filesystem harness pending (M2-05) |
 | T05 | Privacy | M3, M4 | M3-04 | not started | — |
-| T06 | Pairing | M2 | M1-06, M2-09 | in progress | ADR 0006, ADR 0011. M1-06: socket, channel, pairing and Windows pipe DACL suite in `packages/core/src/ipc/t06.test.ts`; plugin in M2-09 |
+| T06 | Pairing | M2 | M1-06, M2-09 | in progress | ADR 0006, ADR 0011. M1-06: socket, channel, pairing (including a socket squatter claiming `pair.ok`), registry-owned replay ledger and Windows pipe DACL suite in `packages/core/src/ipc/t06.test.ts`; plugin in M2-09 |
 | T07 | Deletion | M1, M2 | M1-12, M3-02 | not started | — |
 | T08 | Backup | M2 | M2-08 | not started | F0 prototype: 5 passing tests in `prototypes/backup-age` |
 | T09 | Import | M1 | M1-09, M5-03 | not started | — |
@@ -171,4 +171,4 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 ## Implementation notes
 
 - **§14 API contract (M1-05, `packages/protocol`)**: zod schemas, length-prefixed framing with oversize rejection and linear-time reassembly of fragmented frames, `hello` negotiation, request IDs with an idempotency ledger, structured errors and stream sequence numbers are implemented with unit tests. The ledger never forgets an accepted request ID; when full it rejects new IDs with `idempotency_exhausted` instead of evicting, so a late retry cannot repeat a mutation. Frame limits (1 MB toward the extension, 8 MB toward the core) remain PROPOSED.
-- **M1-06 IPC and pairing (`packages/ipc`, `packages/core/src/ipc`, `packages/native-host`)**: Noise XX pairing confirmed by a 6-digit code that the client shows and the user types into the desktop, Noise IK per connection, encrypted records, scopes, revocation, a Unix socket or named pipe server and a native messaging relay (ADR 0011). The T06 suite runs in `packages/core/src/ipc/t06.test.ts`. The client registry is in memory until M2; desktop key storage and pairing UI are M2; extension UI is M1-08.
+- **M1-06 IPC and pairing (`packages/ipc`, `packages/core/src/ipc`, `packages/native-host`)**: Noise XX pairing confirmed in both directions (a 6-digit code the client shows and the user types into the desktop, then one the desktop shows and the user types into the client), Noise IK per connection, encrypted records, scopes, revocation, a Unix socket or named pipe server and a native messaging relay (ADR 0011). The T06 suite runs in `packages/core/src/ipc/t06.test.ts`. The client registry is in memory until M2; desktop key storage and pairing UI are M2; extension UI is M1-08.
