@@ -1,6 +1,6 @@
 import { decodeBody } from "./decode.ts";
 import { guardedFetch, type GapReason, type GuardedFetchOptions } from "./fetcher.ts";
-import { extractPage, type PageContent } from "./links.ts";
+import { ExtractionLimitError, extractPage, type PageContent } from "./links.ts";
 
 export type CaptureResult =
   | ({
@@ -33,7 +33,20 @@ export async function captureLink(
       httpStatus: r.httpStatus,
     };
   }
-  const page = extractPage(decoded.text, r.contentType, r.finalUrl);
+  let page: PageContent;
+  try {
+    page = extractPage(decoded.text, r.contentType, r.finalUrl);
+  } catch (error) {
+    // Only the extractor's own resource bound becomes a gap; any other failure is a defect and propagates.
+    if (!(error instanceof ExtractionLimitError)) throw error;
+    return {
+      ok: false,
+      reason: "extraction_limit",
+      detail: error.message,
+      chain: r.chain,
+      httpStatus: r.httpStatus,
+    };
+  }
   if (page.text === "") {
     return {
       ok: false,

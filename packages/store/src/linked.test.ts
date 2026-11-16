@@ -288,6 +288,36 @@ describe("LinkedSourceStore", () => {
     expect(db.prepare("SELECT text FROM source_version").all()).toEqual([{ text: "Café" }]);
   });
 
+  it("captures deeply nested markup and keeps over-bound markup as a persistent gap", async () => {
+    pages["/deep"] = {
+      body: `<title>T</title>${"<div>".repeat(6000)}article${"</div>".repeat(6000)}`,
+    };
+    pages["/deeper"] = { body: `${"<div>".repeat(20_000)}article` };
+    const store = new LinkedSourceStore(db, capture);
+    const links = [
+      { url: `${base}/deep`, kind: "web" as const },
+      { url: `${base}/deeper`, kind: "web" as const },
+    ];
+    const out = await store.enrich("p1", links);
+    expect(out.map((o) => [o.status, o.gapReason])).toEqual([
+      ["captured", null],
+      ["gap", "extraction_limit"],
+    ]);
+    expect(db.prepare("SELECT text FROM source_version").all()).toEqual([{ text: "article" }]);
+    expect(
+      db
+        .prepare(
+          "SELECT source_id, gap_reason, http_status FROM linked_fetch WHERE original_url = ?",
+        )
+        .get(`${base}/deeper`),
+    ).toEqual({ source_id: null, gap_reason: "extraction_limit", http_status: 200 });
+    expect(store.gaps("p1").map((g) => g.reason)).toEqual(["extraction_limit"]);
+    const again = await store.enrich("p2", links);
+    expect(again.map((o) => o.status)).toEqual(["reused", "known_gap"]);
+    expect(hits).toEqual(["/deep", "/deeper"]);
+    expect(count("SELECT COUNT(*) n FROM source_version")).toBe(1);
+  });
+
   it("records explicit gaps once and keeps them visible", async () => {
     pages["/paywall"] = { status: 403, body: "" };
     pages["/pdf"] = { type: "application/pdf", body: "%PDF" };

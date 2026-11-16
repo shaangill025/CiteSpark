@@ -545,6 +545,31 @@ describe("download job on the job store (CAP-04 lease)", () => {
     );
   });
 
+  it("a direct download of a stopped (failed) entry fetches nothing and takes no claim", async () => {
+    const { media, dl, db } = setup();
+    const d = media.enqueue("s1", `${base}/a`);
+    // Stopped by another component (e.g. trash) using the migration 5 `failed` state.
+    db.prepare("UPDATE media_download SET state = 'failed', error = 'stopped' WHERE id = ?").run(
+      d.id,
+    );
+    expect(await dl(d.id)).toBe("failed");
+    expect(requests).toEqual([]);
+    expect(
+      db
+        .prepare(
+          "SELECT state, error, claim_job_id, claim_token, part_file FROM media_download WHERE id = ?",
+        )
+        .get(d.id),
+    ).toEqual({
+      state: "failed",
+      error: "stopped",
+      claim_job_id: null,
+      claim_token: null,
+      part_file: null,
+    });
+    expect(files(join(root, "tmp"))).toEqual([]);
+  });
+
   it("refuses to download an entry claimed by another live lease", async () => {
     const { media, jobs, clock } = setup();
     const d = media.enqueue("s1", `${base}/a`);
@@ -823,6 +848,143 @@ describe("download integrity (MED-01, CAP-03 fencing)", () => {
     expect(media.getDownload(d.id).state).toBe("pending");
     expect(db.prepare("SELECT COUNT(*) n FROM blob").get()).toEqual({ n: 0 });
     expect(db.prepare("SELECT COUNT(*) n FROM media").get()).toEqual({ n: 0 });
+  });
+
+  it("rejects a 206 with unknown total that ends past the saved representation length", async () => {
+    const appends: string[] = [];
+    const { media, dl, db } = setup({
+      fs: {
+        open: (p, flags) => {
+          if (flags === "a") appends.push(String(p));
+          return realFs.open(p, flags);
+        },
+      },
+    });
+    const d = media.enqueue("s1", `${base}/x`);
+    handler = (req, res) => {
+      if (!req.headers.range) {
+        res.writeHead(200, { etag: '"v1"', "content-length": 8 });
+        res.write("AAAA");
+        setTimeout(() => res.destroy(), 20);
+        return true;
+      }
+      res
+        .writeHead(206, {
+          etag: '"v1"',
+          "content-length": 6,
+          "content-range": "bytes 4-9/*",
+        })
+        .end("BBBBBB");
+      return true;
+    };
+    expect(await dl(d.id)).toBe("interrupted");
+    expect(media.getDownload(d.id)).toMatchObject({ bytesReceived: 4, totalBytes: 8 });
+    expect(await dl(d.id)).toBe("interrupted");
+    expect(appends).toEqual([]); // rejected before any file I/O
+    expect(media.getDownload(d.id)).toMatchObject({
+      state: "pending",
+      bytesReceived: 0,
+      error: "invalid content-range",
+      mediaId: null,
+    });
+    expect(db.prepare("SELECT COUNT(*) n FROM blob").get()).toEqual({ n: 0 });
+    expect(db.prepare("SELECT COUNT(*) n FROM media").get()).toEqual({ n: 0 });
+  });
+
+  it("rejects a 206 range end that is not a safe integer before any file I/O", async () => {
+    const appends: string[] = [];
+    const { media, dl } = setup({
+      fs: {
+        open: (p, flags) => {
+          if (flags === "a") appends.push(String(p));
+          return realFs.open(p, flags);
+        },
+      },
+    });
+    const d = media.enqueue("s1", `${base}/x`);
+    handler = (req, res) => {
+      if (!req.headers.range) {
+        res.writeHead(200, { etag: '"v1"' }); // unknown length: no saved total to bound the range
+        res.write("AAAA");
+        setTimeout(() => res.destroy(), 20);
+        return true;
+      }
+      res
+        .writeHead(206, { etag: '"v1"', "content-range": "bytes 4-9007199254740993/*" })
+        .end("BBBB");
+      return true;
+    };
+    expect(await dl(d.id)).toBe("interrupted");
+    expect(media.getDownload(d.id)).toMatchObject({ bytesReceived: 4, totalBytes: null });
+    expect(await dl(d.id)).toBe("interrupted");
+    expect(appends).toEqual([]);
+    expect(media.getDownload(d.id)).toMatchObject({
+      state: "pending",
+      bytesReceived: 0,
+      error: "invalid content-range",
+    });
+  });
+
+  it("rejects a 206 complete length that is not a safe integer", async () => {
+    const { media, dl } = setup();
+    const d = media.enqueue("s1", `${base}/x`);
+    handler = (req, res) => {
+      if (!req.headers.range) {
+        res.writeHead(200, { etag: '"v1"' });
+        res.write("AAAA");
+        setTimeout(() => res.destroy(), 20);
+        return true;
+      }
+      res
+        .writeHead(206, { etag: '"v1"', "content-range": "bytes 4-7/99999999999999999999" })
+        .end("BBBB");
+      return true;
+    };
+    expect(await dl(d.id)).toBe("interrupted");
+    expect(await dl(d.id)).toBe("interrupted");
+    expect(media.getDownload(d.id)).toMatchObject({
+      state: "pending",
+      bytesReceived: 0,
+      totalBytes: null,
+      error: "invalid content-range",
+    });
+  });
+
+  it("rejects a 206 whose exclusive range end overflows a safe integer", async () => {
+    const appends: string[] = [];
+    const { media, dl } = setup({
+      fs: {
+        open: (p, flags) => {
+          if (flags === "a") appends.push(String(p));
+          return realFs.open(p, flags);
+        },
+      },
+    });
+    const d = media.enqueue("s1", `${base}/x`);
+    handler = (req, res) => {
+      if (!req.headers.range) {
+        res.writeHead(200, { etag: '"v1"' });
+        res.write("AAAA");
+        setTimeout(() => res.destroy(), 20);
+        return true;
+      }
+      // The last position is safe; its exclusive end (last + 1) is not.
+      res
+        .writeHead(206, {
+          etag: '"v1"',
+          "content-range": `bytes 4-${Number.MAX_SAFE_INTEGER}/*`,
+        })
+        .end("BBBB");
+      return true;
+    };
+    expect(await dl(d.id)).toBe("interrupted");
+    expect(await dl(d.id)).toBe("interrupted");
+    expect(appends).toEqual([]);
+    expect(media.getDownload(d.id)).toMatchObject({
+      state: "pending",
+      bytesReceived: 0,
+      error: "invalid content-range",
+    });
   });
 
   it("a stale worker's delayed open cannot truncate the new owner's partial", async () => {
