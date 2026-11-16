@@ -8,15 +8,15 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 
 | ID | Summary | Milestone | Acceptance tests | Status | Notes |
 | --- | --- | --- | --- | --- | --- |
-| CAP-01 | Versioned capture adapters; audited collector evaluation | F0, M1 | T01, T02 | not started | F0 licence/dependency audit of xarchive and twitter-web-exporter |
+| CAP-01 | Versioned capture adapters; audited collector evaluation | F0, M1 | T01, T02 | in progress | M1-07: versioned `CaptureAdapter` in `packages/capture-x` (passive parse, ADR 0005); F0 licence/dependency audit of xarchive and twitter-web-exporter; real-session capture unvalidated |
 | CAP-02 | String platform IDs; account-bound membership; account-switch pause | M1 | T01, T02 | in progress | M1-02: string IDs, account-scoped membership schema (`packages/store`); account-switch pause pending |
 | CAP-03 | Atomic record+cursor commit; idempotent replay; lease | M1 | T01 | not started |  |
 | CAP-04 | Pause/resume/cancel and failure outcomes; loop, schema, disk detection | M1 | T02, T15 | not started |  |
 | CAP-05 | Retry-After, bounded backoff, no auth bypass | M1 | T02 | not started |  |
 | CAP-06 | Honest 'complete' definition and termination evidence | M1 | T02 | not started |  |
-| CAP-07 | Pause honestly when X changes; library stays usable | M1 | T02 | not started |  |
-| CAP-08 | Thread continuations: identity, order, flagged uncertainty | M1 | T02, T03 | not started |  |
-| CAP-09 | Original vs translation text kept separate | M1 | T03 | not started |  |
+| CAP-07 | Pause honestly when X changes; library stays usable | M1 | T02 | in progress | M1-07: unsupported X schema returns `paused`, never ok/complete; job-level pause and UI pending |
+| CAP-08 | Thread continuations: identity, order, flagged uncertainty | M1 | T02, T03 | in progress | M1-07: confirmed vs uncertain thread membership, other authors excluded, gaps flagged (synthetic fixtures); end-to-end T02/T03 pending |
+| CAP-09 | Original vs translation text kept separate | M1 | T03 | in progress | M1-07: original text and translation kept as separate fields (synthetic fixtures); storage and citation attribution pending |
 | ENR-01 | Linked posts/articles as separate sources; no recursive crawl | M1 | T15 | not started |  |
 | ENR-02 | Link provenance fields; explicit gaps | M1 | T02, T03 | not started |  |
 | ENR-03 | SSRF/local-file blocking; size/time/type limits; sanitization | M1 | T02 | not started | Security review in M5 (SEC-06/07) |
@@ -75,7 +75,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | --- | --- | --- | --- |
 | T01 | Capture replay | M1 | not started |
 | T02 | Coverage honesty | M1 | not started |
-| T03 | Attribution | M1, M3 | not started |
+| T03 | Attribution | M1, M3 | in progress |
 | T04 | Sync | M2 | not started |
 | T05 | Privacy | M3, M4 | not started |
 | T06 | Pairing | M2 | not started |
@@ -118,9 +118,9 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | Q12 | AI-01, AI-04 | M4 | not started |
 | Q13 | AI-02 | M4 | not started |
 | Q14 | AI-01, AI-07 | M4 | not started |
-| Q15 | CAP-01 | M1 | not started |
+| Q15 | CAP-01 | M1 | in progress |
 | Q16 | ENR-01 | M1 | not started |
-| Q17 | CAP-08 | M1 | not started |
+| Q17 | CAP-08 | M1 | in progress |
 | Q18 | MED-01, MED-02 | M1, M3 | not started |
 | Q19 | MED-03 | M3 | not started |
 | Q20 | T14 | M5 | not started |
