@@ -6,7 +6,7 @@ import {
   type Hello,
   type HelloReply,
   helloPrologue,
-  IdempotencyLedger,
+  type IdempotencyLedger,
   negotiateVersion,
   PairClientMessageSchema,
   type PairClientMessage,
@@ -23,6 +23,7 @@ import {
 } from "@citspark/protocol";
 import {
   commitToNonce,
+  desktopCode,
   fromBase64,
   Handshake,
   pairingCode,
@@ -75,7 +76,6 @@ export class IpcServer {
   readonly #versions: VersionRange;
   readonly #connections = new Set<Connection>();
   readonly #byClient = new Map<string, Set<Connection>>();
-  readonly #ledgers = new Map<string, IdempotencyLedger>();
   #server: Server | undefined;
 
   constructor(opts: IpcServerOptions) {
@@ -109,7 +109,6 @@ export class IpcServer {
     const removed = this.#opts.registry.remove(clientId);
     for (const c of this.#byClient.get(clientId) ?? []) c.close();
     this.#byClient.delete(clientId);
-    this.#ledgers.delete(clientId);
     return removed;
   }
 
@@ -246,7 +245,12 @@ export class IpcServer {
     });
     let pending: PendingPairing;
     try {
-      pending = pairing.begin({ clientKind: hello.client.kind, scopes: req.scopes, onEnd: ended });
+      pending = pairing.begin({
+        clientKind: hello.client.kind,
+        scopes: req.scopes,
+        onApproved: () => conn.sendSealed({ type: "pair.approved" } satisfies PairCoreMessage),
+        onEnd: ended,
+      });
     } catch (e) {
       if (e instanceof ProtocolException) fail(e.toBody());
       return;
@@ -266,11 +270,18 @@ export class IpcServer {
       } satisfies PairCoreMessage);
       opened = true;
       disarm();
-      pending.open(pairingCode(conn.handshakeHash!, clientNonce, desktopNonce));
+      pending.open(
+        pairingCode(conn.handshakeHash!, clientNonce, desktopNonce),
+        desktopCode(conn.handshakeHash!, clientNonce, desktopNonce),
+      );
 
-      // Anything the client sends now (pair.abort, junk, or closing) ends the pairing.
+      // The client may only send pair.accept, and only after the user typed its code here (pair.approved
+      // went out). Anything else (pair.abort, an early accept, junk, or closing) ends the pairing.
       void next().then(
-        () => pending.abort(),
+        (m) => {
+          if (!(m.type === "pair.accept" && pending.approved && pending.complete()))
+            pending.abort();
+        },
         () => pending.abort(),
       );
       const result = await outcome;
@@ -299,8 +310,9 @@ export class IpcServer {
 
   async #dispatch(conn: Connection): Promise<void> {
     const client = conn.client!;
-    let ledger = this.#ledgers.get(client.id);
-    if (!ledger) this.#ledgers.set(client.id, (ledger = new IdempotencyLedger()));
+    // The registry owns the ledger so it outlives this connection and this server instance (§14).
+    const ledger = this.#opts.registry.ledger(client.id);
+    if (!ledger) return;
     for (;;) {
       const raw = await conn.receiveSealed();
       // Revocation may have raced with this frame; never act for a removed client.

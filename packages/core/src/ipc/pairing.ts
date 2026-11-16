@@ -12,9 +12,15 @@ export interface PairingPrompt {
 export type SubmitResult = "ok" | "wrong" | "locked" | "expired";
 export type PairingOutcome = "ok" | "locked" | "expired" | "cancelled" | "aborted";
 
-/** Handed to the desktop UI. `submit` takes the code the user typed; `cancel` is the dialog's Cancel. */
+/**
+ * Handed to the desktop UI. `submit` takes the code the user typed; `cancel` is the dialog's Cancel. Once
+ * `submit` returns "ok", the dialog shows `desktopCode()` and asks the user to type it into the client; the
+ * client is registered only after it confirms that code (ADR 0011).
+ */
 export interface PairingDialog {
   submit(code: string): SubmitResult;
+  /** The code to show after the client's code was accepted; undefined before that and after the end. */
+  desktopCode(): string | undefined;
   cancel(): void;
 }
 
@@ -23,7 +29,8 @@ export type PairingPresenter = (prompt: PairingPrompt, dialog: PairingDialog) =>
 
 /**
  * Pairing policy (ADR 0006 step 4, ADR 0011): one pairing at a time; a code is bound to one handshake, is
- * single-use and valid for 2 minutes; 5 wrong codes lock pairing until the desktop user unlocks it.
+ * single-use and valid for 2 minutes (the deadline also covers the client confirming the desktop's code);
+ * 5 wrong codes lock pairing until the desktop user unlocks it.
  */
 export class PairingController {
   readonly ttlMs: number;
@@ -66,6 +73,8 @@ export class PairingController {
   begin(req: {
     clientKind: ClientKind;
     scopes: readonly Scope[];
+    /** The user typed the right client code; the desktop now shows its own code. */
+    onApproved?: () => void;
     onEnd: (outcome: PairingOutcome) => void;
   }): PendingPairing {
     if (this.#locked) {
@@ -115,16 +124,25 @@ export class PendingPairing {
   readonly #present: PairingPresenter;
   readonly #prompt: PairingPrompt;
   readonly #onEnd: (outcome: PairingOutcome) => void;
+  readonly #onApproved: (() => void) | undefined;
   readonly #now: () => number;
   readonly #timer: ReturnType<typeof setTimeout>;
   #code: Buffer | undefined;
+  #desktopCode: string | undefined;
+  #opened = false;
+  #approved = false;
   #dismiss: (() => void) | undefined;
   #done = false;
 
   constructor(o: {
     controller: PairingController;
     present: PairingPresenter;
-    req: { clientKind: ClientKind; scopes: readonly Scope[]; onEnd: (o: PairingOutcome) => void };
+    req: {
+      clientKind: ClientKind;
+      scopes: readonly Scope[];
+      onApproved?: () => void;
+      onEnd: (o: PairingOutcome) => void;
+    };
     now: () => number;
     ttlMs: number;
   }) {
@@ -132,6 +150,7 @@ export class PendingPairing {
     this.#present = o.present;
     this.#now = o.now;
     this.#onEnd = o.req.onEnd;
+    this.#onApproved = o.req.onApproved;
     this.expiresAt = o.now() + o.ttlMs;
     this.#prompt = Object.freeze({
       clientKind: o.req.clientKind,
@@ -146,15 +165,37 @@ export class PendingPairing {
     return this.#done;
   }
 
-  /** Arms the dialog with the code this side derived from its own handshake. */
-  open(code: string): void {
-    if (this.#done || this.#code) throw new Error("pairing dialog already opened or finished");
+  /** The user typed the client's code; waiting for the client to confirm the desktop's code. */
+  get approved(): boolean {
+    return this.#approved && !this.#done;
+  }
+
+  /**
+   * Arms the dialog with the codes this side derived from its own handshake: `code` is the one the client
+   * shows, `desktopCode` the one the desktop shows after accepting it.
+   */
+  open(code: string, desktopCode: string): void {
+    if (this.#done || this.#opened) throw new Error("pairing dialog already opened or finished");
+    this.#opened = true;
     this.#code = Buffer.from(code, "utf8");
+    this.#desktopCode = desktopCode;
     const dialog: PairingDialog = {
       submit: (typed) => this.#submit(typed),
+      desktopCode: () => (this.#approved && !this.#done ? this.#desktopCode : undefined),
       cancel: () => this.#finish("cancelled"),
     };
     this.#dismiss = this.#present(this.#prompt, dialog);
+  }
+
+  /** The client confirmed the desktop's code (`pair.accept`). Only valid after approval. */
+  complete(): boolean {
+    if (this.#done || !this.#approved) return false;
+    if (this.#now() >= this.expiresAt) {
+      this.#finish("expired");
+      return false;
+    }
+    this.#finish("ok");
+    return true;
   }
 
   /** The client went away or sent `pair.abort`. */
@@ -171,7 +212,11 @@ export class PendingPairing {
     const t = Buffer.from(typed.trim(), "utf8");
     if (t.length === this.#code.length && timingSafeEqual(t, this.#code)) {
       this.#controller._recordSuccess();
-      this.#finish("ok");
+      // Single use: the client's code is spent; the slot and deadline stay until the client confirms.
+      this.#code.fill(0);
+      this.#code = undefined;
+      this.#approved = true;
+      this.#onApproved?.();
       return "ok";
     }
     if (this.#controller._recordWrong()) {
@@ -186,6 +231,8 @@ export class PendingPairing {
     this.#done = true;
     clearTimeout(this.#timer);
     this.#code?.fill(0);
+    this.#code = undefined;
+    this.#desktopCode = undefined;
     this.#controller._release(this);
     try {
       this.#dismiss?.();

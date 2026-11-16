@@ -1,5 +1,5 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
-import type { Hello, Scope } from "@citspark/protocol";
+import { type Hello, IdempotencyLedger, type Scope } from "@citspark/protocol";
 
 export type ClientKind = Hello["client"]["kind"];
 
@@ -16,7 +16,13 @@ export interface ClientRegistry {
   findByPublicKey(publicKey: Uint8Array): PairedClient | undefined;
   get(id: string): PairedClient | undefined;
   add(client: Pick<PairedClient, "kind" | "publicKey" | "scopes">): PairedClient;
-  /** Revocation deletes the public key, so the client can never complete a handshake again. */
+  /**
+   * The client's replay ledger (§14). It lives exactly as long as the client's registration, never as long
+   * as a connection or a server instance: a retry after reconnecting or restarting the listener must find
+   * the stored outcome. A durable registry (M2) must persist it alongside the key. Undefined once removed.
+   */
+  ledger(id: string): IdempotencyLedger | undefined;
+  /** Revocation deletes the public key and the ledger, so the client can never complete a handshake again. */
   remove(id: string): boolean;
   list(): PairedClient[];
 }
@@ -24,10 +30,13 @@ export interface ClientRegistry {
 /** In-process registry. Durable storage arrives with the store and the Electron shell (M2-01, M2-03). */
 export class MemoryClientRegistry implements ClientRegistry {
   readonly #clients = new Map<string, PairedClient>();
+  readonly #ledgers = new Map<string, IdempotencyLedger>();
   readonly #now: () => Date;
+  readonly #ledgerCapacity: number | undefined;
 
-  constructor(opts: { now?: () => Date } = {}) {
+  constructor(opts: { now?: () => Date; ledgerCapacity?: number } = {}) {
     this.#now = opts.now ?? (() => new Date());
+    this.#ledgerCapacity = opts.ledgerCapacity;
   }
 
   findByPublicKey(publicKey: Uint8Array): PairedClient | undefined {
@@ -55,7 +64,20 @@ export class MemoryClientRegistry implements ClientRegistry {
     return record;
   }
 
+  ledger(id: string): IdempotencyLedger | undefined {
+    if (!this.#clients.has(id)) return undefined;
+    let ledger = this.#ledgers.get(id);
+    if (!ledger) {
+      ledger = new IdempotencyLedger(
+        this.#ledgerCapacity === undefined ? {} : { capacity: this.#ledgerCapacity },
+      );
+      this.#ledgers.set(id, ledger);
+    }
+    return ledger;
+  }
+
   remove(id: string): boolean {
+    this.#ledgers.delete(id);
     return this.#clients.delete(id);
   }
 

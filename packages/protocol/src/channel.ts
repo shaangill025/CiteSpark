@@ -51,7 +51,8 @@ export type HandshakeFrame = z.infer<typeof HandshakeFrameSchema>;
 export type RecordFrame = z.infer<typeof RecordFrameSchema>;
 
 // Messages carried inside the encrypted pairing channel (Noise XX), in protocol order. The 6-digit code
-// itself never travels: the client shows it and the user types it into the desktop (ADR 0011).
+// itself never travels: the client shows it and the user types it into the desktop; then the desktop shows a
+// second code that the user types into the client (ADR 0011). Neither code travels on the wire.
 export const PairRequestSchema = z.strictObject({
   type: z.literal("pair.request"),
   scopes: z
@@ -64,6 +65,10 @@ export const PairCommitSchema = z.strictObject({ type: z.literal("pair.commit"),
 export const PairNonceSchema = z.strictObject({ type: z.literal("pair.nonce"), nonce: Bytes32 });
 export const PairRevealSchema = z.strictObject({ type: z.literal("pair.reveal"), nonce: Bytes32 });
 export const PairAbortSchema = z.strictObject({ type: z.literal("pair.abort") });
+/** The desktop accepted the client's code and now shows its own code for the user to type into the client. */
+export const PairApprovedSchema = z.strictObject({ type: z.literal("pair.approved") });
+/** The user typed the desktop's code into the client and it matched; only now does the desktop register it. */
+export const PairAcceptSchema = z.strictObject({ type: z.literal("pair.accept") });
 export const PairOkSchema = z.strictObject({
   type: z.literal("pair.ok"),
   clientId: z.string().min(1).max(128),
@@ -77,11 +82,13 @@ export const PairErrorSchema = z.strictObject({
 export const PairClientMessageSchema = z.discriminatedUnion("type", [
   PairRequestSchema,
   PairNonceSchema,
+  PairAcceptSchema,
   PairAbortSchema,
 ]);
 export const PairCoreMessageSchema = z.discriminatedUnion("type", [
   PairCommitSchema,
   PairRevealSchema,
+  PairApprovedSchema,
   PairOkSchema,
   PairErrorSchema,
 ]);

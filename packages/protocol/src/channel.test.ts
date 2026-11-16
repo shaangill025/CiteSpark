@@ -87,6 +87,19 @@ describe("pairing messages and scopes", () => {
     expect(PairClientMessageSchema.safeParse(confirm).success).toBe(false);
   });
 
+  test("neither confirmation step carries a code, and each goes one way only", () => {
+    expect(PairCoreMessageSchema.safeParse({ type: "pair.approved" }).success).toBe(true);
+    expect(PairClientMessageSchema.safeParse({ type: "pair.accept" }).success).toBe(true);
+    expect(PairClientMessageSchema.safeParse({ type: "pair.approved" }).success).toBe(false);
+    expect(PairCoreMessageSchema.safeParse({ type: "pair.accept" }).success).toBe(false);
+    expect(PairCoreMessageSchema.safeParse({ type: "pair.approved", code: "654321" }).success).toBe(
+      false,
+    );
+    expect(PairClientMessageSchema.safeParse({ type: "pair.accept", code: "654321" }).success).toBe(
+      false,
+    );
+  });
+
   test("nonces and commitments are exactly 32 bytes", () => {
     const n32 = btoa("n".repeat(32));
     const n31 = btoa("n".repeat(31));

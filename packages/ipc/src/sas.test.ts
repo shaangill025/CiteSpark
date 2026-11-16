@@ -1,5 +1,11 @@
 import { describe, expect, test } from "vitest";
-import { commitToNonce, pairingCode, pairingNonce, verifyNonceCommitment } from "./sas.ts";
+import {
+  commitToNonce,
+  desktopCode,
+  pairingCode,
+  pairingNonce,
+  verifyNonceCommitment,
+} from "./sas.ts";
 import { randomBytes } from "./bytes.ts";
 
 const h = randomBytes(64);
@@ -24,6 +30,20 @@ describe("pairing short authentication string", () => {
     ]);
     // A collision among 4 random 6-digit codes has probability ~6e-6.
     expect(codes.size).toBe(4);
+  });
+
+  test("the desktop's code is six digits, deterministic, and independent of the client's code", () => {
+    let same = 0;
+    for (let i = 0; i < 200; i++) {
+      const nc = pairingNonce();
+      const nd = pairingNonce();
+      const d = desktopCode(h, nc, nd);
+      expect(d).toMatch(/^[0-9]{6}$/);
+      expect(desktopCode(new Uint8Array(h), new Uint8Array(nc), new Uint8Array(nd))).toBe(d);
+      if (d === pairingCode(h, nc, nd)) same++;
+    }
+    // Different domain labels: equal codes only by chance (~2e-4 over 200 draws).
+    expect(same).toBeLessThanOrEqual(1);
   });
 
   test("codes are roughly uniform over 000000..999999", () => {

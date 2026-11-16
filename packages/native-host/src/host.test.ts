@@ -161,16 +161,20 @@ describe("native messaging host relay", () => {
     };
     let shown!: (c: string) => void;
     const code = new Promise<string>((r) => (shown = r));
+    let confirm!: (c: string) => void;
+    const desktopCode = new Promise<string>((r) => (confirm = r));
     const h1 = env.launch(tap);
     const pairing = pairWithDesktop({
       transport: h1.port,
       identity,
       scopes: [Scope.CaptureWrite],
       showCode: shown,
+      enterDesktopCode: () => desktopCode,
     });
     const dialog = await env.nextDialog();
     const typed = await code;
     expect(dialog.submit(typed)).toBe("ok");
+    confirm(dialog.desktopCode()!);
     const paired = await pairing;
     expect(await h1.exit).toBe(0);
 

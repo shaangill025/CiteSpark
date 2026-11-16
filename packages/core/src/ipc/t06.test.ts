@@ -64,9 +64,13 @@ function endpoint(): string {
 
 type Call = { method: string; payload: unknown; clientId: string };
 
-async function startDesktop(opts: { ttlMs?: number; handshakeTimeoutMs?: number } = {}) {
+async function startDesktop(
+  opts: { ttlMs?: number; handshakeTimeoutMs?: number; ledgerCapacity?: number } = {},
+) {
   const staticKeyPair = generateStaticKeyPair();
-  const registry = new MemoryClientRegistry();
+  const registry = new MemoryClientRegistry(
+    opts.ledgerCapacity ? { ledgerCapacity: opts.ledgerCapacity } : {},
+  );
   const dialogs = new MessageQueue();
   let dismissed = 0;
   const pairing = new PairingController({
@@ -104,6 +108,7 @@ async function startDesktop(opts: { ttlMs?: number; handshakeTimeoutMs?: number 
     staticKeyPair,
     registry,
     pairing,
+    handlers,
     calls,
     server,
     path,
@@ -125,19 +130,23 @@ async function open(path: string): Promise<MessageTransport> {
   return t;
 }
 
-/** Pairs the way a person does: reads the code on the client and types it into the desktop dialog. */
+/** Pairs the way a person does: types the client's code into the desktop, then the desktop's into the client. */
 async function pair(desk: Desktop, id: ClientIdentity, scopes: Scope[], path = desk.path) {
   let shown!: (c: string) => void;
   const code = new Promise<string>((r) => (shown = r));
+  let typed!: (c: string) => void;
+  const desktopCode = new Promise<string>((r) => (typed = r));
   const result = pairWithDesktop({
     transport: await open(path),
     identity: id,
     scopes,
     showCode: shown,
+    enterDesktopCode: () => desktopCode,
   });
   const { prompt, dialog } = await desk.nextDialog();
   expect(prompt.scopes).toEqual(scopes);
   expect(dialog.submit(await code)).toBe("ok");
+  typed(dialog.desktopCode()!);
   return result;
 }
 
@@ -173,6 +182,9 @@ async function drain(
     frames.push(r.f);
   }
 }
+
+/** For clients that must fail before the desktop shows its code. */
+const notReached = () => Promise.reject(new Error("the desktop code must not be asked for"));
 
 type Tamper = (dir: "up" | "down", frame: unknown, index: number) => unknown[];
 
@@ -223,6 +235,51 @@ async function pairedClient(desk: Desktop, scopes: Scope[] = [S.CaptureWrite, S.
   return { id, paired };
 }
 
+type FakeScript = (io: {
+  keys: { handshakeHash: Uint8Array };
+  send: (m: unknown) => void;
+  recv: () => Promise<unknown>;
+}) => Promise<void>;
+
+/** A process listening where the client expects the desktop, running XX with its own key. */
+async function fakeDesktop(script: FakeScript, desktopKeys = generateStaticKeyPair()) {
+  const path = endpoint();
+  await prepareListenPath(path);
+  const server = createServer((sock) => {
+    const t = socketTransport(sock);
+    void (async () => {
+      const hello = (await t.receive()) as Hello;
+      const reply: HelloReply = { type: "hello.ok", version: 1, core: { version: "evil" } };
+      t.send(reply);
+      const hs = new Handshake({
+        pattern: "XX",
+        initiator: false,
+        staticKeyPair: desktopKeys,
+        prologue: helloPrologue(hello, reply),
+      });
+      while (!hs.complete) {
+        if (hs.isMyTurn) t.send({ type: "hs", d: toBase64(hs.writeMessage()) });
+        else hs.readMessage(fromBase64(((await t.receive()) as { d: string }).d));
+      }
+      const keys = hs.result();
+      const ch = new SecureChannel(keys);
+      await script({
+        keys,
+        send: (m) => ch.seal(m).forEach((f) => t.send(f)),
+        recv: async () => {
+          for (;;) {
+            const m = ch.open((await t.receive()) as { type: "rec"; d: string });
+            if (m !== undefined) return m;
+          }
+        },
+      });
+    })().catch(() => undefined);
+  });
+  await new Promise<void>((r) => server.listen(path, r));
+  cleanups.push(() => new Promise<void>((r) => server.close(() => r())));
+  return path;
+}
+
 describe("T06: happy path", () => {
   test("pairing, then a scoped request over an encrypted session", async () => {
     const desk = await startDesktop();
@@ -264,6 +321,77 @@ describe("T06: happy path", () => {
     });
     await expect(b.request("capture.create", { n: 2 }, opts)).rejects.toMatchObject({
       error: { code: ErrorCode.IdempotencyConflict },
+    });
+    expect(desk.calls).toHaveLength(1);
+  });
+
+  test("the replay ledger outlives the server: a retry through a restarted listener runs once", async () => {
+    const desk = await startDesktop();
+    const { id, paired } = await pairedClient(desk);
+    const a = await session(desk.path, id, paired);
+    const opts = { mutation: true, id: "req-restart" };
+    await a.request("capture.create", { n: 1 }, opts);
+    await desk.server.close();
+    // Same desktop key and the same (eventually durable) client registry, new server instance.
+    const restarted = new IpcServer({
+      staticKeyPair: desk.staticKeyPair,
+      coreVersion: "0.0.0-test",
+      registry: desk.registry,
+      pairing: desk.pairing,
+      handlers: desk.handlers,
+    });
+    const path = endpoint();
+    await restarted.listen(path);
+    cleanups.push(() => restarted.close());
+    const b = await session(path, id, paired);
+    await expect(b.request("capture.create", { n: 1 }, opts)).resolves.toEqual({
+      ok: true,
+      echo: { n: 1 },
+    });
+    await expect(b.request("capture.create", { n: 9 }, opts)).rejects.toMatchObject({
+      error: { code: ErrorCode.IdempotencyConflict },
+    });
+    expect(desk.calls).toHaveLength(1);
+  });
+
+  test("a full replay ledger refuses new mutations instead of forgetting old ones", async () => {
+    const desk = await startDesktop({ ledgerCapacity: 2 });
+    const { id, paired } = await pairedClient(desk);
+    const s = await session(desk.path, id, paired);
+    const m = (n: number) => s.request("capture.create", { n }, { mutation: true, id: `r${n}` });
+    await m(1);
+    await m(2);
+    await expect(m(3)).rejects.toMatchObject({ error: { code: ErrorCode.IdempotencyExhausted } });
+    await expect(m(1)).resolves.toEqual({ ok: true, echo: { n: 1 } });
+    // Reads do not consume ledger capacity.
+    await expect(s.request("search.query", {})).resolves.toMatchObject({ ok: true });
+    expect(desk.calls.map((c) => c.payload)).toEqual([{ n: 1 }, { n: 2 }, {}]);
+  });
+
+  test("revocation drops the client's ledger together with its key", async () => {
+    const desk = await startDesktop();
+    const { id, paired } = await pairedClient(desk);
+    const s = await session(desk.path, id, paired);
+    await s.request("capture.create", { n: 1 }, { mutation: true, id: "same" });
+    desk.server.revoke(paired.clientId);
+    expect(desk.registry.ledger(paired.clientId)).toBeUndefined();
+  });
+
+  test("a request the client cannot send fails as a promise and leaves the session usable", async () => {
+    const desk = await startDesktop();
+    const { id, paired } = await pairedClient(desk);
+    const s = await session(desk.path, id, paired);
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    const bad: unknown[] = [{ n: 1n }, circular, { s: "x".repeat(9 * 1024 * 1024) }];
+    for (const payload of bad) {
+      let p: Promise<unknown> | undefined;
+      expect(() => (p = s.request("search.query", payload, { id: "retry-me" }))).not.toThrow();
+      await expect(p).rejects.toBeInstanceOf(Error);
+    }
+    // The ID is free again and the channel was never advanced.
+    await expect(s.request("search.query", { ok: 1 }, { id: "retry-me" })).resolves.toMatchObject({
+      echo: { ok: 1 },
     });
     expect(desk.calls).toHaveLength(1);
   });
@@ -352,6 +480,7 @@ describe("T06: clients that must be refused", () => {
       identity: identity(),
       scopes: ["clients.manage" as Scope],
       showCode: () => undefined,
+      enterDesktopCode: notReached,
     }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(Error);
     expect(desk.pairing.pending).toBe(false);
@@ -407,6 +536,7 @@ describe("T06: clients that must be refused", () => {
       identity: identity(),
       scopes: [S.CaptureWrite],
       showCode: () => undefined,
+      enterDesktopCode: notReached,
     }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(Error);
     expect(desk.pairing.pending).toBe(false);
@@ -549,6 +679,7 @@ describe("T06: pairing", () => {
       identity: identity(),
       scopes: [S.CaptureWrite],
       showCode: (c) => (rogueCode = c),
+      enterDesktopCode: notReached,
     }).catch((e: unknown) => e);
     expect(rogueCode).toMatch(/^\d{6}$/);
     expect((err as PairingError).error.code).toBe(ErrorCode.PairingExpired);
@@ -569,12 +700,14 @@ describe("T06: pairing", () => {
       identity: identity(),
       scopes: [S.CaptureWrite],
       showCode: clientCode,
+      enterDesktopCode: notReached,
     }).catch((e: unknown) => e);
     const attacker = pairWithDesktop({
       transport: await open(desk.path),
       identity: identity(),
       scopes: [S.CaptureWrite],
       showCode: mitmCode,
+      enterDesktopCode: notReached,
     }).catch((e: unknown) => e);
     const { dialog } = await desk.nextDialog();
     const userTyped = await shownToUser;
@@ -588,54 +721,108 @@ describe("T06: pairing", () => {
   });
 
   test("a desktop that breaks its nonce commitment is caught before any code is shown", async () => {
-    const path = endpoint();
-    await prepareListenPath(path);
-    const desktopKeys = generateStaticKeyPair();
-    const server = createServer((sock) => {
-      const t = socketTransport(sock);
-      void (async () => {
-        const hello = (await t.receive()) as Hello;
-        const reply: HelloReply = { type: "hello.ok", version: 1, core: { version: "evil" } };
-        t.send(reply);
-        const hs = new Handshake({
-          pattern: "XX",
-          initiator: false,
-          staticKeyPair: desktopKeys,
-          prologue: helloPrologue(hello, reply),
-        });
-        while (!hs.complete) {
-          if (hs.isMyTurn) t.send({ type: "hs", d: toBase64(hs.writeMessage()) });
-          else hs.readMessage(fromBase64(((await t.receive()) as { d: string }).d));
-        }
-        const keys = hs.result();
-        const ch = new SecureChannel(keys);
-        const recv = async () => {
-          for (;;) {
-            const m = ch.open((await t.receive()) as { type: "rec"; d: string });
-            if (m !== undefined) return m;
-          }
-        };
-        await recv();
-        ch.seal({
-          type: "pair.commit",
-          commit: toBase64(commitToNonce(keys.handshakeHash, pairingNonce())),
-        }).forEach((f) => t.send(f));
-        await recv();
-        ch.seal({ type: "pair.reveal", nonce: toBase64(pairingNonce()) }).forEach((f) => t.send(f));
-        await recv().catch(() => undefined);
-      })().catch(() => undefined);
+    const path = await fakeDesktop(async ({ keys, send, recv }) => {
+      await recv();
+      send({
+        type: "pair.commit",
+        commit: toBase64(commitToNonce(keys.handshakeHash, pairingNonce())),
+      });
+      await recv();
+      send({ type: "pair.reveal", nonce: toBase64(pairingNonce()) });
+      await recv();
     });
-    await new Promise<void>((r) => server.listen(path, r));
-    cleanups.push(() => new Promise<void>((r) => server.close(() => r())));
     let shown = false;
     const err = await pairWithDesktop({
       transport: await open(path),
       identity: identity(),
       scopes: [S.CaptureWrite],
       showCode: () => (shown = true),
+      enterDesktopCode: () => Promise.reject(new Error("must not be asked")),
     }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(PairingError);
     expect(shown).toBe(false);
+  });
+
+  // A same-user (or, for a Windows pipe name, any-user) process squatting the endpoint runs XX with its own
+  // key and an honest commit/reveal, then claims success. No Citspark dialog ever showed a code, so the
+  // person has nothing true to type into the client, and the client must not pin the squatter's key.
+  test.each([
+    ["pair.ok straight away", ["pair.ok"]],
+    ["pair.approved then pair.ok", ["pair.approved", "pair.ok"]],
+  ])("a socket squatter that sends %s is not accepted as the desktop", async (_n, script) => {
+    const squatterKeys = generateStaticKeyPair();
+    const path = await fakeDesktop(async ({ keys, send, recv }) => {
+      await recv();
+      const nd = pairingNonce();
+      send({ type: "pair.commit", commit: toBase64(commitToNonce(keys.handshakeHash, nd)) });
+      await recv();
+      send({ type: "pair.reveal", nonce: toBase64(nd) });
+      for (const type of script) {
+        send(type === "pair.ok" ? { type, clientId: "evil", scopes: [S.CaptureWrite] } : { type });
+      }
+      await recv();
+    }, squatterKeys);
+    let shown = "";
+    const err = await pairWithDesktop({
+      transport: await open(path),
+      identity: identity(),
+      scopes: [S.CaptureWrite],
+      showCode: (c) => (shown = c),
+      // The real Citspark window shows no confirmation code; the person types what they see (nothing).
+      enterDesktopCode: () => Promise.resolve(""),
+    }).catch((e: unknown) => e);
+    expect(shown).toMatch(/^\d{6}$/);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toHaveProperty("desktopPublicKey");
+  });
+
+  test("the client pins the desktop only after the person types the code the desktop shows", async () => {
+    const desk = await startDesktop();
+    let shown!: (c: string) => void;
+    const code = new Promise<string>((r) => (shown = r));
+    let asked!: (c: string) => void;
+    const typedIntoClient = new Promise<string>((r) => (asked = r));
+    let settled = false;
+    const result = pairWithDesktop({
+      transport: await open(desk.path),
+      identity: identity(),
+      scopes: [S.SearchRead],
+      showCode: shown,
+      enterDesktopCode: () => typedIntoClient,
+    }).finally(() => (settled = true));
+    const { dialog } = await desk.nextDialog();
+    expect(dialog.desktopCode()).toBeUndefined();
+    expect(dialog.submit(await code)).toBe("ok");
+    const desktopCode = dialog.desktopCode();
+    expect(desktopCode).toMatch(/^\d{6}$/);
+    expect(desktopCode).not.toBe(await code);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(settled).toBe(false);
+    expect(desk.registry.list()).toHaveLength(0);
+    asked(desktopCode!);
+    await expect(result).resolves.toMatchObject({ desktopPublicKey: desk.staticKeyPair.publicKey });
+    expect(desk.registry.list()).toHaveLength(1);
+  });
+
+  test("a wrong code typed into the client stops pairing and the desktop registers nothing", async () => {
+    const desk = await startDesktop();
+    let shown!: (c: string) => void;
+    const code = new Promise<string>((r) => (shown = r));
+    let asked!: (c: string) => void;
+    const typedIntoClient = new Promise<string>((r) => (asked = r));
+    const result = pairWithDesktop({
+      transport: await open(desk.path),
+      identity: identity(),
+      scopes: [S.SearchRead],
+      showCode: shown,
+      enterDesktopCode: () => typedIntoClient,
+    }).catch((e: unknown) => e);
+    const { dialog } = await desk.nextDialog();
+    expect(dialog.submit(await code)).toBe("ok");
+    asked("not the code");
+    expect(((await result) as PairingError).error.code).toBe(ErrorCode.PairingFailed);
+    await expect.poll(() => desk.pairing.pending).toBe(false);
+    expect(desk.registry.list()).toHaveLength(0);
   });
 
   test("five wrong codes lock pairing until the desktop user unlocks it", async () => {
@@ -645,6 +832,7 @@ describe("T06: pairing", () => {
       identity: identity(),
       scopes: [S.CaptureWrite],
       showCode: () => undefined,
+      enterDesktopCode: notReached,
     }).catch((e: unknown) => e);
     const { dialog } = await desk.nextDialog();
     const results = ["000000", "111111", "222222", "333333", "444444"].map((c) => dialog.submit(c));
@@ -658,6 +846,7 @@ describe("T06: pairing", () => {
         identity: identity(),
         scopes: [S.CaptureWrite],
         showCode: () => undefined,
+        enterDesktopCode: notReached,
       }).catch((e: unknown) => e);
       expect((again as PairingError).error.code).toBe(ErrorCode.PairingLocked);
       desk.pairing.unlock();
@@ -671,11 +860,14 @@ describe("T06: pairing", () => {
     const desk = await startDesktop();
     let code!: (c: string) => void;
     const shown = new Promise<string>((r) => (code = r));
+    let confirm!: (c: string) => void;
+    const confirmed = new Promise<string>((r) => (confirm = r));
     const first = pairWithDesktop({
       transport: await open(desk.path),
       identity: identity(),
       scopes: [S.CaptureWrite],
       showCode: code,
+      enterDesktopCode: () => confirmed,
     });
     const { dialog } = await desk.nextDialog();
     const second = await pairWithDesktop({
@@ -683,10 +875,12 @@ describe("T06: pairing", () => {
       identity: identity(),
       scopes: [S.CaptureWrite],
       showCode: () => undefined,
+      enterDesktopCode: notReached,
     }).catch((e: unknown) => e);
     expect((second as PairingError).error.code).toBe(ErrorCode.PairingFailed);
     const c = await shown;
     expect(dialog.submit(c)).toBe("ok");
+    confirm(dialog.desktopCode()!);
     await first;
     expect(dialog.submit(c)).toBe("expired");
     expect(desk.registry.list()).toHaveLength(1);
@@ -700,6 +894,7 @@ describe("T06: pairing", () => {
       identity: id,
       scopes: [S.AnswerRun],
       showCode: () => undefined,
+      enterDesktopCode: notReached,
     }).catch((e: unknown) => e);
     expect((err as PairingError).error.code).toBe(ErrorCode.PairingFailed);
     expect(desk.registry.list()[0]!.scopes).toEqual([S.CaptureWrite, S.SearchRead]);
@@ -713,6 +908,7 @@ describe("T06: pairing", () => {
       identity: identity(),
       scopes: [S.CaptureWrite],
       showCode: () => undefined,
+      enterDesktopCode: notReached,
       signal: ac.signal,
     }).catch((e: unknown) => e);
     const { dialog } = await desk.nextDialog();
@@ -721,6 +917,56 @@ describe("T06: pairing", () => {
     await expect.poll(() => desk.dismissed).toBe(1);
     expect(dialog.submit("123456")).toBe("expired");
     expect(desk.pairing.pending).toBe(false);
+  });
+});
+
+describe("pairing policy (unit)", () => {
+  test("the desktop registers nothing until the client confirms, and an early confirm is refused", () => {
+    const shown: PairingDialog[] = [];
+    const ends: string[] = [];
+    let approvals = 0;
+    const ctl = new PairingController({ present: (_p, d) => (shown.push(d), () => undefined) });
+    const p = ctl.begin({
+      clientKind: "extension",
+      scopes: [S.SearchRead],
+      onApproved: () => approvals++,
+      onEnd: (o) => ends.push(o),
+    });
+    p.open("123456", "654321");
+    const dialog = shown[0]!;
+    expect(p.complete()).toBe(false); // pair.accept before the user typed the client's code
+    expect(dialog.desktopCode()).toBeUndefined();
+    expect(dialog.submit("123456")).toBe("ok");
+    expect(approvals).toBe(1);
+    expect(p.approved).toBe(true);
+    expect(ctl.pending).toBe(true); // the slot stays reserved while the client confirms
+    expect(dialog.desktopCode()).toBe("654321");
+    expect(dialog.submit("123456")).toBe("expired"); // single use
+    expect(p.complete()).toBe(true);
+    expect(ends).toEqual(["ok"]);
+    expect(dialog.desktopCode()).toBeUndefined();
+    expect(ctl.pending).toBe(false);
+  });
+
+  test("the deadline also covers the client's confirmation", () => {
+    let now = 0;
+    const ends: string[] = [];
+    let dialog!: PairingDialog;
+    const ctl = new PairingController({
+      present: (_p, d) => ((dialog = d), () => undefined),
+      now: () => now,
+      ttlMs: 1000,
+    });
+    const p = ctl.begin({
+      clientKind: "extension",
+      scopes: [S.SearchRead],
+      onEnd: (o) => ends.push(o),
+    });
+    p.open("123456", "654321");
+    expect(dialog.submit("123456")).toBe("ok");
+    now = 1000;
+    expect(p.complete()).toBe(false);
+    expect(ends).toEqual(["expired"]);
   });
 });
 

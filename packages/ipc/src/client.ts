@@ -7,17 +7,18 @@ import {
   PairCoreMessageSchema,
   type PairCoreMessage,
   type ProtocolErrorBody,
+  type RecordFrame,
   RecordFrameSchema,
   ResponseSchema,
   type Scope,
   SUPPORTED_VERSIONS,
   type VersionRange,
 } from "@citspark/protocol";
-import { fromBase64, toBase64 } from "./bytes.ts";
+import { constantTimeEqual, fromBase64, toBase64 } from "./bytes.ts";
 import { Handshake, HandshakeError, type HandshakeResult } from "./handshake.ts";
 import type { StaticKeyPair } from "./keys.ts";
 import { ChannelError, SecureChannel } from "./records.ts";
-import { pairingCode, pairingNonce, verifyNonceCommitment } from "./sas.ts";
+import { desktopCode, pairingCode, pairingNonce, verifyNonceCommitment } from "./sas.ts";
 import { type MessageTransport, TransportClosedError } from "./transport.ts";
 
 export interface ClientIdentity {
@@ -116,15 +117,21 @@ export interface PairingResult {
 /**
  * First pairing over Noise XX (ADR 0011). After the handshake and the nonce commitment, `showCode` displays
  * the 6-digit code; the user types it into the Citspark pairing dialog. The desktop accepts only if the code
- * typed there equals its own, which proves both that a person approved this client and that nobody sits in
- * the middle (a relay would produce different codes on the two sides). Abort with `signal`. Always closes
- * the transport.
+ * typed there equals its own, which proves that a person approved this client and that nobody sits in the
+ * middle (a relay would produce different codes on the two sides).
+ *
+ * The desktop then shows a second code, and `enterDesktopCode` asks the user to type it here. The client
+ * pins the desktop key only if that code matches, which proves the peer is the Citspark the person is looking
+ * at and not a process that took the socket or pipe name (it can say `pair.ok`, but cannot put a code in the
+ * real Citspark window). `enterDesktopCode` receives a signal that aborts when the pairing ends first.
+ * Abort with `signal`. Always closes the transport.
  */
 export async function pairWithDesktop(opts: {
   transport: MessageTransport;
   identity: ClientIdentity;
   scopes: Scope[];
   showCode: (code: string) => void;
+  enterDesktopCode: (signal: AbortSignal) => Promise<string>;
   signal?: AbortSignal;
 }): Promise<PairingResult> {
   const { transport, signal } = opts;
@@ -134,6 +141,7 @@ export async function pairWithDesktop(opts: {
     transport.close();
   };
   signal?.addEventListener("abort", onAbort, { once: true });
+  const prompt = new AbortController();
   try {
     signal?.throwIfAborted();
     const { prologue } = await sayHello(transport, opts.identity, "pair");
@@ -169,12 +177,36 @@ export async function pairWithDesktop(opts: {
       });
     }
     opts.showCode(pairingCode(keys.handshakeHash, clientNonce, desktopNonce));
-    const ok = await next("pair.ok");
+    await next("pair.approved");
+    // pair.ok must not arrive before we accept; an early one (or pair.error, or a close) ends the prompt.
+    const final = next("pair.ok");
+    final.catch(() => undefined);
+    const early = final.then(() => {
+      throw new ChannelError("the desktop claimed success before its code was confirmed");
+    });
+    early.catch(() => undefined);
+    const typed = await Promise.race([
+      Promise.resolve().then(() => opts.enterDesktopCode(prompt.signal)),
+      early,
+    ]);
+    signal?.throwIfAborted();
+    const expected = desktopCode(keys.handshakeHash, clientNonce, desktopNonce);
+    const enc = new TextEncoder();
+    if (!constantTimeEqual(enc.encode(String(typed).trim()), enc.encode(expected))) {
+      send(transport, ch, { type: "pair.abort" });
+      throw new PairingError({
+        code: ErrorCode.PairingFailed,
+        message: "That is not the code Citspark shows. Pairing stopped; start again.",
+      });
+    }
+    send(transport, ch, { type: "pair.accept" });
+    const ok = await final;
     return { clientId: ok.clientId, scopes: ok.scopes, desktopPublicKey: keys.remoteStatic };
   } catch (e) {
     if (signal?.aborted) throw signal.reason;
     throw e;
   } finally {
+    prompt.abort();
     signal?.removeEventListener("abort", onAbort);
     transport.close();
   }
@@ -206,14 +238,27 @@ export class ClientSession {
     if (this.#closed) return Promise.reject(this.#closed);
     const id = opts.id ?? crypto.randomUUID();
     if (this.#pending.has(id)) return Promise.reject(new Error("request ID already in flight"));
+    let frames: RecordFrame[];
+    try {
+      // Sealing serialises and size-checks before it encrypts; a refused message leaves the channel as it was.
+      frames = this.#channel.seal({
+        v: this.version,
+        id,
+        method,
+        mutation: opts.mutation ?? false,
+        payload,
+      });
+    } catch (e) {
+      if (this.#channel.failed) this.#shutdown(e instanceof Error ? e : new Error(String(e)));
+      return Promise.reject(e instanceof Error ? e : new Error(String(e)));
+    }
     const p = new Promise<unknown>((resolve, reject) => this.#pending.set(id, { resolve, reject }));
-    send(this.#transport, this.#channel, {
-      v: this.version,
-      id,
-      method,
-      mutation: opts.mutation ?? false,
-      payload,
-    });
+    try {
+      for (const frame of frames) this.#transport.send(frame);
+    } catch (e) {
+      // Some records may be out: the peer's receive counter no longer matches ours.
+      this.#shutdown(e instanceof Error ? e : new Error(String(e)));
+    }
     return p;
   }
 
