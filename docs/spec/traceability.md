@@ -32,7 +32,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | SYN-05 | Watcher events as hints; atomic writes; no feedback loops; symlink policy | M2 | T04 | not started |  |
 | SYN-06 | Portable Markdown with versioned frontmatter | M2 | T04 | not started |  |
 | PLG-01 | Optional Obsidian companion plugin | M2, M4 | T06, T14, T15 | not started | Research UI lands in M4 |
-| PLG-02 | Plugin connection states; no independent DB or policy engine | M2 | T06, T14 | not started |  |
+| PLG-02 | Plugin connection states; no independent DB or policy engine | M2 | T06, T14 | in progress | M1-05: `packages/protocol` hello version negotiation with structured `incompatible` error (unit tests only); handshake, scopes and UI pending |
 | RET-01 | Unified search; exact-ID, keyword, semantic; visible mode | M3 | T10, T11, T12 | not started |  |
 | RET-02 | Filters; trashed sources excluded at query time | M3 | T07 | not started |  |
 | RET-03 | Exact excerpt/version/offset results; atomic index generations | M3 | T10, T11 | not started |  |
@@ -78,7 +78,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | T03 | Attribution | M1, M3 | not started |
 | T04 | Sync | M2 | not started |
 | T05 | Privacy | M3, M4 | not started |
-| T06 | Pairing | M2 | not started |
+| T06 | Pairing | M2 | in progress |
 | T07 | Deletion | M1, M2 | not started |
 | T08 | Backup | M2 | not started |
 | T09 | Import | M1 | not started |
@@ -158,10 +158,14 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | Q52 | SYN-01, PLG-01 | M2, M4 | not started |
 | Q53 | PLG-01 | M4 | not started |
 | Q54 | PLG-02, Section 4 | M2 | not started |
-| Q55 | Section 4, MIG-02 | M2 | not started |
+| Q55 | Section 4, MIG-02 | M2 | in progress |
 | Q56 | SEC-01, SEC-02 | M3, M4 | not started |
 | Q57 | SEC-03 | M4 | not started |
 | Q58 | AI-01 | M4 | not started |
 | Q59 | AI-09 | F0 | not started |
 | Q60 | AI-01 | M4 | not started |
 | Q61 | Release policy | M5 | not started |
+
+## Implementation notes
+
+- **§14 API contract (M1-05, `packages/protocol`)**: zod schemas, length-prefixed framing with oversize rejection, `hello` negotiation, request IDs with an idempotency ledger, structured errors and stream sequence numbers are implemented with unit tests. Scope checks, the Noise handshake (ADR 0006) and transport wiring are M1-06; the T06 suite is not yet written. Frame limits (1 MB toward the extension, 8 MB toward the core) remain PROPOSED.
