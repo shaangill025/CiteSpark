@@ -265,6 +265,57 @@ ALTER TABLE observation ADD COLUMN capture_page_id INTEGER REFERENCES capture_pa
 CREATE UNIQUE INDEX observation_capture_job_version ON observation (job_id, version_id) WHERE capture_page_id IS NOT NULL;
 `;
 
+// Media store (M1-10; MED-01, MED-04, Q28). Version 5 follows the published sync-core (2),
+// job-lease-generation (3) and capture-commit (4) migrations; numbers are never reused. An unmerged
+// PR #9 preview numbered this 2; such a database records 2 as "media-store" and is refused by name.
+// Only additive statements. Schema 1-4 never constrained media (source_id, content_hash), so new
+// duplicates are refused by trigger while any legacy duplicate rows are kept unchanged. Downloads are
+// claimed by (job, lease generation) so concurrent media jobs never share a partial file.
+const MEDIA_STORE = `
+CREATE TABLE blob (
+  content_hash TEXT PRIMARY KEY,
+  size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
+  ref_count INTEGER NOT NULL DEFAULT 0 CHECK (ref_count >= 0),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+) STRICT;
+
+CREATE INDEX media_source_hash ON media (source_id, content_hash);
+CREATE TRIGGER media_source_hash_insert BEFORE INSERT ON media
+WHEN EXISTS (SELECT 1 FROM media WHERE source_id = NEW.source_id AND content_hash = NEW.content_hash)
+BEGIN
+  SELECT RAISE(ABORT, 'UNIQUE constraint failed: media.source_id, media.content_hash');
+END;
+CREATE TRIGGER media_source_hash_update BEFORE UPDATE OF source_id, content_hash ON media
+WHEN EXISTS (SELECT 1 FROM media WHERE id <> NEW.id AND source_id = NEW.source_id AND content_hash = NEW.content_hash)
+BEGIN
+  SELECT RAISE(ABORT, 'UNIQUE constraint failed: media.source_id, media.content_hash');
+END;
+
+CREATE TABLE media_download (
+  id INTEGER PRIMARY KEY,
+  source_id TEXT NOT NULL REFERENCES source(id),
+  url TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'downloading', 'paused_budget', 'paused_disk', 'complete', 'failed')),
+  bytes_received INTEGER NOT NULL DEFAULT 0 CHECK (bytes_received >= 0),
+  total_bytes INTEGER CHECK (total_bytes IS NULL OR total_bytes >= 0),
+  etag TEXT,
+  mime_type TEXT,
+  media_id INTEGER REFERENCES media(id),
+  error TEXT,
+  claim_job_id TEXT REFERENCES job(id),
+  claim_generation INTEGER,
+  -- Exclusive token of the execution attempt running this entry; NULL once it has ended.
+  claim_token TEXT,
+  -- This entry's partial file under tmp/, owned by one attempt at a time.
+  part_file TEXT,
+  CHECK ((claim_job_id IS NULL) = (claim_generation IS NULL)),
+  CHECK (claim_token IS NULL OR claim_job_id IS NOT NULL),
+  CHECK (state <> 'complete' OR media_id IS NOT NULL),
+  UNIQUE (source_id, url)
+) STRICT;
+CREATE INDEX media_download_state ON media_download (state, id);
+`;
+
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, name: "initial-schema", sql: V1 },
   { version: 2, name: "sync-core", sql: SYNC_CORE, orderIndependent: true },
@@ -274,4 +325,5 @@ export const MIGRATIONS: readonly Migration[] = [
     sql: "ALTER TABLE job ADD COLUMN lease_generation INTEGER NOT NULL DEFAULT 0;",
   },
   { version: 4, name: "capture-commit", sql: CAPTURE_COMMIT },
+  { version: 5, name: "media-store", sql: MEDIA_STORE },
 ];

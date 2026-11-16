@@ -31,7 +31,9 @@ describe("migrations", () => {
       "INSERT INTO job (id, kind, state, cursor) VALUES ('old', 'capture', 'queued', 'saved'); INSERT INTO source (id, source_type) VALUES ('s', 'post');",
     );
     const backups: number[] = [];
-    expect(migrate(db, { backup: (from) => void backups.push(from) }).applied).toEqual([2, 3, 4]);
+    expect(migrate(db, { backup: (from) => void backups.push(from) }).applied).toEqual([
+      2, 3, 4, 5,
+    ]);
     expect(backups).toEqual([1]);
     expect(db.prepare("SELECT cursor, lease_generation FROM job WHERE id = 'old'").get()).toEqual({
       cursor: "saved",
@@ -252,8 +254,9 @@ describe("upgrade matrix", () => {
     ]);
   };
   const expectFullSchema = (db: Database.Database): void => {
-    expect(recordedIds(db)).toEqual([1, 2, 3, 4]);
+    expect(recordedIds(db)).toEqual([1, 2, 3, 4, 5]);
     expect(columns(db, "job")).toContain("lease_generation");
+    expect(tables(db)).toEqual(expect.arrayContaining(["blob", "media_download"]));
     expect(tables(db)).toEqual(expect.arrayContaining(["capture_pass", "capture_page"]));
     expect(columns(db, "observation")).toContain("capture_page_id");
     // Capture dedupe applies to capture observations only; legacy rows keep their history.
@@ -289,6 +292,27 @@ describe("upgrade matrix", () => {
       ),
     ).toThrow(/FOREIGN KEY/);
     expect(() => db.exec("UPDATE job SET lease_generation = NULL")).toThrow(/NOT NULL/);
+    // Media store (5): new (source, hash) duplicates and malformed download rows are refused.
+    db.exec("INSERT INTO media (source_id, content_hash) VALUES ('x:1', 'mh')");
+    expect(() =>
+      db.exec("INSERT INTO media (source_id, content_hash) VALUES ('x:1', 'mh')"),
+    ).toThrow(/UNIQUE/);
+    expect(() =>
+      db.exec(
+        "INSERT INTO media_download (source_id, url, claim_job_id) VALUES ('x:1', 'u', 'j1')",
+      ),
+    ).toThrow(/CHECK/);
+    expect(() =>
+      db.exec("INSERT INTO media_download (source_id, url, state) VALUES ('x:1', 'u', 'complete')"),
+    ).toThrow(/CHECK/);
+    expect(() =>
+      db.exec(
+        "INSERT INTO media_download (source_id, url, bytes_received) VALUES ('x:1', 'u', -1)",
+      ),
+    ).toThrow(/CHECK/);
+    expect(() =>
+      db.exec("INSERT INTO media_download (source_id, url) VALUES ('x:missing', 'u')"),
+    ).toThrow(/FOREIGN KEY/);
   };
   const recordingBackup = (db: Database.Database) => {
     const calls: { from: number; to: number; pending: readonly number[]; ids: number[] }[] = [];
@@ -299,21 +323,22 @@ describe("upgrade matrix", () => {
     return { calls, hook };
   };
 
-  it("fresh database -> [1, 2, 3, 4] without a backup", () => {
+  it("fresh database -> [1, 2, 3, 4, 5] without a backup", () => {
     const db = new Database(":memory:");
     const calls: unknown[] = [];
     const r = migrate(db, { backup: () => void calls.push(1) });
-    expect(r).toEqual({ applied: [1, 2, 3, 4], version: 4 });
+    expect(r).toEqual({ applied: [1, 2, 3, 4, 5], version: 5 });
     expect(calls).toEqual([]);
     seed(db);
     expectFullSchema(db);
   });
 
   it.each([
-    ["v1", [1], [2, 3, 4]],
-    ["sync-v2 (main)", [1, 2], [3, 4]],
-    ["historical jobs-only v3 (recorded gap)", [1, 3], [2, 4]],
-    ["jobs+sync v3", [1, 2, 3], [4]],
+    ["v1", [1], [2, 3, 4, 5]],
+    ["sync-v2 (main)", [1, 2], [3, 4, 5]],
+    ["historical jobs-only v3 (recorded gap)", [1, 3], [2, 4, 5]],
+    ["jobs+sync v3", [1, 2, 3], [4, 5]],
+    ["capture v4", [1, 2, 3, 4], [5]],
   ] as const)(
     "%s -> applies exactly the missing migrations after a completed backup",
     (_, from, missing) => {
@@ -328,9 +353,9 @@ describe("upgrade matrix", () => {
       const { calls, hook } = recordingBackup(db);
 
       const r = migrate(db, { backup: hook });
-      expect(r).toEqual({ applied: [...missing], version: 4 });
+      expect(r).toEqual({ applied: [...missing], version: 5 });
       expect(calls).toEqual([
-        { from: Math.max(...from), to: 4, pending: [...missing], ids: [...from] },
+        { from: Math.max(...from), to: 5, pending: [...missing], ids: [...from] },
       ]);
       expectSeedPreserved(db);
       expectFullSchema(db);
@@ -360,11 +385,11 @@ describe("upgrade matrix", () => {
       });
 
       // Idempotent: nothing pending, no further backup, every migration recorded exactly once.
-      expect(migrate(db, { backup: hook })).toEqual({ applied: [], version: 4 });
+      expect(migrate(db, { backup: hook })).toEqual({ applied: [], version: 5 });
       expect(calls).toHaveLength(1);
       expect(
         db.prepare("SELECT COUNT(*) n, COUNT(DISTINCT version) d FROM schema_migration").get(),
-      ).toEqual({ n: 4, d: 4 });
+      ).toEqual({ n: 5, d: 5 });
     },
   );
 
@@ -389,7 +414,7 @@ describe("upgrade matrix", () => {
     expect(columns(db, "sync_binding")).not.toContain("state");
     expectSeedPreserved(db);
 
-    expect(migrate(db, { backup: () => undefined })).toEqual({ applied: [2, 4], version: 4 });
+    expect(migrate(db, { backup: () => undefined })).toEqual({ applied: [2, 4, 5], version: 5 });
     expectSeedPreserved(db);
     expectFullSchema(db);
   });
@@ -459,11 +484,64 @@ describe("upgrade matrix", () => {
     expectSeedPreserved(db);
   });
 
+  it("keeps legacy duplicate media rows when adding media-store 5 and refuses new ones", () => {
+    const db = historical([1, 2, 3, 4]);
+    seed(db);
+    db.exec(`
+      INSERT INTO media (id, source_id, content_hash, blob_path) VALUES
+        (1, 'x:1', 'dup', 'legacy/a'), (2, 'x:1', 'dup', 'legacy/b');
+    `);
+    const { calls, hook } = recordingBackup(db);
+    expect(migrate(db, { backup: hook })).toEqual({ applied: [5], version: 5 });
+    expect(calls).toEqual([{ from: 4, to: 5, pending: [5], ids: [1, 2, 3, 4] }]);
+    expect(db.prepare("SELECT id, content_hash, blob_path FROM media ORDER BY id").all()).toEqual([
+      { id: 1, content_hash: "dup", blob_path: "legacy/a" },
+      { id: 2, content_hash: "dup", blob_path: "legacy/b" },
+    ]);
+    expect(() =>
+      db.exec("INSERT INTO media (source_id, content_hash) VALUES ('x:1', 'dup')"),
+    ).toThrow(/UNIQUE/);
+    expect(() => db.exec("UPDATE media SET blob_path = 'legacy/c' WHERE id = 2")).not.toThrow();
+    expectSeedPreserved(db);
+    expectFullSchema(db);
+  });
+
+  it("refuses an unmerged PR #9 preview database that recorded media-store as 2", () => {
+    const db = historical([1], [1]);
+    db.exec(
+      "CREATE TABLE blob (content_hash TEXT PRIMARY KEY); INSERT INTO schema_migration (version, name) VALUES (2, 'media-store');",
+    );
+    const before = db.serialize();
+    const calls: unknown[] = [];
+    expect(() => migrate(db, { backup: () => void calls.push(1) })).toThrow(
+      /migration 2 as "media-store".*"sync-core"/,
+    );
+    expect(calls).toEqual([]);
+    expect(db.serialize().equals(before)).toBe(true);
+  });
+
+  it("rolls back a failed media migration and leaves 1-4 intact", () => {
+    const db = historical([1, 2, 3, 4]);
+    seed(db);
+    const broken: Migration[] = MIGRATIONS.map((m) =>
+      m.version === 5 ? { ...m, sql: `${m.sql}\nSELECT * FROM missing_table;` } : m,
+    );
+    expect(() => migrate(db, { migrations: broken, backup: () => undefined })).toThrow(
+      /missing_table/,
+    );
+    expect(recordedIds(db)).toEqual([1, 2, 3, 4]);
+    expect(tables(db)).not.toContain("blob");
+    expect(tables(db)).not.toContain("media_download");
+    expectSeedPreserved(db);
+    expect(migrate(db, { backup: () => undefined })).toEqual({ applied: [5], version: 5 });
+    expectFullSchema(db);
+  });
+
   it("still rejects a newer database, including one with a gap", () => {
     const db = historical([1, 3]);
-    db.prepare("INSERT INTO schema_migration (version, name) VALUES (5, 'future')").run();
+    db.prepare("INSERT INTO schema_migration (version, name) VALUES (6, 'future')").run();
     expect(() => migrate(db, { backup: () => undefined })).toThrow(/newer/);
-    expect(recordedIds(db)).toEqual([1, 3, 5]);
+    expect(recordedIds(db)).toEqual([1, 3, 6]);
     expect(tables(db)).not.toContain("sync_conflict");
   });
 });
@@ -606,7 +684,7 @@ describe("schema contracts", () => {
       },
     });
     expect(seen).toEqual([{ live: ["legacy"], copy: ["legacy"], rows: [{ payload: "preserve" }] }]);
-    expect(result).toEqual({ applied: MIGRATIONS.map((m) => m.version), version: 4 });
+    expect(result).toEqual({ applied: MIGRATIONS.map((m) => m.version), version: 5 });
     expect(db.prepare("SELECT * FROM legacy").all()).toEqual([{ payload: "preserve" }]);
   });
 
@@ -626,7 +704,7 @@ describe("schema contracts", () => {
     expect(migrate(empty, { migrations: [] })).toEqual({ applied: [], version: 0 });
     expect(tables(empty)).toEqual(["schema_migration"]);
     const fresh = new Database(":memory:");
-    expect(migrate(fresh).applied).toEqual([1, 2, 3, 4]);
-    expect(migrate(fresh)).toEqual({ applied: [], version: 4 });
+    expect(migrate(fresh).applied).toEqual([1, 2, 3, 4, 5]);
+    expect(migrate(fresh)).toEqual({ applied: [], version: 5 });
   });
 });

@@ -27,17 +27,21 @@ Foundation libraries merged on `main`, each with unit or property tests on synth
   `packages/core/src/ipc/t06.test.ts`) (M1-06)
 - `packages/capture-x`: versioned X response parser tested against synthetic fixtures only; not validated against
   live X (M1-07)
+- `packages/store` media library: content-addressed media blobs with hashes, resumable Range downloads on fenced job
+  leases, and a storage limit that pauses downloads without eviction (M1-10; migration 5). No production media
+  fetcher is wired yet: the network guard (private-network, loopback, DNS-rebinding and redirect validation, M1-11)
+  and wiring to capture and acquisition-status UI remain pending
 - `packages/sync`: sync merge core (note identity, three-way merge, conflict records) with no vault file access yet
   (M2-04; T04 property tests in `packages/sync/src/t04.property.test.ts`)
 
-Not yet merged on main: the browser extension and live capture (M1-08), imports, media, linked sources, trash, the
+Not yet merged on main: the browser extension and live capture (M1-08), imports, linked sources, trash, the
 desktop app, vault file sync, backups, saved-library search and retrieval, citations, and AI answers. See the
 [traceability matrix](docs/spec/traceability.md) for per-requirement status.
 
 | Milestone | Scope | Status |
 | --- | --- | --- |
 | F0/M0 | Feasibility prototypes, license inventory, architecture decisions | complete (plan approved; follow-up gates open) |
-| M1 | Data foundation: archive, capture, import, media, recoverable storage | in progress (M1-01 to M1-07 merged) |
+| M1 | Data foundation: archive, capture, import, media, recoverable storage | in progress (M1-01 to M1-07 and M1-10 merged; M1-08, M1-09, M1-11, M1-12 pending) |
 | M2 | Desktop app, pairing, two-way vault sync, backups | in progress (M2-04 sync core only) |
 | M3 | Search, OCR/transcripts, organization, graph, exact citations | not started |
 | M4 | Local and cloud answers, bounded research, plugin research UI | not started |
