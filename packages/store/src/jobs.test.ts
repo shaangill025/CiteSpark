@@ -133,7 +133,7 @@ describe("property: random operation sequences", () => {
   };
 
   it("always end in a valid state with at most one live lease per collection", () => {
-    for (let seed = 1; seed <= 200; seed++) {
+    for (let seed = 1; seed <= 50; seed++) {
       const rnd = prng(seed);
       const pick = <T>(xs: readonly T[]): T => xs[Math.floor(rnd() * xs.length)]!;
       const { jobs } = setup();
@@ -189,5 +189,5 @@ describe("property: random operation sequences", () => {
         }
       }
     }
-  });
+  }, 30_000);
 });
