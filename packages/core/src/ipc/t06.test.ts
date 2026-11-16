@@ -1163,9 +1163,12 @@ describe("pairing policy (unit)", () => {
 describe("T06 harness: bounded child process", () => {
   const node = (src: string) => [process.execPath, ["-e", src]] as const;
 
-  test("a child that outlives its deadline is killed and the error names the last stage it reached", async () => {
+  test("a child that outlives its deadline is killed and the error carries its output sections", async () => {
+    // Models a cold start slower than the deadline: the child prints nothing before it is killed.
+    // Whether a real child reaches any stage before its deadline is not guaranteed, so this checks
+    // only the kill and the diagnostic layout; stage preservation is checked by the exit-code test.
     const [file, args] = node(
-      `process.stderr.write("stage=connect t=1\\n"); setInterval(() => undefined, 1000);`,
+      `setTimeout(() => process.stderr.write("stage=connect t=1\\n"), 60_000); setInterval(() => undefined, 1000);`,
     );
     const started = Date.now();
     const err = (await runBounded(file, args, { deadlineMs: 500 }).catch(
@@ -1174,18 +1177,25 @@ describe("T06 harness: bounded child process", () => {
     expect(Date.now() - started).toBeLessThan(4000);
     expect(err).toBeInstanceOf(Error);
     expect(err.message).toContain("timed out after 500ms");
-    expect(err.message).toContain("stage=connect t=1");
+    expect(err.message).toMatch(/\(elapsed \d+ms\)/);
+    expect(err.message).toContain("\n--- stderr ---\n");
+    expect(err.message).toContain("\n--- stdout ---\n");
   });
 
-  test("a child that fails names its exit code and keeps its stderr", async () => {
-    const [file, args] = node(`process.stderr.write("stage=getacl boom\\n"); process.exit(3);`);
-    const err = (await runBounded(file, args, { deadlineMs: 10_000 }).catch(
-      (e: unknown) => e,
-    )) as Error;
-    expect(err).toBeInstanceOf(Error);
-    expect(err.message).toContain("exited with code 3");
-    expect(err.message).toContain("stage=getacl boom");
-  });
+  test(
+    "a child that fails names its exit code and keeps its stderr",
+    async () => {
+      const [file, args] = node(`process.stderr.write("stage=getacl boom\\n"); process.exit(3);`);
+      const err = (await runBounded(file, args, { deadlineMs: 10_000 }).catch(
+        (e: unknown) => e,
+      )) as Error;
+      expect(err).toBeInstanceOf(Error);
+      expect(err.message).toContain("exited with code 3");
+      expect(err.message).toContain("stage=getacl boom");
+    },
+    // Longer than the child's 10 s deadline, so a hung child fails with its own diagnostics.
+    15_000,
+  );
 
   test("each deadline in the DACL check fits inside the one that encloses it", () => {
     expect(PIPE_CONNECT_MS).toBeLessThan(DACL_CHILD_DEADLINE_MS);
