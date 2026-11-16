@@ -9,11 +9,11 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | ID | Summary | Milestone | Acceptance tests | Status | Notes |
 | --- | --- | --- | --- | --- | --- |
 | CAP-01 | Versioned capture adapters; audited collector evaluation | F0, M1 | T01, T02 | not started | F0 licence/dependency audit of xarchive and twitter-web-exporter |
-| CAP-02 | String platform IDs; account-bound membership; account-switch pause | M1 | T01, T02 | in progress | M1-02: string IDs, account-scoped membership schema (`packages/store`); account-switch pause pending |
-| CAP-03 | Atomic record+cursor commit; idempotent replay; lease | M1 | T01 | in progress | M1-03: lease acquire/renew/expiry with fencing, durable checkpoints (`packages/store/src/jobs.ts`); atomic page commit pending M1-04 |
+| CAP-02 | String platform IDs; account-bound membership; account-switch pause | M1 | T01, T02 | in progress | M1-02: string IDs, account-scoped membership schema (`packages/store`). M1-04: commit refuses a page bound to another account or collection before any write and pauses the job (`packages/store/src/capture.ts`); account detection in the extension pending M1-08 |
+| CAP-03 | Atomic record+cursor commit; idempotent replay; lease | M1 | T01 | implemented | M1-03: lease acquire/renew/expiry with fencing, durable checkpoints (`packages/store/src/jobs.ts`). M1-04: page + cursor commit in one lease-fenced transaction, replay keyed on pass and cursor so a fresh pass with new cursors is a no-op (ADR 0005), cursor-mismatch and skip rejection (`packages/store/src/capture.ts`); T01 in `packages/store/src/t01.test.ts` |
 | CAP-04 | Pause/resume/cancel and failure outcomes; loop, schema, disk detection | M1 | T02, T15 | in progress | M1-03: job state machine and cancel preserving committed records; loop/schema/disk detection pending |
 | CAP-05 | Retry-After, bounded backoff, no auth bypass | M1 | T02 | not started |  |
-| CAP-06 | Honest 'complete' definition and termination evidence | M1 | T02 | in progress | M1-03: `complete` is a distinct terminal state with stop reason; termination evidence pending M1-04 |
+| CAP-06 | Honest 'complete' definition and termination evidence | M1 | T02 | in progress | M1-03: `complete` is a distinct terminal state with stop reason. M1-04: a page without a continuation completes the job in the same transaction; committed pages, passes, distinct IDs, adapter versions, and the terminating page are recorded (`CaptureStore.summary`). T02 coverage-honesty cases pending M1-08 |
 | CAP-07 | Pause honestly when X changes; library stays usable | M1 | T02 | not started |  |
 | CAP-08 | Thread continuations: identity, order, flagged uncertainty | M1 | T02, T03 | not started |  |
 | CAP-09 | Original vs translation text kept separate | M1 | T03 | not started |  |
@@ -73,7 +73,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 
 | ID | Name | Milestone gate | Status |
 | --- | --- | --- | --- |
-| T01 | Capture replay | M1 | not started |
+| T01 | Capture replay | M1 | implemented |
 | T02 | Coverage honesty | M1 | not started |
 | T03 | Attribution | M1, M3 | not started |
 | T04 | Sync | M2 | not started |

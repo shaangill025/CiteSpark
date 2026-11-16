@@ -15,7 +15,7 @@ labeled alpha/beta previews; version 1.0 waits until every required capability p
 | Milestone | Scope | Status |
 | --- | --- | --- |
 | F0/M0 | Feasibility prototypes, license inventory, architecture decisions | not started |
-| M1 | Data foundation: archive, capture, import, media, recoverable storage | not started |
+| M1 | Data foundation: archive, capture, import, media, recoverable storage | in progress |
 | M2 | Desktop app, pairing, two-way vault sync, backups | not started |
 | M3 | Search, OCR/transcripts, organization, graph, exact citations | not started |
 | M4 | Local and cloud answers, bounded research, plugin research UI | not started |
