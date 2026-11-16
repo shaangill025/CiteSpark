@@ -6,4 +6,4 @@ datasets are listed separately because their terms differ from the code license.
 
 | Component | Version / revision | License | Used in |
 | --- | --- | --- | --- |
-| (none) | | | |
+| [better-sqlite3](https://github.com/WiseLibs/better-sqlite3) (bundles SQLite, public domain) | 12.11.1 | MIT | `packages/store` |
