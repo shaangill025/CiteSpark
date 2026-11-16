@@ -340,26 +340,51 @@ CREATE TABLE link_ref (
 ) STRICT;
 `;
 
-// Trash and purge (M1-12; DAT-03, DAT-04, Q50). Version 7 follows the published sync-core (2),
-// job-lease-generation (3), capture-commit (4), media-store (5) and linked-sources (6) migrations;
-// numbers are never reused. The unmerged PR #16 preview numbered this 4 (after preview capture 2 and
-// media 3); such a database records 4 as "trash-purge" and is refused by name. Only additive
-// statements. A purged source keeps a tombstone row so recapture stays suppressed and retained
-// citations report it unavailable instead of resolving to another source.
+// Trash and purge (M1-12; DAT-03, DAT-04, Q50, SYN-04). Version 7 follows the published sync-core
+// (2), job-lease-generation (3), capture-commit (4), media-store (5) and linked-sources (6)
+// migrations; numbers are never reused. The unmerged PR #16 preview numbered this 4 (after preview
+// capture 2 and media 3); such a database records 4 as "trash-purge" and is refused by name. Only
+// additive statements. A purged source keeps a tombstone row so recapture stays suppressed and
+// retained citations report it unavailable. `purge_file` queues file removals a purge committed,
+// so a failed unlink or a crash after commit is retried instead of stranding source media.
+// Downloads enqueued for a trashed or purged source start suppressed; media is never attached to a
+// purged source.
 const TRASH_PURGE = `
 ALTER TABLE source ADD COLUMN purged_at TEXT;
 
-CREATE VIEW active_source AS SELECT * FROM source WHERE trashed_at IS NULL;
+CREATE TABLE purge_file (
+  path TEXT PRIMARY KEY,
+  source_id TEXT NOT NULL REFERENCES source(id),
+  kind TEXT NOT NULL CHECK (kind IN ('blob', 'partial')),
+  queued_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+) STRICT;
+
+CREATE TRIGGER media_download_suppressed AFTER INSERT ON media_download
+WHEN EXISTS (SELECT 1 FROM source WHERE id = NEW.source_id AND (trashed_at IS NOT NULL OR purged_at IS NOT NULL))
+BEGIN
+  UPDATE media_download SET state = 'failed',
+    error = CASE WHEN (SELECT purged_at FROM source WHERE id = NEW.source_id) IS NULL
+      THEN 'source_trashed' ELSE 'source_purged' END
+  WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER media_purged_source BEFORE INSERT ON media
+WHEN EXISTS (SELECT 1 FROM source WHERE id = NEW.source_id AND purged_at IS NOT NULL)
+BEGIN
+  SELECT RAISE(ABORT, 'source was purged');
+END;
+
+CREATE VIEW active_source AS SELECT * FROM source WHERE trashed_at IS NULL AND purged_at IS NULL;
 
 CREATE VIEW active_version AS
   SELECT v.* FROM source_version v JOIN source s ON s.id = v.source_id
-  WHERE s.trashed_at IS NULL;
+  WHERE s.trashed_at IS NULL AND s.purged_at IS NULL;
 
 CREATE VIEW active_chunk AS
   SELECT c.* FROM chunk c
   JOIN source_version v ON v.id = c.version_id
   JOIN source s ON s.id = v.source_id
-  WHERE s.trashed_at IS NULL;
+  WHERE s.trashed_at IS NULL AND s.purged_at IS NULL;
 `;
 
 export const MIGRATIONS: readonly Migration[] = [

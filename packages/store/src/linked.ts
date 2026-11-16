@@ -22,7 +22,8 @@ export interface LinkRef {
   platformId?: string;
 }
 
-export type LinkStatus = "reused" | "captured" | "gap" | "known_gap";
+/** `suppressed`: the destination is a trashed or purged source; nothing is fetched or stored for it (DAT-03). */
+export type LinkStatus = "reused" | "captured" | "gap" | "known_gap" | "suppressed";
 
 export interface LinkOutcome {
   url: string;
@@ -106,13 +107,18 @@ export class LinkedSourceStore {
   }
 
   async #one(parent: string, link: LinkRef, options: EnrichOptions): Promise<LinkOutcome> {
+    const held = this.#findHeld(link);
+    if (held) return this.#suppress(parent, link.url, held);
     const saved = this.#findSaved(link);
     if (saved) return this.#attach(parent, link.url, saved, "reused");
 
     const prior = this.#db
       .prepare("SELECT source_id, gap_reason FROM linked_fetch WHERE original_url = ?")
       .get(link.url) as { source_id: string | null; gap_reason: string | null } | undefined;
-    if (prior?.source_id) return this.#attach(parent, link.url, prior.source_id, "reused");
+    if (prior?.source_id) {
+      if (this.#isHeld(prior.source_id)) return this.#suppress(parent, link.url, prior.source_id);
+      return this.#attach(parent, link.url, prior.source_id, "reused");
+    }
     const retry =
       options.retryTransientGaps === true && TRANSIENT_GAPS.has(prior?.gap_reason ?? "");
     if (prior && !retry) {
@@ -188,6 +194,49 @@ export class LinkedSourceStore {
     return row?.id ?? null;
   }
 
+  /** A trashed or purged source with this link's identity; recapture stays suppressed (DAT-03). */
+  #findHeld(link: LinkRef): string | null {
+    const row = (
+      link.kind === "x_post"
+        ? this.#db
+            .prepare(
+              `SELECT id FROM source WHERE source_type = 'x_post' AND platform_id = ?
+                 AND (trashed_at IS NOT NULL OR purged_at IS NOT NULL)`,
+            )
+            .get(link.platformId)
+        : this.#heldByUrl(link.url, link.url)
+    ) as { id: string } | undefined;
+    return row?.id ?? null;
+  }
+
+  #heldByUrl(a: string, b: string): { id: string } | undefined {
+    return this.#db
+      .prepare(
+        `SELECT id FROM source WHERE canonical_url IN (?, ?)
+           AND (trashed_at IS NOT NULL OR purged_at IS NOT NULL) ORDER BY created_at LIMIT 1`,
+      )
+      .get(a, b) as { id: string } | undefined;
+  }
+
+  #isHeld(id: string): boolean {
+    return (
+      this.#db
+        .prepare(
+          "SELECT 1 FROM source WHERE id = ? AND (trashed_at IS NOT NULL OR purged_at IS NOT NULL)",
+        )
+        .get(id) !== undefined
+    );
+  }
+
+  /** Keep the parent's link provenance pointing at the held source, without new versions or edges. */
+  #suppress(parent: string, url: string, target: string): LinkOutcome {
+    this.#db.transaction(() => {
+      this.#ensureFetchRow(url, target);
+      this.#ref(parent, url);
+    })();
+    return { url, status: "suppressed", sourceId: target, gapReason: null };
+  }
+
   #ref(parent: string, url: string): void {
     this.#db
       .prepare("INSERT OR IGNORE INTO link_ref (source_id, original_url) VALUES (?, ?)")
@@ -260,6 +309,10 @@ export class LinkedSourceStore {
           "SELECT source_id FROM linked_fetch WHERE original_url = ? AND source_id IS NOT NULL",
         )
         .get(url) as { source_id: string } | undefined;
+      if (raced && this.#isHeld(raced.source_id))
+        return this.#suppress(parent, url, raced.source_id);
+      const held = this.#heldByUrl(canonical, cap.finalUrl);
+      if (!raced && held) return this.#suppress(parent, url, held.id);
       if (raced) {
         this.#ref(parent, url);
         this.#relate(parent, raced.source_id, url);

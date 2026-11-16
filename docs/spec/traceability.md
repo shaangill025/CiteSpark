@@ -30,7 +30,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | SYN-01 | Plugin-free two-way sync; stable IDs; scoped access | M2 | T04, T15 | M2-04, M2-05 | in progress | M2-04: identity by frontmatter ID, then unique base-hash fallback; moves, duplicates, deletions, restore candidates (`packages/sync/src/identity.ts`). Scope, scan, and IO pending (M2-05). F0: ADR 0007 |
 | SYN-02 | Immutable originals; separately attributed user content | M2 | T03, T04 | M2-04, M3-11 | in progress | M2-04: vault edits to the source section are reported as a user-authored version (`sourceEdit`, `source_edit` review record); the captured original is never changed. Multi-round source edits are kept against the immutable library rendering; a new capture version that would overwrite user source text is a conflict (`review.test.ts`, T04 source-section rounds). Attribution through search and citation pending (M3-11). F0: ADR 0007 |
 | SYN-03 | Three-way merge; conflicts preserved for review | M2 | T04, T13 | M2-04, M2-06 | in progress | M2-04: section-aware diff3 body merge, per-key frontmatter merge, conflict records with all three variants (`packages/sync`, store migration 2). Rendered YAML is reparsed and structurally checked against intended merged values; anchor collateral mutations conflict with raw variants preserved (`review.test.ts`). Review UI pending (M2-06). F0: ADR 0007 |
-| SYN-04 | Vault delete unlinks; trash suppresses re-import | M2 | T04, T07 | M2-05 | not started | F0: ADR 0007 |
+| SYN-04 | Vault delete unlinks; trash suppresses re-import | M2 | T04, T07 | M2-05 | in progress | M1-12 (store side): trashing a source sets its `sync_binding` to `unlinked` with re-import suppressed (a stronger `deleted` suppression is kept), across restart; restore does not rebind (explicit restoration); purge keeps the binding with `deleted` suppression and drops library-side base content, hashes and review records (`packages/store/src/trash.ts`). Vault-side delete detection, watcher and explicit rebind pending M2-05. F0: ADR 0007 |
 | SYN-05 | Watcher events as hints; atomic writes; no feedback loops; symlink policy | M2 | T04 | M2-05 | not started | F0: ADR 0007 |
 | SYN-06 | Portable Markdown with versioned frontmatter | M2 | T04 | M2-04 | in progress | M2-04: `citspark.schema` version check (newer schema is a conflict, never rewritten; invalid mappings, sequences and null return safe diagnostics without object coercion), section markers, reversible marker escaping documented in ADR 0007. Written-file portability checks pending (M2-05). F0: ADR 0007 (frontmatter schema) |
 | PLG-01 | Optional Obsidian companion plugin | M2, M4 | T06, T14, T15 | M2-09, M4-07 | not started | Research UI lands in M4. F0: ADR 0006 |
@@ -60,8 +60,8 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | SEC-08 | No at-rest encryption promise; documented | M5 | T08 | M2-08, M5-05 | not started | Documentation check |
 | DAT-01 | 100,000-post capacity target; incremental indexing | M1, M3 | T11 | M1-02, M3-01 | in progress | M1-02: schema and 19-digit ID round-trip (`packages/store`); capacity and incremental indexing pending. F0 100k-post search test. F0: 100k-post FTS5 benchmark on macOS (`docs/f0/benchmarks.md`); Windows run pending (B3) |
 | DAT-02 | 8 GB RAM target for core; bounded batches | M1, M3 | T11 | M4-01 | not started | F0: Core search peak RSS 123 MB on M1 8 GB; Electron memory pending (B11) |
-| DAT-03 | Recoverable trash; immediate exclusion; recapture suppression; purge | M1 | T07 | M1-12, M3-02 | not started |  |
-| DAT-04 | Unavailable-evidence reporting after deletion | M1, M3 | T07 | M1-12, M3-07 | not started |  |
+| DAT-03 | Recoverable trash; immediate exclusion; recapture suppression; purge | M1 | T07 | M1-12, M3-02 | in progress | M1-12: trash/restore; `active_source`/`active_version`/`active_chunk` views (migration 7) exclude trashed and purged sources at once; recapture suppressed for capture pages (canonical identity), linked enrichment (`suppressed` outcome, no fetch-to-store, no new version or edge) and media downloads (waiting and newly enqueued downloads held until restore); explicit purge removes media, derivations, chunks, versions, observations, membership, annotations, relationships (including ones evidenced by its versions), link references and unshared gap rows, partial downloads and unshared blobs (reference count validated against remaining media rows), refuses while a live lease holds a download, and queues file removals in `purge_file` for retry after a failed unlink or crash (`packages/store/src/trash.ts`). Search/AI query use pending M3-02; UI disclosure of vault and backup copies pending |
+| DAT-04 | Unavailable-evidence reporting after deletion | M1, M3 | T07 | M1-12, M3-07 | in progress | M1-12: `TrashStore.status` reports `trashed`/`purged`/`unknown`; purge leaves a tombstone (identity only) so IDs and linked URLs resolve to it as unavailable, never to another source. Purge never touches vault files or backups. Citation UI in M3-07 |
 | BKP-01 | Manual and scheduled backups; verification; restore | M2 | T08, T15 | M2-08 | not started | F0: ADR 0008 |
 | BKP-02 | Password-encrypted backups with maintained AEAD | M2 | T08 | M2-08 | not started | F0 encryption format decision. F0: ADR 0008; `prototypes/backup-age`; scrypt accepted (Q3) |
 | BKP-03 | Full portable backups; manifests; media-excluded disclosure | M2 | T08 | M2-08 | not started | F0: ADR 0008 (hashed manifest) |
@@ -137,6 +137,21 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
   refused by name before backup or SQL. Upgrades from every earlier recorded state, including
   media-store 5, are covered by the `migrate.test.ts` upgrade matrix.
 
+## M1-12 integration notes
+
+- MIG-02: trash and purge are migration 7 (`trash-purge`) after published 1-4 and reserved 5
+  (media-store) and 6 (linked-sources); numbers are never reused. The unmerged PR #16 preview
+  numbered capture-commit 2, media-store 3 and trash-purge 4; a database that recorded any of those
+  names is refused by name before backup or SQL. Upgrades from every earlier recorded state, a
+  rolled-back failed migration 7, and idempotent re-runs are covered by `migrate.test.ts`.
+- DAT-03: `TrashStore.purge(sourceId, nowMs)` throws `PurgeBusyError` while a running job's
+  unexpired lease holds one of the source's downloads; `emptyTrash` reports such sources as
+  `busy`. A worker whose lease already expired can still finish an unfenced file write; its
+  database commit is refused by the lease fence and by the `media_purged_source` trigger.
+- DAT-03: purged downloads remain as `failed`/`source_purged` rows so their ids are never reused
+  and re-enqueueing is a no-op. Partial files are matched by download id under `tmp/`.
+- ENR-01: `LinkedSourceStore.enrich` returns `suppressed` for a trashed or purged destination.
+
 ## Acceptance tests
 
 | ID | Name | Milestone gate | Plan layers | Status | F0 evidence |
@@ -147,7 +162,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | T04 | Sync | M2 | M2-04, M2-05 | in progress | M2-04: seeded fast-check property tests (`packages/sync/src/t04.property.test.ts`): random concurrent edit sequences never lose user text; same-key metadata changes conflict. Filesystem harness pending (M2-05) |
 | T05 | Privacy | M3, M4 | M3-04 | not started | — |
 | T06 | Pairing | M2 | M1-06, M2-09 | in progress | ADR 0006 |
-| T07 | Deletion | M1, M2 | M1-12, M3-02 | not started | — |
+| T07 | Deletion | M1, M2 | M1-12, M3-02 | in progress | M1-12 store part in `packages/store/src/trash.test.ts` (synthetic): immediate exclusion, restart, recapture suppression (capture, linked, media), sync unlink and suppression across restart, purge with shared blobs and linked references, end-to-end trash/recapture/purge. Search and sync-IO parts pending M3-02, M2-05 |
 | T08 | Backup | M2 | M2-08 | not started | F0 prototype: 5 passing tests in `prototypes/backup-age` |
 | T09 | Import | M1 | M1-09, M5-03 | not started | — |
 | T10 | AI | M4 | M4-06, M5-07 | not started | — |
@@ -221,8 +236,8 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | Q47 | GRF-01 | M3 | M3-10 | not started |
 | Q48 | AI-04 | M4 | M4-04 | not started |
 | Q49 | AI-05 | M4 | M4-04 | not started |
-| Q50 | DAT-03 | M1 | M1-12 | not started |
-| Q51 | SYN-04 | M2 | M2-05 | not started |
+| Q50 | DAT-03 | M1 | M1-12 | in progress |
+| Q51 | SYN-04 | M2 | M1-12, M2-05 | in progress |
 | Q52 | SYN-01, PLG-01 | M2, M4 | M2-09 | not started |
 | Q53 | PLG-01 | M4 | M4-07 | not started |
 | Q54 | PLG-02, Section 4 | M2 | M1-06, M2-09 | not started |

@@ -56,8 +56,10 @@ export {
 export {
   TrashStore,
   NotTrashedError,
+  PurgeBusyError,
   PurgedSourceError,
   UnknownSourceError,
+  type EmptyTrashResult,
   type PurgeResult,
   type SourceStatus,
   type TrashEntry,
