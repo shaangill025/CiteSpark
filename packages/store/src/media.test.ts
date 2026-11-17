@@ -295,19 +295,30 @@ describe("resumable downloads (MED-01)", () => {
       (s: number) => ({ "content-range": `bytes ${s}-9999/10000`, "content-length": 5 }),
     ],
   ])("rejects a 206 with %s and never completes from it", async (_, headers) => {
-    const { media, dl } = setup();
+    const { media, dl, db } = setup();
     const d = media.enqueue("s1", `${base}/a`);
-    dropAfter = 4_000;
-    await dl(d.id);
+    // Seed a cleanly ended earlier attempt's 4,000-byte prefix (sealed: no claim token) instead of
+    // relying on a timed connection drop, which may fail before headers and save nothing.
+    const part = `${d.id}.00000000-0000-4000-8000-000000000000.part`;
+    writeFileSync(join(root, "tmp", part), blobA.subarray(0, 4_000));
+    db.prepare(
+      `UPDATE media_download SET bytes_received = 4000, total_bytes = 10000, etag = '"v1"',
+       part_file = ? WHERE id = ?`,
+    ).run(part, d.id);
+    const seen: { range?: string; ifRange?: string }[] = [];
     handler = (req, res) => {
       const m = /^bytes=(\d+)-$/.exec(req.headers.range ?? "");
       if (!m) return false;
+      seen.push({ range: req.headers.range, ifRange: req.headers["if-range"] as string });
       const start = Number(m[1]);
       res.writeHead(206, { etag: '"v1"', ...headers(start) });
       res.end(blobA.subarray(start));
       return true;
     };
     expect(await dl(d.id)).toBe("interrupted");
+    expect(requests).toEqual(["/a"]);
+    expect(seen).toEqual([{ range: "bytes=4000-", ifRange: '"v1"' }]);
+    expect(media.getDownload(d.id)).toMatchObject({ error: "invalid content-range" });
     expect(media.getDownload(d.id)).toMatchObject({ state: "pending", bytesReceived: 0 });
     expect(media.blob(sha(blobA))).toBeUndefined();
     handler = null;
