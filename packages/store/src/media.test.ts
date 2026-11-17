@@ -29,7 +29,7 @@ import {
 } from "./index.ts";
 
 // Synthetic media served by a loopback test server only. The loopback fetch below is a test seam;
-// the ENR-03 guarded fetcher (M1-11) is not yet wired for production.
+// the store applies no SSRF screening itself and no guarded media fetcher is wired yet (ENR-03).
 const sha = (b: Buffer) => createHash("sha256").update(b).digest("hex");
 const blobA = Buffer.alloc(10_000, 7);
 const blobB = Buffer.alloc(10_000, 9);
@@ -1164,10 +1164,13 @@ describe("download integrity (MED-01, CAP-03 fencing)", () => {
     insert.run("s1", h, "legacy/a-copy"); // a legacy duplicate is kept
     insert.run("s2", h, null); // another source shares the content
     let backup: Buffer | undefined;
-    expect(migrate(db, { backup: () => void (backup = db.serialize()) })).toEqual({
-      applied: [5],
-      version: 5,
-    });
+    // Up to media-store 5 only, so this stays about the media upgrade when later migrations exist.
+    expect(
+      migrate(db, {
+        migrations: MIGRATIONS.slice(0, 5),
+        backup: () => void (backup = db.serialize()),
+      }),
+    ).toEqual({ applied: [5], version: 5 });
     expect(backup?.length).toBeGreaterThan(0);
     const media = new MediaStore(db, {
       root,

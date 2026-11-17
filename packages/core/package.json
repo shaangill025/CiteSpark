@@ -8,6 +8,7 @@
   "types": "dist/index.d.ts",
   "dependencies": {
     "@citspark/ipc": "workspace:*",
-    "@citspark/protocol": "workspace:*"
+    "@citspark/protocol": "workspace:*",
+    "parse5": "8.0.1"
   }
 }
