@@ -184,7 +184,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 ## M1-12 integration notes
 
 - MIG-02: trash and purge are migration 7 (`trash-purge`) after published 1-5 (media-store 5 landed
-  with M1-10) and linked-sources 6 (M1-11, carried in this stack); numbers are never reused. The unmerged PR #16 preview
+  with M1-10) and linked-sources 6 (M1-11, merged in #13); numbers are never reused. The unmerged PR #16 preview
   numbered capture-commit 2, media-store 3 and trash-purge 4; a database that recorded any of those
   names is refused by name before backup or SQL. Upgrades from every earlier recorded state, a
   rolled-back failed migration 7, and idempotent re-runs are covered by `migrate.test.ts`.
@@ -231,14 +231,14 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 
 ## Status maintenance notes
 
-- README status: the milestone row for M1 reads `in progress`, matching the merged M1-01 to M1-07, M1-09 and M1-10
-  layers (and M1-11 and M1-12 once this stack lands) and the requirement rows above (CAP-01 to CAP-04, CAP-06 to
+- README status: the milestone row for M1 reads `in progress`, matching the merged M1-01 to M1-07 and M1-09 to M1-11
+  layers (and M1-12 once this PR lands) and the requirement rows above (CAP-01 to CAP-04, CAP-06 to
   CAP-09, DAT-01, MED-01, MED-04, MIG-01, MIG-02).
   M1 is partial, not complete: M1-08 is pending. README status mirrors this matrix and records no test counts.
 - M1-09: README and the M1 milestone row list the xarchive importer library (dry-run preview, shared commit path,
   receipt, replay, availability evidence) as merged. This claims no import UI and no validation against a private or
   real archive; native backup and owner-vault imports stay pending.
-- M1-11 and M1-12 (this stack, once merged): README and the M1 milestone row add the linked-source and trash/purge
+- M1-11 (merged in #13) and M1-12 (this PR, once merged): README and the M1 milestone row add the linked-source and trash/purge
   foundations as library-only code. This claims no app or UI, no live-network validation, no production fetch wiring (capture or
   media jobs), and no automatic startup cleanup: queued file removals are retried only when a caller runs
   `retryPendingFiles` (or trash, purge or `emptyTrash`, which call it).
@@ -268,7 +268,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | ID | Name | Scope | Status | Evidence |
 | --- | --- | --- | --- | --- |
 | M0 | Feasibility | Measured prototypes, licence inventory, architecture decisions, capability matrix; owner-reviewed plan | complete | [ADRs 0001–0010](../adr/README.md), [F0 results](../f0/README.md), [owner decisions](../f0/owner-decisions.md); plan approved 2026-11-16 |
-| M1 | Data foundation | Archive, versioning, jobs, capture, import, media, recoverable storage (preview only) | in progress | M1-01 to M1-12 (M1-01 to M1-07 and M1-09 to M1-12 merged once this stack lands; M1-08 pending) |
+| M1 | Data foundation | Archive, versioning, jobs, capture, import, media, recoverable storage (preview only) | in progress | M1-01 to M1-12 (M1-01 to M1-07 and M1-09 to M1-11 merged, M1-12 once this PR lands; M1-08 pending) |
 | M2 | Desktop and vault | Packaged apps, pairing, two-way sync, conflicts, plugin controls, backups, restore | in progress | M2-01 to M2-12 (M2-04 sync core in progress) |
 | M3 | Knowledge layer | Search, OCR/transcripts, organization, graph/list, exact citations, privacy filtering | not started | M3-01 to M3-11 |
 | M4 | Intelligence | Local runtime, cloud adapters, quick answers, bounded research, plugin research UI, frozen evaluation | not started | M4-01 to M4-08 |
