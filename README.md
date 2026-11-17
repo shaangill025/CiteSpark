@@ -6,17 +6,59 @@ Citspark is a planned local-first desktop application (macOS, Windows, Linux) th
 linked sources, makes them searchable, and answers questions from them with exact, verifiable citations. It includes
 two-way Obsidian synchronization and an optional Obsidian companion plugin.
 
-## Status: specification only, nothing implemented
+## Status: foundation implementation in progress, no usable application yet
 
-This repository currently contains the approved product and engineering specification and the delivery plan.
-**No product code exists yet, and no feature described here is implemented or tested.** Planned work ships as clearly
-labeled alpha/beta previews; version 1.0 waits until every required capability passes its acceptance gates.
+Citspark is **not a usable application yet**. There is no packaged desktop app, browser extension, or Obsidian
+plugin, and no feature can be used end to end. Planned work ships as clearly labeled alpha/beta previews; version 1.0
+waits until every required capability passes its acceptance gates.
+
+The owner approved the F0 architecture decisions and the [implementation plan](docs/f0/implementation-plan.md) as
+amended ([owner decisions](docs/f0/owner-decisions.md)). Decisions that depend on later validation stay open in the
+layers named there, for example the owner-run real capture before M1-08 merges and the reference-hardware runs.
+
+Foundation libraries merged on `main`, each with unit or property tests on synthetic data only:
+
+- `packages/store`: canonical schema with string platform IDs, numbered transactional migrations with a
+  pre-migration backup hook, job state machine with fenced leases and durable checkpoints, and atomic capture page
+  commit with idempotent replay (M1-02 to M1-04; T01 in `packages/store/src/t01.test.ts`), and an xarchive import
+  library: bounded file reading, a dry-run preview, a commit through the shared capture path with an import receipt
+  and idempotent replay, and availability evidence for unavailable or repeated posts (M1-09; T09 xarchive part in
+  `packages/store/src/xarchive.test.ts`). It has no import UI and is tested on synthetic fixtures only, not on a
+  real or private archive
+- `packages/protocol`: message schemas, framing, version negotiation, and request-ID idempotency (M1-05)
+- `packages/ipc`, `packages/core/src/ipc`, `packages/native-host`: Noise pairing and encrypted local IPC with scopes
+  and revocation ([ADR 0011](docs/adr/0011-noise-ipc-implementation.md); T06 core suite in
+  `packages/core/src/ipc/t06.test.ts`) (M1-06)
+- `packages/capture-x`: versioned X response parser tested against synthetic fixtures only; not validated against
+  live X (M1-07)
+- `packages/store` media library: content-addressed media blobs with hashes, resumable Range downloads on fenced job
+  leases, and a storage limit that pauses downloads without eviction (M1-10; migration 5). The store does no network
+  screening itself and no production media fetcher is wired: the M1-11 guarded fetch covers linked text pages only,
+  with no media adapter yet; wiring to capture and acquisition-status UI remain pending
+- `packages/core` and `packages/store` linked-source library: link extraction, a guarded fetcher for linked text pages
+  (private-network, loopback, redirect and size/time/type limits) and linked-source provenance with explicit gaps
+  (M1-11; migration 6). Tested with local servers and stubbed DNS only; no live-network validation, and not wired to
+  capture or media jobs
+- `packages/store` trash and purge library: recoverable trash with immediate exclusion through active views,
+  recapture suppression for capture pages, linked enrichment and media downloads, sync unlink with re-import
+  suppression, and purge that keeps an identity-only tombstone (M1-12; migration 7; T07 store part in
+  `packages/store/src/trash.test.ts`). Purge and empty trash commit row removal and queue file removals; a file is
+  physically erased only when a queued removal later succeeds. Failed removals stay queued and are retried only when a
+  caller runs `retryPendingFiles` (trash, purge and empty trash call it); nothing runs at startup automatically, and
+  purge does not touch vault files or backups
+- `packages/sync`: sync merge core (note identity, three-way merge, conflict records) with no vault file access yet
+  (M2-04; T04 property tests in `packages/sync/src/t04.property.test.ts`)
+
+These are libraries only: no desktop app or UI uses them yet, and none is validated against live services.
+Not yet merged on main: the browser extension and live capture (M1-08), native backup and vault imports, production
+fetch wiring for linked sources and media, the desktop app, vault file sync, backups, saved-library search and
+retrieval, citations, and AI answers. M1 is not complete. See the [traceability matrix](docs/spec/traceability.md) for per-requirement status.
 
 | Milestone | Scope | Status |
 | --- | --- | --- |
-| F0/M0 | Feasibility prototypes, license inventory, architecture decisions | not started |
-| M1 | Data foundation: archive, capture, import, media, recoverable storage | in progress |
-| M2 | Desktop app, pairing, two-way vault sync, backups | not started |
+| F0/M0 | Feasibility prototypes, license inventory, architecture decisions | complete (plan approved; follow-up gates open) |
+| M1 | Data foundation: archive, capture, import, media, recoverable storage | in progress (M1-01 to M1-07 and M1-09 to M1-12 merged; M1-08 pending) |
+| M2 | Desktop app, pairing, two-way vault sync, backups | in progress (M2-04 sync core only) |
 | M3 | Search, OCR/transcripts, organization, graph, exact citations | not started |
 | M4 | Local and cloud answers, bounded research, plugin research UI | not started |
 | M5 | Accessibility, compatibility, security review, docs, release | not started |
