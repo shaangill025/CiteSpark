@@ -19,5 +19,12 @@ export {
   type ExtractedLink,
   type PageContent,
 } from "./links.ts";
-export { captureLink, type CaptureResult } from "./capture.ts";
+export { captureLink, type CaptureOptions, type CaptureResult } from "./capture.ts";
+export {
+  DEFAULT_EXTRACTION_LIMITS,
+  ExtractionPool,
+  defaultExtractionPool,
+  type ExtractionPoolLimits,
+  type IsolatedExtraction,
+} from "./extract-isolated.ts";
 export * from "./ipc/index.ts";

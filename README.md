@@ -35,10 +35,12 @@ Foundation libraries merged on `main`, each with unit or property tests on synth
   leases, and a storage limit that pauses downloads without eviction (M1-10; migration 5). The store does no network
   screening itself and no production media fetcher is wired: the M1-11 guarded fetch covers linked text pages only,
   with no media adapter yet; wiring to capture and acquisition-status UI remain pending
-- `packages/core` and `packages/store` linked-source library: link extraction, a guarded fetcher for linked text pages
-  (private-network, loopback, redirect and size/time/type limits) and linked-source provenance with explicit gaps
-  (M1-11; migration 6). Tested with local servers and stubbed DNS only; no live-network validation, and not wired to
-  capture or media jobs
+- `packages/core` and `packages/store` linked-source library (M1-11; migration 6): link extraction, reuse of saved
+  sources, a guarded fetcher for linked text pages (private-network, loopback, `file:`, DNS-pinning and per-hop
+  redirect checks; size, overall-time, content-type and redirect limits), charset decoding and DOM text extraction in
+  bounded, terminable worker threads, and linked-source provenance with explicit gaps. Its limits are PROPOSED
+  defaults rather than measured guarantees; tested with local servers and stubbed DNS only; no live-network
+  validation, and not wired to capture or media jobs
 - `packages/store` trash and purge library: recoverable trash with immediate exclusion through active views,
   recapture suppression for capture pages, linked enrichment and media downloads, sync unlink with re-import
   suppression, and purge that keeps an identity-only tombstone (M1-12; migration 7; T07 store part in
