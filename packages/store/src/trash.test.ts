@@ -26,7 +26,10 @@ import {
   PurgedSourceError,
   TrashStore,
   UnknownSourceError,
+  commitXArchive,
   migrate,
+  parseXArchive,
+  previewXArchive,
   type CapturePage,
   type LinkCapture,
   type MediaFetch,
@@ -544,6 +547,40 @@ describe("recapture suppression", () => {
     capturePage("j2", [{ sourceType: "x_post", platformId: "1800000000000000002", text: "again" }]);
     expect(n("SELECT 1 FROM source_version WHERE source_id = ?", B)).toBe(2);
     expect(n("SELECT 1 FROM source_version WHERE source_id = ?", A)).toBe(0);
+  });
+
+  it("previews and receipts suppressed xarchive records honestly (MIG-01 with DAT-03)", () => {
+    const t = new TrashStore(db, { mediaRoot: dir });
+    t.trash(A, T0);
+    t.trash(B, T0);
+    t.purge(B, T0);
+    const parsed = parseXArchive(
+      JSON.stringify({
+        export_metadata: { tool: "xarchive", schema_version: 2, user_id: "1000000000000000001" },
+        bookmarks: [
+          { tweet_id: "1800000000000000001", full_text: "edited elsewhere" },
+          { tweet_id: "1800000000000000002", full_text: "again" },
+          { tweet_id: "1800000000000000009", full_text: "new" },
+        ],
+      }),
+    );
+    const before = n("SELECT 1 FROM source_version");
+    const preview = previewXArchive(db, parsed);
+    expect(preview.counts).toMatchObject({ new: 1, newVersions: 0, suppressed: 2, toCommit: 1 });
+    expect(preview.conflicts).toEqual([]);
+    expect(preview.warnings).toContainEqual(
+      expect.objectContaining({ code: "trashed-or-purged", count: 2 }),
+    );
+    const jobs = new JobStore(db);
+    const r = commitXArchive(db, jobs, new CaptureStore(db, jobs), parsed, {
+      owner: "o",
+      clock: () => T0,
+    });
+    expect(r).toMatchObject({ newSources: 1, newVersions: 1, suppressed: 2 });
+    expect(n("SELECT 1 FROM source_version")).toBe(before + 1);
+    expect(
+      n("SELECT 1 FROM observation WHERE method = 'import' AND source_id IN (?, ?)", A, B),
+    ).toBe(0);
   });
 
   it("suppresses media downloads of a trashed source until it is restored", async () => {

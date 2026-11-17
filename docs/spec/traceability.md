@@ -207,6 +207,11 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
   Blob rows and files of the purged source are removed when no remaining `media` row names the
   content; media rows win over `blob.ref_count` drift in both directions.
 - ENR-01: `LinkedSourceStore.enrich` returns `suppressed` for a trashed or purged destination.
+- MIG-01/DAT-03 (integration with M1-09): `CommitResult.suppressed` counts records of trashed or
+  purged sources that the commit skips. The xarchive preview classifies them the same way
+  (`counts.suppressed`, not in `toCommit`, no `new-version` conflict, `trashed-or-purged` warning)
+  and the import receipt reports `suppressed`, so dry-run and receipt match the commit
+  (`trash.test.ts`, "previews and receipts suppressed xarchive records honestly").
 - ENR-01/DAT-03: every linked persistence write (captured, reused, joined in-flight capture, gap,
   known gap and suppressed-destination provenance) runs in one IMMEDIATE transaction that re-checks
   the parent first. A parent trashed or purged while its enrichment was in flight gets `suppressed`

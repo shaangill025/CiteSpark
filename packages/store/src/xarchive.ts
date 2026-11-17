@@ -64,7 +64,8 @@ export type WarningCode =
   | "duplicate-distinct-versions"
   | "conflicting-availability"
   | "folders-not-imported"
-  | "unknown-provenance";
+  | "unknown-provenance"
+  | "trashed-or-purged";
 
 export interface ImportWarning {
   code: WarningCode;
@@ -463,6 +464,8 @@ export interface ImportPreview {
     unavailableNoText: number;
     /** Reported available but with no text and no stored copy: nothing to store. */
     noContentSkipped: number;
+    /** The stored source is trashed or purged: not re-imported until restored (DAT-03, Q50). */
+    suppressed: number;
     /** Records expected to add or re-observe content (new + duplicates + newVersions). */
     toCommit: number;
   };
@@ -510,6 +513,7 @@ export function previewXArchive(db: Database.Database, parsed: ParsedExport): Im
     weakerSkipped: 0,
     unavailableNoText: 0,
     noContentSkipped: 0,
+    suppressed: 0,
     toCommit: 0,
   };
   const conflicts: ImportConflict[] = [];
@@ -518,10 +522,19 @@ export function previewXArchive(db: Database.Database, parsed: ParsedExport): Im
      WHERE s.source_type = 'x_post' AND s.platform_id = ?`,
   );
   const known = db.prepare("SELECT 1 FROM source WHERE source_type = 'x_post' AND platform_id = ?");
+  // Mirrors the commit, which skips records of trashed or purged sources (DAT-03).
+  const isSuppressed = db.prepare(
+    `SELECT 1 FROM source WHERE source_type = 'x_post' AND platform_id = ?
+       AND (trashed_at IS NOT NULL OR purged_at IS NOT NULL)`,
+  );
   // Mirrors the commit, which sees earlier records of the same file as stored when it reaches a
   // later one (in-file repeats with distinct texts).
   const pending = new Map<string, string[]>();
   for (const b of parsed.bookmarks) {
+    if (isSuppressed.get(b.platformId) !== undefined) {
+      counts.suppressed++;
+      continue;
+    }
     const earlier = pending.get(b.platformId);
     const versions = [
       ...(stored.all(b.platformId) as { text: string }[]).map((r) => r.text),
@@ -557,6 +570,13 @@ export function previewXArchive(db: Database.Database, parsed: ParsedExport): Im
       message:
         "unavailable bookmarks with no retained text and no stored copy: identity, membership and unavailability are recorded; no text is captured",
       count: counts.unavailableNoText,
+    });
+  }
+  if (counts.suppressed > 0) {
+    warnings.push({
+      code: "trashed-or-purged",
+      message: "bookmarks of trashed or purged sources: not re-imported; nothing is stored",
+      count: counts.suppressed,
     });
   }
   if (counts.noContentSkipped > 0) {
@@ -609,6 +629,8 @@ export interface ImportReceipt {
   unavailableNoText: number;
   /** Available records with no text and no stored copy at commit time: nothing written. */
   noContentSkipped: number;
+  /** Records of a source trashed or purged at commit time: not re-imported, nothing written. */
+  suppressed: number;
   preview: ImportPreview;
 }
 
@@ -652,6 +674,7 @@ export function commitXArchive(
     weakerSkipped: 0,
     unavailableNoText: 0,
     noContentSkipped: 0,
+    suppressed: 0,
   };
   const receipt = (status: ImportReceipt["status"]): ImportReceipt => ({
     status,
@@ -709,6 +732,7 @@ export function commitXArchive(
     totals.weakerSkipped += r.weakerSkipped;
     totals.unavailableNoText += r.unavailableNoText;
     totals.noContentSkipped += r.noContentSkipped;
+    totals.suppressed += r.suppressed;
     if (r.ended) break;
     if (r.cancelRequested || jobs.get(jobId).cancelRequested) {
       jobs.transition(jobId, lease, clock(), "cancelled", "cancelled by user");
