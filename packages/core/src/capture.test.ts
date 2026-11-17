@@ -1,7 +1,7 @@
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { gzipSync } from "node:zlib";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { captureLink, ExtractionPool, type GuardedFetchOptions } from "./index.ts";
 
 let server: Server;
@@ -173,6 +173,22 @@ describe("captureLink HTML extraction bounds", () => {
     ]);
     expect(peak).toBe(1);
   }, 120_000);
+
+  it("reports a page whose parse exceeds the worker heap limit as an extraction gap", async () => {
+    serve({ "content-type": "text/html" }, "<br>".repeat(1_000_000));
+    const pool = new ExtractionPool({ maxWorkers: 1, maxHeapMb: 16 });
+    const options = { ...open, extractionPool: pool };
+    expect(await captureLink(base, options)).toMatchObject({
+      ok: false,
+      reason: "extraction_limit",
+      detail: expect.stringContaining("memory") as unknown,
+      httpStatus: 200,
+    });
+    serve({ "content-type": "text/html" }, "<p>after</p>");
+    expect(await captureLink(base, options)).toMatchObject({ ok: true, text: "after" });
+    // A slot is released once its worker has exited, which follows the reply.
+    await vi.waitFor(() => expect(pool.running).toBe(0));
+  }, 60_000);
 
   it("reports markup whose parse work exceeds the extraction bound as an explicit gap", async () => {
     const depth = 20_000;

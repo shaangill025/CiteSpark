@@ -69,11 +69,19 @@ export class ExtractionPool {
    * Decode and extract `input` in a fresh worker. Settles exactly once: with the worker's reply,
    * `busy` when the queue is full, or `deadline` once `deadlineAt` (a `performance.now()` time)
    * passes while waiting or running, in which case the worker is terminated. A worker that fails or
-   * exits without replying rejects (a defect, not a page gap). The worker's slot is released only
-   * after it has exited.
+   * exits without replying rejects (a defect, not a page gap). Aborting `signal` rejects with its
+   * reason and terminates the worker. The worker's slot is released only after it has exited.
    */
-  extract(input: ExtractionInput, deadlineAt: number): Promise<IsolatedExtraction> {
+  extract(
+    input: ExtractionInput,
+    deadlineAt: number,
+    signal?: AbortSignal,
+  ): Promise<IsolatedExtraction> {
     return new Promise((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(abortReason(signal));
+        return;
+      }
       if (deadlineAt <= performance.now()) {
         resolve({ kind: "deadline" });
         return;
@@ -84,6 +92,7 @@ export class ExtractionPool {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
         const queued = this.#queue.indexOf(waiter);
         if (queued !== -1) this.#queue.splice(queued, 1);
         settle();
@@ -109,13 +118,23 @@ export class ExtractionPool {
             );
           });
           worker.once("message", (reply: WorkerReply) => finish(() => resolve(reply)));
-          worker.once("error", (error) => finish(() => reject(error)));
+          worker.once("error", (error) => {
+            // The heap limit is per worker, so running out is a property of this page, not of load.
+            if ((error as { code?: string }).code === "ERR_WORKER_OUT_OF_MEMORY") {
+              const detail = `extraction exceeded the worker memory limit of ${this.limits.maxHeapMb} MiB`;
+              finish(() => resolve({ kind: "gap", reason: "extraction_limit", detail }));
+            } else {
+              finish(() => reject(error));
+            }
+          });
         },
       };
       const timer = setTimeout(
         () => finish(() => resolve({ kind: "deadline" })),
         deadlineAt - performance.now(),
       );
+      const onAbort = () => finish(() => reject(abortReason(signal as AbortSignal)));
+      signal?.addEventListener("abort", onAbort, { once: true });
       if (this.#running < this.limits.maxWorkers) waiter.admit();
       else if (this.#queue.length < this.limits.maxQueued) this.#queue.push(waiter);
       else finish(() => resolve({ kind: "busy" }));
@@ -127,6 +146,11 @@ export class ExtractionPool {
     const next = this.#queue.shift();
     next?.admit();
   }
+}
+
+function abortReason(signal: AbortSignal): Error {
+  const reason: unknown = signal.reason;
+  return reason instanceof Error ? reason : new Error("extraction cancelled");
 }
 
 /** The process-wide pool `captureLink` uses unless given another. */
