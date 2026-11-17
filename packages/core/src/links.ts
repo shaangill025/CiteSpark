@@ -72,12 +72,13 @@ export interface PageContent {
 export const EXTRACTION_METHOD = "html-dom-v1";
 
 /**
- * PROPOSED (ENR-03): the parser rescans its stack of open elements as elements open and close, so its work
- * grows with element count times nesting depth, independent of the byte limit. Parsing stops once the
- * open-element depths summed over every push exceed this budget (about 1-2 s of parsing). A 5 MiB page of
- * repeated 500-deep nesting or a single nest about 15 000 deep still fits.
+ * PROPOSED (ENR-03), defense in depth only: parsing stops once the open-element depths summed over
+ * every push exceed this budget, so deep nesting ends early as an `extraction_limit` gap. It is not a
+ * comprehensive bound on parse work: the parser also rescans its open-element stack without pushing
+ * (for example for unmatched end tags), which this counter does not see. The enforceable bounds are
+ * the worker deadline and heap limit in `extract-isolated.ts`. A single nest about 8 000 deep fits.
  */
-export const MAX_PARSE_NESTING_WORK = 128_000_000;
+export const MAX_PARSE_NESTING_WORK = 32_000_000;
 
 /** Extraction stopped at a resource bound; reported by `captureLink` as an explicit gap, never partial text. */
 export class ExtractionLimitError extends Error {
@@ -253,7 +254,11 @@ function collectText(node: ParentNode, out: string[]): void {
   }
 }
 
-/** Extract title, canonical URL and sanitized text from decoded HTML or plain text. */
+/**
+ * Extract title, canonical URL and sanitized text from decoded HTML or plain text. A synchronous,
+ * low-level helper with no time or memory bound of its own: production capture runs it inside an
+ * `ExtractionPool` worker (`captureLink`), never on a caller's thread with untrusted input.
+ */
 export function extractPage(body: string, contentType: string, finalUrl: string): PageContent {
   let title: string | null = null;
   let canonicalUrl: string | null = null;
