@@ -1,9 +1,9 @@
 import Database from "better-sqlite3";
-import { captureLink } from "../../core/src/index.ts";
+import { captureLink, ExtractionPool } from "../../core/src/index.ts";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { gzipSync } from "node:zlib";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LinkedSourceStore, migrate, type LinkCapture } from "./index.ts";
 
 let db: Database.Database;
@@ -371,4 +371,31 @@ describe("LinkedSourceStore", () => {
     });
     expect(store.gaps("p1")).toHaveLength(0);
   });
+
+  it("keeps a page rejected for extraction capacity retryable and unstored", async () => {
+    pages["/slow"] = {
+      body: `${"<span>".repeat(6000)}${"</button>".repeat(400_000)}<article>slow</article>`,
+    };
+    pages["/normal"] = { body: "<p>normal page</p>" };
+    const pool = new ExtractionPool({ maxWorkers: 1, maxQueued: 0 });
+    const pooled = (url: string): Promise<LinkCapture> =>
+      captureLink(url, {
+        allowAddress: (ip) => ip === "127.0.0.1",
+        timeoutMs: 1000,
+        extractionPool: pool,
+      });
+    const store = new LinkedSourceStore(db, pooled);
+    const slow = store.enrich("p1", [{ url: `${base}/slow`, kind: "web" }]);
+    await vi.waitFor(() => expect(pool.running).toBe(1));
+    const normal = { url: `${base}/normal`, kind: "web" as const };
+    expect((await store.enrich("p2", [normal]))[0]?.gapReason).toBe("extraction_capacity");
+    expect((await slow)[0]?.gapReason).toBe("timeout");
+    expect(count("SELECT COUNT(*) n FROM source_version")).toBe(0);
+    await vi.waitFor(() => expect(pool.running).toBe(0));
+    expect((await store.enrich("p2", [normal], { retryTransientGaps: true }))[0]).toMatchObject({
+      status: "captured",
+      gapReason: null,
+    });
+    expect(db.prepare("SELECT text FROM source_version").all()).toEqual([{ text: "normal page" }]);
+  }, 60_000);
 });

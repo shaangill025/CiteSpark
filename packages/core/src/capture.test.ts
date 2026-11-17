@@ -2,7 +2,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { gzipSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { captureLink, type GuardedFetchOptions } from "./index.ts";
+import { captureLink, ExtractionPool, type GuardedFetchOptions } from "./index.ts";
 
 let server: Server;
 let base: string;
@@ -10,6 +10,9 @@ let response: { headers: Record<string, string>; body: Buffer };
 
 const open: GuardedFetchOptions = { allowAddress: (ip) => ip === "127.0.0.1" };
 const latin1 = (s: string) => Buffer.from(s, "latin1");
+// Unmatched end tags make the parser rescan its open-element stack without pushing anything, so this
+// page passes the nesting-work counter; on this hardware it parses for well over ten seconds.
+const adversarial = `${"<span>".repeat(6000)}${"</button>".repeat(400_000)}<article>article</article>`;
 const serve = (headers: Record<string, string>, body: Buffer | string) => {
   response = { headers, body: typeof body === "string" ? Buffer.from(body, "utf8") : body };
 };
@@ -135,6 +138,41 @@ describe("captureLink HTML extraction bounds", () => {
     );
     expect(await captureLink(base, open)).toMatchObject({ ok: true, title: "T", text: "article" });
   });
+
+  it("ends extraction at the overall deadline as a gap while the event loop keeps running", async () => {
+    serve({ "content-type": "text/html" }, adversarial);
+    let ticks = 0;
+    const heartbeat = setInterval(() => ticks++, 20);
+    const started = performance.now();
+    const r = await captureLink(base, { ...open, timeoutMs: 1500 });
+    const elapsed = performance.now() - started;
+    clearInterval(heartbeat);
+    expect(r).toMatchObject({
+      ok: false,
+      reason: "timeout",
+      detail: expect.stringContaining("extraction") as unknown,
+      httpStatus: 200,
+      chain: [`${base}/`],
+    });
+    expect(elapsed).toBeLessThan(1500 + 1500);
+    expect(ticks).toBeGreaterThan(20);
+  }, 120_000);
+
+  it("runs a bounded number of extraction workers and rejects overflow as a capacity gap", async () => {
+    serve({ "content-type": "text/html" }, adversarial);
+    const pool = new ExtractionPool({ maxWorkers: 1, maxQueued: 1 });
+    const options = { ...open, timeoutMs: 1500, extractionPool: pool };
+    let peak = 0;
+    const watch = setInterval(() => (peak = Math.max(peak, pool.running)), 5);
+    const results = await Promise.all([1, 2, 3].map(() => captureLink(base, options)));
+    clearInterval(watch);
+    expect(results.map((r) => (r.ok ? "ok" : r.reason)).sort()).toEqual([
+      "extraction_capacity",
+      "timeout",
+      "timeout",
+    ]);
+    expect(peak).toBe(1);
+  }, 120_000);
 
   it("reports markup whose parse work exceeds the extraction bound as an explicit gap", async () => {
     const depth = 20_000;

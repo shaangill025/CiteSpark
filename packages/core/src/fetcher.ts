@@ -17,6 +17,7 @@ export type GapReason =
   | "unsupported_charset"
   | "invalid_text_encoding"
   | "extraction_limit"
+  | "extraction_capacity"
   | "restricted"
   | "not_found"
   | "http_error"

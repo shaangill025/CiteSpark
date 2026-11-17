@@ -39,11 +39,20 @@ export interface LinkedGap {
 }
 
 export interface EnrichOptions {
-  /** Refetch destinations whose earlier gap was transient (timeout, network, DNS, HTTP 5xx and similar). */
+  /**
+   * Refetch destinations whose earlier gap was transient (timeout, network, DNS, HTTP 5xx and similar,
+   * and extraction capacity rejections, which say nothing about the page).
+   */
   retryTransientGaps?: boolean;
 }
 
-const TRANSIENT_GAPS = new Set(["timeout", "network_error", "dns_failure", "http_error"]);
+const TRANSIENT_GAPS = new Set([
+  "timeout",
+  "network_error",
+  "dns_failure",
+  "http_error",
+  "extraction_capacity",
+]);
 
 const RELATION = "links_to";
 
