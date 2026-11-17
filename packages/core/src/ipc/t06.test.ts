@@ -5,7 +5,6 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { createServer, type Server, type Socket, connect as netConnect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
 import {
   ErrorCode,
@@ -61,6 +60,48 @@ function endpoint(): string {
   const tag = randomUUID().slice(0, 8);
   return isWin ? `\\\\.\\pipe\\citspark-t06-${process.pid}-${tag}` : join(dir, tag, "core.sock");
 }
+
+/**
+ * Runs a child process with a hard deadline. On failure the error carries the elapsed time and
+ * everything the child printed, so a CI log shows the last stage it reached instead of a bare
+ * Vitest timeout.
+ */
+function runBounded(
+  file: string,
+  args: readonly string[],
+  opts: { deadlineMs: number; env?: NodeJS.ProcessEnv },
+): Promise<{ stdout: string; stderr: string; elapsedMs: number }> {
+  const started = Date.now();
+  return new Promise((resolve, reject) => {
+    execFile(
+      file,
+      args,
+      { timeout: opts.deadlineMs, killSignal: "SIGKILL", env: opts.env ?? process.env },
+      (err, stdout, stderr) => {
+        const elapsedMs = Date.now() - started;
+        if (!err) return resolve({ stdout, stderr, elapsedMs });
+        const why = err.killed
+          ? `timed out after ${opts.deadlineMs}ms`
+          : `exited with code ${String(err.code)}${err.signal ? ` signal ${err.signal}` : ""}`;
+        reject(
+          new Error(
+            `${file} ${why} (elapsed ${elapsedMs}ms)\n--- stderr ---\n${stderr}\n--- stdout ---\n${stdout}`,
+          ),
+        );
+      },
+    );
+  });
+}
+
+/**
+ * Deadlines for the Windows DACL check, innermost first. The PowerShell child does a cold start and
+ * then `Connect(PIPE_CONNECT_MS)`, so it gets its own bound, and the test bound adds time for
+ * starting and closing the desktop. A stall therefore fails as a child timeout that prints the
+ * stages the child reached, not as a bare Vitest timeout.
+ */
+const PIPE_CONNECT_MS = 5_000;
+const DACL_CHILD_DEADLINE_MS = 20_000;
+const DACL_TEST_DEADLINE_MS = 30_000;
 
 type Call = { method: string; payload: unknown; clientId: string };
 
@@ -1119,45 +1160,103 @@ describe("pairing policy (unit)", () => {
   });
 });
 
+describe("T06 harness: bounded child process", () => {
+  const node = (src: string) => [process.execPath, ["-e", src]] as const;
+
+  test("a child that outlives its deadline is killed and the error carries its output sections", async () => {
+    // Models a cold start slower than the deadline: the child prints nothing before it is killed.
+    // Whether a real child reaches any stage before its deadline is not guaranteed, so this checks
+    // only the kill and the diagnostic layout; stage preservation is checked by the exit-code test.
+    const [file, args] = node(
+      `setTimeout(() => process.stderr.write("stage=connect t=1\\n"), 60_000); setInterval(() => undefined, 1000);`,
+    );
+    const started = Date.now();
+    const err = (await runBounded(file, args, { deadlineMs: 500 }).catch(
+      (e: unknown) => e,
+    )) as Error;
+    expect(Date.now() - started).toBeLessThan(4000);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toContain("timed out after 500ms");
+    expect(err.message).toMatch(/\(elapsed \d+ms\)/);
+    expect(err.message).toContain("\n--- stderr ---\n");
+    expect(err.message).toContain("\n--- stdout ---\n");
+  });
+
+  test(
+    "a child that fails names its exit code and keeps its stderr",
+    async () => {
+      const [file, args] = node(`process.stderr.write("stage=getacl boom\\n"); process.exit(3);`);
+      const err = (await runBounded(file, args, { deadlineMs: 10_000 }).catch(
+        (e: unknown) => e,
+      )) as Error;
+      expect(err).toBeInstanceOf(Error);
+      expect(err.message).toContain("exited with code 3");
+      expect(err.message).toContain("stage=getacl boom");
+    },
+    // Longer than the child's 10 s deadline, so a hung child fails with its own diagnostics.
+    15_000,
+  );
+
+  test("each deadline in the DACL check fits inside the one that encloses it", () => {
+    expect(PIPE_CONNECT_MS).toBeLessThan(DACL_CHILD_DEADLINE_MS);
+    expect(DACL_CHILD_DEADLINE_MS).toBeLessThan(DACL_TEST_DEADLINE_MS);
+  });
+});
+
 describe.runIf(isWin)("T06: Windows named pipe DACL", () => {
-  test("only the current user, SYSTEM, Administrators and the owner may write to the pipe", async () => {
-    const desk = await startDesktop();
-    const name = desk.path.slice("\\\\.\\pipe\\".length);
-    // Reads the DACL from a connected handle: Get-Acl may not autoload on the runner, and FileSecurity
-    // rejects \\.\pipe\ paths. The core sees this connection as a silent client and drops it.
-    const script = `
+  test(
+    "only the current user, SYSTEM, Administrators and the owner may write to the pipe",
+    async () => {
+      const desk = await startDesktop();
+      const name = desk.path.slice("\\\\.\\pipe\\".length);
+      // Reads the DACL from a connected handle: Get-Acl may not autoload on the runner, and FileSecurity
+      // rejects \\.\pipe\ paths. The core sees this connection as a silent client and drops it.
+      // Each stage goes to stderr with the ms since the script started, so a stall or failure in CI
+      // shows how far the child got. A missing `stage=start` means PowerShell itself never started.
+      const script = `
       $ErrorActionPreference = 'Stop'
+      $sw = [System.Diagnostics.Stopwatch]::StartNew()
+      function Stage($s) { [Console]::Error.WriteLine("stage=$s t=$($sw.ElapsedMilliseconds)") }
+      Stage 'start'
       $pipe = New-Object System.IO.Pipes.NamedPipeClientStream -ArgumentList '.', '${name}', ([System.IO.Pipes.PipeDirection]::InOut)
-      $pipe.Connect(5000)
+      Stage 'connect'
+      $pipe.Connect(${PIPE_CONNECT_MS})
+      Stage 'getacl'
       $acl = $pipe.GetAccessControl()
       $pipe.Dispose()
+      Stage 'rules'
       $rules = $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
       $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
       @{ me = $me; owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value;
          rules = @($rules | ForEach-Object { @{ sid = $_.IdentityReference.Value;
            mask = [int64]$_.PipeAccessRights; type = [string]$_.AccessControlType } }) } |
-        ConvertTo-Json -Depth 4 -Compress`;
-    const env = { ...process.env };
-    delete env.PSModulePath;
-    const { stdout } = await promisify(execFile)(
-      "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-Command", script],
-      { env },
-    );
-    const acl = JSON.parse(stdout) as {
-      me: string;
-      owner: string;
-      rules: { sid: string; mask: number; type: string }[];
-    };
-    // FILE_WRITE_DATA, FILE_APPEND_DATA (create pipe instance), FILE_WRITE_EA, FILE_WRITE_ATTRIBUTES,
-    // DELETE, WRITE_DAC, WRITE_OWNER, GENERIC_ALL, GENERIC_WRITE.
-    const WRITE = 0x2 | 0x4 | 0x10 | 0x100 | 0x10000 | 0x40000 | 0x80000 | 0x10000000 | 0x40000000;
-    const trusted = new Set([acl.me, "S-1-5-18", "S-1-5-32-544", "S-1-3-0"]);
-    const writers = acl.rules.filter((r) => r.type === "Allow" && (r.mask & WRITE) !== 0);
-    console.info("named pipe DACL", JSON.stringify(acl));
-    // An elevated administrator's objects are owned by Administrators rather than by the user.
-    expect([acl.me, "S-1-5-32-544"]).toContain(acl.owner);
-    expect(writers.length).toBeGreaterThan(0);
-    for (const w of writers) expect(trusted).toContain(w.sid);
-  });
+        ConvertTo-Json -Depth 4 -Compress
+      Stage 'done'`;
+      const env = { ...process.env };
+      delete env.PSModulePath;
+      const { stdout, stderr, elapsedMs } = await runBounded(
+        "powershell.exe",
+        ["-NoProfile", "-NonInteractive", "-Command", script],
+        { deadlineMs: DACL_CHILD_DEADLINE_MS, env },
+      );
+      console.info(`named pipe DACL child ${elapsedMs}ms`, stderr.trim().split(/\r?\n/).join(" "));
+      const acl = JSON.parse(stdout) as {
+        me: string;
+        owner: string;
+        rules: { sid: string; mask: number; type: string }[];
+      };
+      // FILE_WRITE_DATA, FILE_APPEND_DATA (create pipe instance), FILE_WRITE_EA, FILE_WRITE_ATTRIBUTES,
+      // DELETE, WRITE_DAC, WRITE_OWNER, GENERIC_ALL, GENERIC_WRITE.
+      const WRITE =
+        0x2 | 0x4 | 0x10 | 0x100 | 0x10000 | 0x40000 | 0x80000 | 0x10000000 | 0x40000000;
+      const trusted = new Set([acl.me, "S-1-5-18", "S-1-5-32-544", "S-1-3-0"]);
+      const writers = acl.rules.filter((r) => r.type === "Allow" && (r.mask & WRITE) !== 0);
+      console.info("named pipe DACL", JSON.stringify(acl));
+      // An elevated administrator's objects are owned by Administrators rather than by the user.
+      expect([acl.me, "S-1-5-32-544"]).toContain(acl.owner);
+      expect(writers.length).toBeGreaterThan(0);
+      for (const w of writers) expect(trusted).toContain(w.sid);
+    },
+    DACL_TEST_DEADLINE_MS,
+  );
 });
