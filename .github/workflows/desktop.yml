@@ -1,0 +1,196 @@
+# Desktop shell (M2-01; Q09, Q23, SEC-06): builds the Electron app, runs the Playwright E2E suite against the real
+# Electron runtime, builds unsigned preview installers with `--publish never`, and smoke-tests the packaged app on
+# the same four runners as the CI workflow. Additive: every gate in ci.yml still runs unchanged.
+#
+# Nothing is published or released. Only synthetic test output (smoke reports, screenshots, memory readings,
+# installer checksums, Playwright failure output) is uploaded; installers themselves are not uploaded.
+#
+# Linux: the hosted Ubuntu image restricts unprivileged user namespaces through AppArmor, which Chromium's
+# sandbox needs. Instead of turning that restriction off for the machine or passing --no-sandbox, the job
+# installs an AppArmor profile that grants `userns` to exactly two executables: the pinned Electron binary the
+# E2E suite launches, and the packaged-smoke copy of the built app. Chromium aborts on launch when it cannot
+# create a sandbox, so a passing launch shows a sandbox was established; this is CI fixture setup, not a
+# property end users get (packaged Linux installs rely on the distribution's own policy).
+name: Desktop
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  desktop:
+    name: desktop (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, macos-15-intel, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      # No signing identity discovery and no publishing credentials: builds stay unsigned (ad-hoc on macOS).
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install pnpm
+        run: npm install -g pnpm@10.21.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Job-local temp and artifact directories
+        run: |
+          tmp="$RUNNER_TEMP/citspark-tmp"
+          mkdir -p "$tmp" "$RUNNER_TEMP/citspark-desktop-artifacts"
+          {
+            echo "TMPDIR=$tmp"
+            echo "TEMP=$tmp"
+            echo "TMP=$tmp"
+            echo "CITSPARK_ARTIFACT_DIR=$RUNNER_TEMP/citspark-desktop-artifacts"
+          } >> "$GITHUB_ENV"
+
+      - name: Toolchain
+        run: |
+          echo "runner: $RUNNER_OS $RUNNER_ARCH"
+          command -v node
+          node --version
+          node --print 'process.versions.modules + " " + process.platform + "-" + process.arch'
+          pnpm --version
+
+      - name: Install dependencies
+        timeout-minutes: 10
+        run: pnpm install --frozen-lockfile
+
+      - name: Electron runtime (pinned version, checksum-verified by the electron package)
+        timeout-minutes: 10
+        run: |
+          pnpm --filter @citspark/desktop exec install-electron
+          pnpm --filter @citspark/desktop exec node --print 'require("electron")'
+
+      - name: Guard against sandbox opt-outs in the desktop app and its tests
+        run: |
+          if grep -rnE -- '--no-sandbox|disable-setuid-sandbox|ELECTRON_DISABLE_SANDBOX|sandbox: *false' \
+            apps/desktop/src apps/desktop/e2e apps/desktop/scripts apps/desktop/*.ts apps/desktop/*.cjs; then
+            echo "::error::sandbox opt-out found"
+            exit 1
+          fi
+
+      - name: Build workspace
+        timeout-minutes: 10
+        run: pnpm build
+
+      - name: Build desktop app
+        timeout-minutes: 10
+        run: pnpm --filter @citspark/desktop build
+
+      - name: Linux display and per-app sandbox profile
+        if: runner.os == 'Linux'
+        timeout-minutes: 5
+        run: |
+          command -v xvfb-run || { sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb; }
+          sysctl kernel.apparmor_restrict_unprivileged_userns || true
+          electron="$(realpath apps/desktop/node_modules/electron/dist/electron)"
+          smoke="$TMPDIR/citspark-packaged-*/app/citspark"
+          sudo tee /etc/apparmor.d/citspark-ci-electron > /dev/null <<EOF
+          abi <abi/4.0>,
+          include <tunables/global>
+
+          profile citspark-ci-electron "$electron" flags=(unconfined) {
+            userns,
+          }
+
+          profile citspark-ci-packaged "$smoke" flags=(unconfined) {
+            userns,
+          }
+          EOF
+          cat /etc/apparmor.d/citspark-ci-electron
+          sudo apparmor_parser -r /etc/apparmor.d/citspark-ci-electron
+
+      - name: E2E (Playwright, real Electron)
+        timeout-minutes: 15
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            xvfb-run -a --server-args="-screen 0 1280x800x24" pnpm --filter @citspark/desktop e2e
+          else
+            pnpm --filter @citspark/desktop e2e
+          fi
+
+      - name: Build unsigned installers (--publish never)
+        timeout-minutes: 25
+        run: pnpm --filter @citspark/desktop dist
+
+      - name: Verify installer outputs
+        timeout-minutes: 10
+        working-directory: apps/desktop/build/release
+        run: |
+          ls -la
+          shopt -s nullglob
+          case "$RUNNER_OS" in
+            macOS) want=(*.dmg *.zip) ;;
+            Windows) want=(*.exe) ;;
+            Linux) want=(*.AppImage *.tar.gz) ;;
+          esac
+          [ "${#want[@]}" -gt 0 ] || { echo "::error::no installers produced"; exit 1; }
+          case "$RUNNER_OS" in
+            macOS)
+              for f in *.dmg; do hdiutil verify "$f"; done
+              for f in *.zip; do unzip -tq "$f"; done
+              for a in mac*/Citspark.app; do codesign --verify --deep --strict --verbose=2 "$a"; done
+              ;;
+            Linux)
+              for f in *.tar.gz; do tar -tzf "$f" > /dev/null; done
+              ;;
+          esac
+          if command -v sha256sum > /dev/null; then
+            sha256sum "${want[@]}" | tee "$CITSPARK_ARTIFACT_DIR/installers-$RUNNER_OS-$RUNNER_ARCH.sha256"
+          else
+            shasum -a 256 "${want[@]}" | tee "$CITSPARK_ARTIFACT_DIR/installers-$RUNNER_OS-$RUNNER_ARCH.sha256"
+          fi
+
+      - name: Packaged app smoke
+        timeout-minutes: 10
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            xvfb-run -a --server-args="-screen 0 1280x800x24" pnpm --filter @citspark/desktop smoke:packaged
+          else
+            pnpm --filter @citspark/desktop smoke:packaged
+          fi
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          ls -la apps/desktop/build apps/desktop/build/release 2>/dev/null || true
+          cat apps/desktop/build/release/builder-debug.yml 2>/dev/null || true
+          if [ "$RUNNER_OS" = Linux ]; then sudo dmesg | grep -iE 'apparmor|sandbox' | tail -50 || true; fi
+          ls -la "$CITSPARK_ARTIFACT_DIR" || true
+
+      - name: Upload synthetic test output
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: desktop-${{ matrix.os }}
+          path: |
+            ${{ runner.temp }}/citspark-desktop-artifacts
+            ${{ runner.temp }}/citspark-tmp/citspark-playwright-results
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Stop leftover app processes
+        if: always()
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            taskkill //F //IM Citspark.exe //T 2> /dev/null || true
+            taskkill //F //IM electron.exe //T 2> /dev/null || true
+          else
+            pkill -f 'Citspark|citspark-packaged-|electron/dist' || true
+          fi

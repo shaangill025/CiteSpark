@@ -8,8 +8,9 @@ two-way Obsidian synchronization and an optional Obsidian companion plugin.
 
 ## Status: foundation implementation in progress, no usable application yet
 
-Citspark is **not a usable application yet**. There is no packaged desktop app, browser extension, or Obsidian
-plugin, and no feature can be used end to end. Planned work ships as clearly labeled alpha/beta previews; version 1.0
+Citspark is **not a usable application yet**. There is no released desktop app, browser extension, or Obsidian
+plugin, and no feature can be used end to end. The M2-01 desktop shell (below) builds unsigned preview installers
+from source, but it only shows core health. Planned work ships as clearly labeled alpha/beta previews; version 1.0
 waits until every required capability passes its acceptance gates.
 
 The owner approved the F0 architecture decisions and the [implementation plan](docs/f0/implementation-plan.md) as
@@ -52,15 +53,27 @@ Foundation libraries merged on `main`, each with unit or property tests on synth
   (M2-04; T04 property tests in `packages/sync/src/t04.property.test.ts`)
 
 These are libraries only: no desktop app or UI uses them yet, and none is validated against live services.
-Not yet merged on main: the browser extension and live capture (M1-08), native backup and vault imports, production
-fetch wiring for linked sources and media, the desktop app, vault file sync, backups, saved-library search and
+
+Desktop shell preview (M2-01, in review; on `main` once merged): `apps/desktop` is an Electron app that runs the core
+in a supervised utility process behind a sandboxed, context-isolated renderer with a strict CSP, and shows only core
+health (state, library schema version, process ID, retry after a failure). It has no capture, import, search, sync,
+pairing, backup or AI screens. electron-builder produces unsigned preview installers (ad-hoc signature only on
+macOS, no notarization) with `--publish never`; nothing is released. Unit tests, 8 Playwright E2E tests, installer
+builds and a packaged-app smoke passed locally on macOS arm64 only; the four-platform
+[desktop workflow](.github/workflows/desktop.yml) has not run yet. Clean-machine installs, memory on the 8 GB
+reference machine, screen readers and signing are not tested. Build and install steps, Gatekeeper, SmartScreen and
+Linux sandbox notes, and known risks: [desktop preview guide](docs/desktop/preview-install.md).
+
+Not yet merged on main: the browser extension and live capture (M1-08, owner-run live capture still pending), native
+backup and vault imports, production fetch wiring for linked sources and media, the desktop shell (M2-01), vault
+file sync, backups, saved-library search and
 retrieval, citations, and AI answers. M1 is not complete. See the [traceability matrix](docs/spec/traceability.md) for per-requirement status.
 
 | Milestone | Scope | Status |
 | --- | --- | --- |
 | F0/M0 | Feasibility prototypes, license inventory, architecture decisions | complete (plan approved; follow-up gates open) |
 | M1 | Data foundation: archive, capture, import, media, recoverable storage | in progress (M1-01 to M1-07 and M1-09 to M1-12 merged; M1-08 pending) |
-| M2 | Desktop app, pairing, two-way vault sync, backups | in progress (M2-04 sync core only) |
+| M2 | Desktop app, pairing, two-way vault sync, backups | in progress (M2-04 sync core merged; M2-01 desktop shell in review) |
 | M3 | Search, OCR/transcripts, organization, graph, exact citations | not started |
 | M4 | Local and cloud answers, bounded research, plugin research UI | not started |
 | M5 | Accessibility, compatibility, security review, docs, release | not started |
@@ -69,6 +82,7 @@ retrieval, citations, and AI answers. M1 is not complete. See the [traceability 
 
 - [Specification v1.0](docs/spec/citspark-spec-v1.0.md): authoritative in-repo transcription of the owner-approved PDF
 - [Traceability matrix](docs/spec/traceability.md): requirement, milestone, acceptance test, status
+- [Desktop shell preview guide](docs/desktop/preview-install.md): building, installing unsigned previews, known risks
 - [Contributing](CONTRIBUTING.md), [Security policy](SECURITY.md), [Agent conventions](AGENTS.md)
 
 ## Principles
@@ -90,5 +104,8 @@ Requires Node.js 24 and pnpm (pinned via `packageManager`).
 pnpm install --frozen-lockfile
 pnpm build && pnpm lint && pnpm test && pnpm license-check
 ```
+
+Desktop shell (M2-01): `pnpm --filter @citspark/desktop build`, then `e2e`, `dist` (unsigned, `--publish never`)
+and `smoke:packaged`; see the [desktop preview guide](docs/desktop/preview-install.md).
 
 `prototypes/` is a separate throwaway F0 project with its own install; see its README.
