@@ -8,9 +8,10 @@
 # Linux: the hosted Ubuntu image restricts unprivileged user namespaces through AppArmor, which Chromium's
 # sandbox needs. Instead of turning that restriction off for the machine or passing --no-sandbox, the job
 # installs an AppArmor profile that grants `userns` to exactly two executables: the pinned Electron binary the
-# E2E suite launches, and the packaged-smoke copy of the built app. Chromium aborts on launch when it cannot
-# create a sandbox, so a passing launch shows a sandbox was established; this is CI fixture setup, not a
-# property end users get (packaged Linux installs rely on the distribution's own policy).
+# E2E suite launches, and the packaged-smoke copy of the built app. A passing run shows the app launched with
+# no sandbox opt-out (guarded below) and passed the renderer hardening checks in the E2E suite and smoke; it is
+# not a measured guarantee of OS-level sandbox enforcement. The profile is CI fixture setup, not a property end
+# users get (packaged Linux installs rely on the distribution's own policy).
 name: Desktop
 
 on:
@@ -135,12 +136,19 @@ jobs:
         run: |
           ls -la
           shopt -s nullglob
+          # Every configured target format must be present; one format alone does not pass.
           case "$RUNNER_OS" in
-            macOS) want=(*.dmg *.zip) ;;
-            Windows) want=(*.exe) ;;
-            Linux) want=(*.AppImage *.tar.gz) ;;
+            macOS) required=(dmg zip) ;;
+            Windows) required=(exe) ;;
+            Linux) required=(AppImage tar.gz) ;;
+            *) echo "::error::unexpected runner OS $RUNNER_OS"; exit 1 ;;
           esac
-          [ "${#want[@]}" -gt 0 ] || { echo "::error::no installers produced"; exit 1; }
+          want=()
+          for ext in "${required[@]}"; do
+            found=(*."$ext")
+            [ "${#found[@]}" -gt 0 ] || { echo "::error::no .$ext installer produced"; exit 1; }
+            want+=("${found[@]}")
+          done
           case "$RUNNER_OS" in
             macOS)
               for f in *.dmg; do hdiutil verify "$f"; done

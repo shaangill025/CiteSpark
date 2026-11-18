@@ -28,12 +28,19 @@ packaged app with a reduced environment, not yet on a clean machine.
 
 ```sh
 pnpm install --frozen-lockfile
+pnpm --filter @citspark/desktop exec install-electron  # download the pinned Electron runtime (see below)
 pnpm build
 pnpm --filter @citspark/desktop build          # stage the app in apps/desktop/build/app
 pnpm --filter @citspark/desktop e2e            # Playwright against the real Electron runtime (optional)
 pnpm --filter @citspark/desktop dist           # electron-builder --publish never, into apps/desktop/build/release
 pnpm --filter @citspark/desktop smoke:packaged # launches a copy of the packaged app with isolated synthetic data
 ```
+
+`pnpm install` does not download the Electron runtime: the pinned `electron` package declares no install script,
+and Electron is not in `onlyBuiltDependencies` (`pnpm-workspace.yaml`), so pnpm would not run one anyway. Do not
+add it there; run the download explicitly instead. `install-electron` is the
+`electron` package's own downloader; it fetches the version pinned in `apps/desktop/package.json` and checks it
+against the package's checksums. CI runs the same command. Without it, `e2e` cannot find the Electron binary.
 
 On Linux without a display, prefix the `e2e` and `smoke:packaged` commands with `xvfb-run -a`.
 
