@@ -14,6 +14,13 @@ export const ErrorCode = {
   PairingLocked: "pairing_locked",
   PairingExpired: "pairing_expired",
   Internal: "internal",
+  // Capture (M1-08). None of these lets a job end as complete.
+  DiskFull: "disk_full",
+  AccountMismatch: "account_mismatch",
+  CursorLoop: "cursor_loop",
+  CursorMismatch: "cursor_mismatch",
+  JobBusy: "job_busy",
+  LeaseLost: "lease_lost",
 } as const;
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
 
