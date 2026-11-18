@@ -8,7 +8,7 @@
   "types": "dist/index.d.ts",
   "dependencies": {
     "@citspark/store": "workspace:*",
-    "better-sqlite3": "^12.11.1",
+    "better-sqlite3": "13.2.0",
     "node-diff3": "4.0.0",
     "yaml": "2.9.1"
   },

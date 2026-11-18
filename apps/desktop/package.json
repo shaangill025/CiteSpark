@@ -1,0 +1,29 @@
+{
+  "name": "@citspark/desktop",
+  "version": "0.0.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "description": "Citspark desktop shell (M2-01 preview, not usable yet)",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "e2e": "playwright test",
+    "dist": "electron-builder --config electron-builder.config.cjs --publish never",
+    "smoke:packaged": "node scripts/packaged-smoke.mjs"
+  },
+  "dependencies": {
+    "@citspark/core": "workspace:*",
+    "@citspark/protocol": "workspace:*",
+    "react": "19.3.1",
+    "react-aria-components": "1.22.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.65.1",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "electron": "45.3.4",
+    "electron-builder": "26.18.0",
+    "esbuild": "0.28.2"
+  }
+}
