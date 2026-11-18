@@ -110,6 +110,11 @@ function exceptionProblems(e: unknown, now: Date): string[] {
     !(e.findings as ReviewedFinding[]).every((f) => isRootPathTo(f.path, module))
   ) {
     problems.push(`finding paths must be root development paths ending in >${module}`);
+  } else if (
+    new Set((e.findings as ReviewedFinding[]).map((f) => JSON.stringify([f.version, f.path])))
+      .size !== e.findings.length
+  ) {
+    problems.push("findings must not repeat a version and path");
   }
   const created = utcSeconds(e.createdAt);
   const expires = utcSeconds(e.expiresAt);

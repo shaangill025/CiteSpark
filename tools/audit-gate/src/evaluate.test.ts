@@ -394,3 +394,68 @@ test("fails closed when the production-only audit is not covered by the full aud
     "scope: the production-only audit counts 2 low vulnerabilities but the full audit counts 1; the full audit must cover production, development and optional dependencies (fail closed)",
   );
 });
+
+test("rejects a report that repeats a version and path, so a duplicate cannot pad the declared count", () => {
+  const reviewed = advisory();
+  const padded = (findings: { version: string; paths: string[] }[]) => {
+    const r = report([advisory({ findings })]);
+    // One high advisory hidden by auditConfig keeps its count: 2 reviewed findings + 1 hidden = 3.
+    (r.metadata as { vulnerabilities: Record<string, number> }).vulnerabilities.high = 3;
+    return r;
+  };
+  const repeat =
+    "advisory 1247710 repeats GHSA-fc5q-39xc-vjpf picomatch@4.0.7 via .>vitest>picomatch";
+  expectFullRejected(
+    padded([...reviewed.findings, { version: "4.0.7", paths: [".>vitest>picomatch"] }]),
+    repeat,
+  );
+  expectFullRejected(
+    padded([
+      reviewed.findings[0]!,
+      { version: "4.0.7", paths: [".>vitest>picomatch", ".>vitest>picomatch"] },
+    ]),
+    repeat,
+  );
+  // The same GHSA under a second advisory id must not repeat a reviewed finding either.
+  const twice = report([
+    advisory(),
+    advisory({ id: 1247711, findings: [{ version: "4.0.7", paths: [".>vitest>picomatch"] }] }),
+  ]);
+  expectFullRejected(
+    twice,
+    "advisory 1247711 repeats GHSA-fc5q-39xc-vjpf picomatch@4.0.7 via .>vitest>picomatch",
+  );
+});
+
+test("requires the high and critical counts to equal the enumerated finding paths exactly", () => {
+  const multi = syntheticAdvisory(9040, "high", {
+    findings: [
+      { version: "1.0.0", paths: [".>vitest>synthetic-9040", ".>vitest>x>synthetic-9040"] },
+    ],
+  });
+  const r = report([advisory(), multi]);
+  // 3 findings and 4 paths: a count of 3 used to pass as "between findings and paths".
+  (r.metadata as { vulnerabilities: Record<string, number> }).vulnerabilities.high = 3;
+  expectFullRejected(
+    r,
+    "declared high count disagrees with the enumerated high advisories (advisories hidden or ignored?)",
+  );
+});
+
+test("rejects a policy that repeats a reviewed version and path", () => {
+  expectPolicyRejected(
+    policy([
+      exception({
+        findings: [
+          {
+            version: "2.3.2",
+            path: ".>typescript-eslint>@typescript-eslint/typescript-estree>fast-glob>micromatch>picomatch",
+          },
+          { version: "4.0.7", path: ".>vitest>picomatch" },
+          { version: "4.0.7", path: ".>vitest>picomatch" },
+        ],
+      }),
+    ]),
+    "exception #1: findings must not repeat a version and path",
+  );
+});

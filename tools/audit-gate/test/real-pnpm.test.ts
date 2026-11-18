@@ -25,6 +25,10 @@ type Scope = Record<Group, boolean>;
 interface RegistryBehaviour {
   // Root groups whose synthetic package carries a high advisory when pnpm includes it in the request.
   vulnerable: Group[];
+  // Malformed registry answers for the count checks: repeat the reviewed vitest finding, and add a high
+  // advisory under vitest (to be hidden by auditConfig) whose count stays in metadata.
+  padReviewedFinding?: boolean;
+  hiddenDevHigh?: boolean;
 }
 
 const DEP = syntheticAdvisory(9101, "high", {
@@ -38,6 +42,13 @@ const OPT = syntheticAdvisory(9102, "high", {
   github_advisory_id: "GHSA-3333-4444-5555",
   cves: ["CVE-2026-999992"],
   findings: [{ version: "1.0.0", paths: [".>synthetic-opt"] }],
+});
+
+const HIDDEN = syntheticAdvisory(9103, "high", {
+  module_name: "synthetic-hidden",
+  github_advisory_id: "GHSA-4444-5555-6666",
+  cves: ["CVE-2026-999993"],
+  findings: [{ version: "1.0.0", paths: [".>vitest>synthetic-hidden"] }],
 });
 
 let behaviour: RegistryBehaviour = { vulnerable: [] };
@@ -68,13 +79,20 @@ beforeAll(async () => {
       };
       requests.push(scope);
       const advisories = [];
-      if (scope.dev) advisories.push(advisory());
+      if (scope.dev && behaviour.padReviewedFinding === true) {
+        const reviewed = advisory();
+        advisories.push(
+          advisory({
+            findings: [...reviewed.findings, { version: "4.0.7", paths: [".>vitest>picomatch"] }],
+          }),
+        );
+      } else if (scope.dev) advisories.push(advisory());
+      if (scope.dev && behaviour.hiddenDevHigh === true) advisories.push(HIDDEN);
       if (scope.dep && behaviour.vulnerable.includes("dep")) advisories.push(DEP);
       if (scope.opt && behaviour.vulnerable.includes("opt")) advisories.push(OPT);
-      const high = advisories.reduce(
-        (n, a) => n + a.findings.reduce((m, f) => m + f.paths.length, 0),
-        0,
-      );
+      const high =
+        advisories.reduce((n, a) => n + a.findings.reduce((m, f) => m + f.paths.length, 0), 0) -
+        (behaviour.padReviewedFinding === true && scope.dev ? 1 : 0);
       const payload = JSON.stringify({
         actions: [],
         advisories: Object.fromEntries(advisories.map((a) => [String(a.id), a])),
@@ -149,6 +167,7 @@ function utcSeconds(ms: number): string {
 async function runGate(
   inherited: Inherited,
   vulnerable: Group[],
+  malformed: Omit<RegistryBehaviour, "vulnerable"> = {},
 ): Promise<{ status: number | null; stdout: string; scopes: Scope[] }> {
   const root = mkdtempSync(join(tmpdir(), "audit-gate-real-pnpm-"));
   try {
@@ -201,7 +220,7 @@ async function runGate(
       },
       inherited.env,
     );
-    behaviour = { vulnerable };
+    behaviour = { vulnerable, ...malformed };
     requests = [];
     const [command, ...args] = (REPO_MANIFEST.scripts["audit-gate"] ?? "").split(" ");
     expect(command).toBe("node");
@@ -292,5 +311,40 @@ posix(
     expect(r.scopes).toEqual([FULL_SCOPE, PROD_SCOPE]);
     expect(r.stdout).toContain("Dependency audit gate PASSED only under a temporary exception");
     expect(r.status).toBe(0);
+  },
+);
+
+// pnpm 10's auditConfig.ignoreGhsas and ignoreCves drop advisory entries but keep metadata counts.
+const SUPPRESSIONS: [string, string][] = [
+  ["ignoreGhsas", "auditConfig:\n  ignoreGhsas:\n    - GHSA-4444-5555-6666\n"],
+  ["ignoreCves", "auditConfig:\n  ignoreCves:\n    - CVE-2026-999993\n"],
+];
+
+posix.for(SUPPRESSIONS)(
+  "a high advisory hidden by auditConfig.%s is caught by the exact high count",
+  { timeout: 60_000 },
+  async ([, workspace]) => {
+    const r = await runGate({ workspace }, [], { hiddenDevHigh: true });
+    expect(r.scopes).toEqual([FULL_SCOPE, PROD_SCOPE]);
+    expect(r.stdout).not.toContain("GHSA-4444-5555-6666");
+    expect(r.stdout).toContain(
+      "audit: full report rejected (fail closed): declared high count disagrees with the enumerated high advisories (advisories hidden or ignored?)",
+    );
+    expect(r.status).toBe(1);
+  },
+);
+
+posix.for(SUPPRESSIONS)(
+  "a repeated reviewed finding cannot pad the count of a high advisory hidden by auditConfig.%s",
+  { timeout: 60_000 },
+  async ([, workspace]) => {
+    const r = await runGate({ workspace }, [], { hiddenDevHigh: true, padReviewedFinding: true });
+    expect(r.scopes).toEqual([FULL_SCOPE, PROD_SCOPE]);
+    expect(r.stdout).toContain(
+      "audit: full report rejected (fail closed): advisory 1247710 repeats GHSA-fc5q-39xc-vjpf picomatch@4.0.7 via .>vitest>picomatch",
+    );
+    expect(r.stdout).toContain("Dependency audit gate FAILED.");
+    expect(r.stdout).not.toContain("ACCEPTED RISK");
+    expect(r.status).toBe(1);
   },
 );

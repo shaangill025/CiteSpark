@@ -59,6 +59,7 @@ export function parseReport(raw: unknown, exitCode: number): ParsedReport {
       throw new ReportError(`advisory ${key} is malformed`);
     return a;
   });
+  rejectRepeats(advisories);
   const declared = checkDeclaredCounts(raw.metadata.vulnerabilities, advisories);
   const total = SEVERITIES.reduce((n, s) => n + declared[s], 0);
   // pnpm 10 with --json exits 1 exactly when any vulnerability is counted (any severity) and 0 otherwise.
@@ -70,9 +71,32 @@ export function parseReport(raw: unknown, exitCode: number): ParsedReport {
   return { advisories, declared };
 }
 
-// The registry's declared count per severity must lie between the number of enumerated findings and the
-// number of enumerated finding paths. A count outside that range means advisories were hidden (for example by
-// pnpm's auditConfig.ignoreGhsas, which drops entries but keeps their counts) or the shape changed.
+// A repeated (advisory, version, path) would let a malformed report pad the enumerated paths and so absorb the
+// count of a hidden advisory. One GHSA may legitimately appear under several advisory ids (one per affected
+// package), so repeats are checked per GHSA across the whole report.
+function rejectRepeats(advisories: Advisory[]): void {
+  const seen = new Set<string>();
+  for (const a of advisories) {
+    for (const f of a.findings) {
+      for (const path of f.paths) {
+        const item = JSON.stringify([a.github_advisory_id, f.version, path]);
+        if (seen.has(item)) {
+          throw new ReportError(
+            `advisory ${String(a.id)} repeats ${a.github_advisory_id} ${a.module_name}@${f.version} via ${path}`,
+          );
+        }
+        seen.add(item);
+      }
+    }
+  }
+}
+
+// pnpm 10.21 with --json drops advisories matched by auditConfig.ignoreGhsas or ignoreCves but keeps their
+// counts in metadata.vulnerabilities, so counts are the only trace of a hidden advisory. For high and critical
+// the declared count must equal the number of distinct enumerated (version, path) pairs: pnpm 10.21 against the
+// npm registry reported one path per finding with the count equal to both, and anything else (a hidden
+// advisory, or a registry that counts differently) fails closed. Low, moderate and info do not block, so their
+// count only has to lie between the number of findings and the number of paths.
 function checkDeclaredCounts(declared: unknown, advisories: Advisory[]): ParsedReport["declared"] {
   if (
     !isRecord(declared) ||
@@ -91,7 +115,8 @@ function checkDeclaredCounts(declared: unknown, advisories: Advisory[]): ParsedR
       0,
     );
     const count = declared[s] as number;
-    if (count < findings || count > paths) {
+    const blocking = s === "high" || s === "critical";
+    if (blocking ? count !== paths : count < findings || count > paths) {
       throw new ReportError(
         `declared ${s} count disagrees with the enumerated ${s} advisories (advisories hidden or ignored?)`,
       );
