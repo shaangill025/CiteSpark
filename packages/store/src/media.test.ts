@@ -612,26 +612,40 @@ describe("download job on the job store (CAP-04 lease)", () => {
     const ttl = 1_000;
     let t = 1_000;
     const expiries: (number | null)[] = [];
+    const writes: number[] = [];
     const ref: { jobs?: JobStore } = {};
     const { media, jobs } = setup({
       leaseTtlMs: ttl,
       now: () => t,
+      // Ten explicit 1,000-byte body chunks: a loopback HTTP body may be coalesced into one
+      // read, which would leave a single write and nothing to renew across.
+      fetch: async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(c) {
+              for (let i = 0; i < 10; i++) {
+                c.enqueue(new Uint8Array(blobA.subarray(i * 1_000, (i + 1) * 1_000)));
+              }
+              c.close();
+            },
+          }),
+          { status: 200, headers: { "content-length": "10000", etag: '"v1"' } },
+        ),
       fs: {
         write: async (h, c) => {
           t += 400; // each chunk takes 0.4 TTL; ten chunks outlast the initial lease
+          writes.push(c.length);
           expiries.push(ref.jobs!.get("j").leaseExpiresAt);
           await h.write(c);
         },
       },
     });
     ref.jobs = jobs;
-    handler = (_req, res) => {
-      trickle(res, blobA, { "content-length": 10_000, etag: '"v1"' });
-      return true;
-    };
     media.enqueue("s1", `${base}/a`);
     jobs.create({ id: "j", kind: "media" });
     expect(await media.runJob(jobs, "j", "w")).toBe("complete");
+    expect(writes).toEqual(Array<number>(10).fill(1_000));
+    expect(t).toBeGreaterThan(expiries[0]!); // the transfer outlasted the initial lease
     expect(new Set(expiries).size).toBeGreaterThan(1);
     expect(Math.max(...(expiries as number[]))).toBeGreaterThan(1_000 + ttl);
   });
