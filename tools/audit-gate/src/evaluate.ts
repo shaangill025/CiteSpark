@@ -1,5 +1,11 @@
 import { parsePolicy, type AuditException } from "./policy.ts";
-import { parseReport, ReportError, type Advisory } from "./report.ts";
+import {
+  parseReport,
+  ReportError,
+  SEVERITIES,
+  type Advisory,
+  type ParsedReport,
+} from "./report.ts";
 
 // Pure evaluation of a pnpm 10 audit report against the reviewed temporary exceptions policy.
 
@@ -41,21 +47,36 @@ export function evaluateAudit(input: GateInput): GateResult {
   const accepted: AcceptedFinding[] = [];
   const reported: string[] = [];
   const exceptions = activeExceptions(input.policy, input.now, errors);
-  const advisories = readReport("full", input.full, errors);
-  const prodAdvisories = readReport("production-only", input.prod, errors);
+  const fullReport = readReport("full", input.full, errors);
+  const prodReport = readReport("production-only", input.prod, errors);
   const manifestOk = isWellFormedManifest(input.manifest);
   if (!manifestOk)
     errors.push("manifest: root package.json dependency fields are malformed (fail closed)");
-  if (advisories === undefined || prodAdvisories === undefined || !manifestOk) {
+  if (fullReport === undefined || prodReport === undefined || !manifestOk) {
     return { ok: false, errors, accepted, reported };
   }
+  const advisories = fullReport.advisories;
+  const prodAdvisories = prodReport.advisories;
   const inProduction = new Set(prodAdvisories.map((a) => a.github_advisory_id));
   const observed = new Set<string>();
   for (const a of advisories) {
-    const items = a.findings.flatMap((f) => f.paths.map((path) => ({ version: f.version, path })));
-    const label = (i: { version: string; path: string }) =>
-      `${a.severity} ${a.github_advisory_id} ${a.module_name}@${i.version} via ${i.path}`;
-    for (const i of items) observed.add(key(a.github_advisory_id, i.version, i.path));
+    for (const i of itemsOf(a)) observed.add(key(a.github_advisory_id, i.version, i.path));
+  }
+  // The production-only report is evaluated on its own: exceptions cover development findings only, so every
+  // high or critical finding it reports blocks, whether or not the full report also lists it.
+  for (const a of prodAdvisories) {
+    for (const i of itemsOf(a)) {
+      if (a.severity === "high" || a.severity === "critical") {
+        errors.push(
+          `blocked: ${labelOf(a, i)} (reported by the production-only audit; exceptions cover development findings only)`,
+        );
+      }
+    }
+  }
+  checkScope(fullReport, prodReport, observed, errors);
+  for (const a of advisories) {
+    const items = itemsOf(a);
+    const label = (i: Item) => labelOf(a, i);
     if (a.severity !== "high" && a.severity !== "critical") {
       for (const i of items) reported.push(`reported (below high threshold): ${label(i)}`);
       continue;
@@ -113,7 +134,48 @@ export function evaluateAudit(input: GateInput): GateResult {
   return { ok: errors.length === 0, errors, accepted, reported };
 }
 
-function readReport(name: string, run: AuditRun, errors: string[]): Advisory[] | undefined {
+interface Item {
+  version: string;
+  path: string;
+}
+
+function itemsOf(a: Advisory): Item[] {
+  return a.findings.flatMap((f) => f.paths.map((path) => ({ version: f.version, path })));
+}
+
+function labelOf(a: Advisory, i: Item): string {
+  return `${a.severity} ${a.github_advisory_id} ${a.module_name}@${i.version} via ${i.path}`;
+}
+
+// The full audit must include production, development and optional dependencies, so it must be a superset of
+// the production-only audit: every production finding and at least as many vulnerabilities per severity.
+function checkScope(
+  full: ParsedReport,
+  prod: ParsedReport,
+  observed: Set<string>,
+  errors: string[],
+): void {
+  const scope =
+    "the full audit must cover production, development and optional dependencies (fail closed)";
+  for (const a of prod.advisories) {
+    for (const i of itemsOf(a)) {
+      if (!observed.has(key(a.github_advisory_id, i.version, i.path))) {
+        errors.push(
+          `scope: the production-only audit reports ${labelOf(a, i)}, which the full audit does not; ${scope}`,
+        );
+      }
+    }
+  }
+  for (const s of SEVERITIES) {
+    if (prod.declared[s] > full.declared[s]) {
+      errors.push(
+        `scope: the production-only audit counts ${String(prod.declared[s])} ${s} vulnerabilities but the full audit counts ${String(full.declared[s])}; ${scope}`,
+      );
+    }
+  }
+}
+
+function readReport(name: string, run: AuditRun, errors: string[]): ParsedReport | undefined {
   try {
     return parseReport(run.json, run.exitCode);
   } catch (err) {

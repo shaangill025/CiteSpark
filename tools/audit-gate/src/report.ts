@@ -17,6 +17,12 @@ export interface Advisory {
   findings: Finding[];
 }
 
+export interface ParsedReport {
+  advisories: Advisory[];
+  // metadata.vulnerabilities as declared by the registry, per severity.
+  declared: Record<(typeof SEVERITIES)[number], number>;
+}
+
 export class ReportError extends Error {}
 
 export const SEVERITIES = ["info", "low", "moderate", "high", "critical"] as const;
@@ -34,7 +40,7 @@ function isStringArray(value: unknown): value is string[] {
 // Stands in for pnpm output that did not parse as JSON (network errors, ignored registry errors, crashes).
 export const NOT_JSON: unique symbol = Symbol("pnpm output is not JSON");
 
-export function parseReport(raw: unknown, exitCode: number): Advisory[] {
+export function parseReport(raw: unknown, exitCode: number): ParsedReport {
   if (raw === NOT_JSON) throw new ReportError("pnpm output is not JSON");
   if (
     !isRecord(raw) ||
@@ -53,20 +59,21 @@ export function parseReport(raw: unknown, exitCode: number): Advisory[] {
       throw new ReportError(`advisory ${key} is malformed`);
     return a;
   });
-  const total = checkDeclaredCounts(raw.metadata.vulnerabilities, advisories);
+  const declared = checkDeclaredCounts(raw.metadata.vulnerabilities, advisories);
+  const total = SEVERITIES.reduce((n, s) => n + declared[s], 0);
   // pnpm 10 with --json exits 1 exactly when any vulnerability is counted (any severity) and 0 otherwise.
   if (exitCode !== (total > 0 ? 1 : 0)) {
     throw new ReportError(
       `pnpm audit exited ${exitCode}, expected 1 when vulnerabilities are counted and 0 otherwise`,
     );
   }
-  return advisories;
+  return { advisories, declared };
 }
 
 // The registry's declared count per severity must lie between the number of enumerated findings and the
 // number of enumerated finding paths. A count outside that range means advisories were hidden (for example by
 // pnpm's auditConfig.ignoreGhsas, which drops entries but keeps their counts) or the shape changed.
-function checkDeclaredCounts(declared: unknown, advisories: Advisory[]): number {
+function checkDeclaredCounts(declared: unknown, advisories: Advisory[]): ParsedReport["declared"] {
   if (
     !isRecord(declared) ||
     Object.keys(declared).length !== SEVERITIES.length ||
@@ -90,7 +97,9 @@ function checkDeclaredCounts(declared: unknown, advisories: Advisory[]): number 
       );
     }
   }
-  return SEVERITIES.reduce((n, s) => n + (declared[s] as number), 0);
+  return Object.fromEntries(
+    SEVERITIES.map((s) => [s, declared[s] as number]),
+  ) as ParsedReport["declared"];
 }
 
 function isAdvisory(a: unknown): a is Advisory {

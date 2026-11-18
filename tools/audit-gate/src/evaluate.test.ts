@@ -357,3 +357,40 @@ test("fails closed on a root manifest whose dependency fields are not plain obje
     );
   }
 });
+
+test("blocks every high or critical advisory the production-only audit reports, even one the full report lacks", () => {
+  for (const severity of ["high", "critical"]) {
+    const prodOnly = syntheticAdvisory(9030, severity, {
+      findings: [{ version: "1.0.0", paths: [".>synthetic-9030"] }],
+    });
+    const result = evaluateAudit(input({ prod: { exitCode: 1, json: report([prodOnly]) } }));
+    expect(result.ok).toBe(false);
+    expect(result.errors).toContain(
+      `blocked: ${severity} GHSA-2222-3333-4444 synthetic-9030@1.0.0 via .>synthetic-9030 (reported by the production-only audit; exceptions cover development findings only)`,
+    );
+  }
+});
+
+test("fails closed when the production-only audit is not covered by the full audit", () => {
+  const low = syntheticAdvisory(9031, "low", {
+    findings: [{ version: "1.0.0", paths: [".>synthetic-9031"] }],
+  });
+  const missing = evaluateAudit(input({ prod: { exitCode: 1, json: report([low]) } }));
+  expect(missing.ok).toBe(false);
+  expect(missing.errors).toContain(
+    "scope: the production-only audit reports low GHSA-2222-3333-4444 synthetic-9031@1.0.0 via .>synthetic-9031, which the full audit does not; the full audit must cover production, development and optional dependencies (fail closed)",
+  );
+  // Same enumerated findings, but the production-only audit declares more low vulnerabilities.
+  const twoPaths = syntheticAdvisory(9032, "low", {
+    findings: [{ version: "1.0.0", paths: [".>synthetic-9032", ".>vitest>synthetic-9032"] }],
+  });
+  const full = report([advisory(), twoPaths]);
+  (full.metadata as { vulnerabilities: Record<string, number> }).vulnerabilities.low = 1;
+  const counts = evaluateAudit(
+    input({ full: { exitCode: 1, json: full }, prod: { exitCode: 1, json: report([twoPaths]) } }),
+  );
+  expect(counts.ok).toBe(false);
+  expect(counts.errors).toContain(
+    "scope: the production-only audit counts 2 low vulnerabilities but the full audit counts 1; the full audit must cover production, development and optional dependencies (fail closed)",
+  );
+});
