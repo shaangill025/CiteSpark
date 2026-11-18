@@ -80,3 +80,15 @@ export {
   type LinkStatus,
   type LinkedGap,
 } from "./linked.ts";
+export {
+  TrashStore,
+  NotTrashedError,
+  PurgeBusyError,
+  PurgedSourceError,
+  UnknownSourceError,
+  type EmptyTrashResult,
+  type PurgeResult,
+  type SourceStatus,
+  type TrashEntry,
+  type TrashStoreOptions,
+} from "./trash.ts";

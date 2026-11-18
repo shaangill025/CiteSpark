@@ -95,6 +95,8 @@ export interface CommitResult {
   unavailableNoText: number;
   /** `retainFuller` records reported available with no text and no stored source: nothing written. */
   noContentSkipped: number;
+  /** Records of a trashed or purged source: not recaptured, nothing written (DAT-03, Q50). */
+  suppressed: number;
   cancelRequested: boolean;
 }
 
@@ -534,6 +536,7 @@ export class CaptureStore {
       weakerSkipped: 0,
       unavailableNoText: 0,
       noContentSkipped: 0,
+      suppressed: 0,
       cancelRequested: job.cancelRequested,
     };
   }
@@ -647,6 +650,10 @@ export class CaptureStore {
          WHERE membership.last_job_id IS NOT excluded.last_job_id`,
     );
 
+    const isSuppressed = this.db.prepare(
+      `SELECT 1 FROM source WHERE source_type = ? AND platform_id = ?
+         AND (trashed_at IS NOT NULL OR purged_at IS NOT NULL)`,
+    );
     const findObservation = this.db.prepare(
       `SELECT id, availability, evidence FROM observation
        WHERE job_id = ? AND version_id = ? AND capture_page_id IS NOT NULL`,
@@ -739,9 +746,16 @@ export class CaptureStore {
     let weakerSkipped = 0;
     let unavailableNoText = 0;
     let noContentSkipped = 0;
+    let suppressed = 0;
     const half = Math.floor(page.records.length / 2);
     page.records.forEach((r, i) => {
       if (i === half) fault("mid-page");
+      // Trashed and purged sources are not recaptured until restored (DAT-03, Q50). Checked on the
+      // canonical identity so a purged tombstone keeps suppressing it.
+      if (isSuppressed.get(r.sourceType, r.platformId) !== undefined) {
+        suppressed++;
+        return;
+      }
       if (r.retainFuller === true) {
         const stored = findSource.get(r.sourceType, r.platformId) as { id: string } | undefined;
         const versions = stored
@@ -822,6 +836,7 @@ export class CaptureStore {
       weakerSkipped,
       unavailableNoText,
       noContentSkipped,
+      suppressed,
       cancelRequested,
     };
   }

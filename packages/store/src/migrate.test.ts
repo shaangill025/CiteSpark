@@ -32,7 +32,7 @@ describe("migrations", () => {
     );
     const backups: number[] = [];
     expect(migrate(db, { backup: (from) => void backups.push(from) }).applied).toEqual([
-      2, 3, 4, 5, 6,
+      2, 3, 4, 5, 6, 7,
     ]);
     expect(backups).toEqual([1]);
     expect(db.prepare("SELECT cursor, lease_generation FROM job WHERE id = 'old'").get()).toEqual({
@@ -196,6 +196,12 @@ describe("upgrade matrix", () => {
         version: number;
       }[]
     ).map((r) => r.version);
+  const views = (db: Database.Database): string[] =>
+    (
+      db.prepare("SELECT name FROM sqlite_master WHERE type = 'view' ORDER BY name").all() as {
+        name: string;
+      }[]
+    ).map((r) => r.name);
   const columns = (db: Database.Database, table: string): string[] =>
     (db.pragma(`table_info(${table})`) as { name: string }[]).map((c) => c.name);
   const seed = (db: Database.Database): void => {
@@ -254,8 +260,14 @@ describe("upgrade matrix", () => {
     ]);
   };
   const expectFullSchema = (db: Database.Database): void => {
-    expect(recordedIds(db)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(recordedIds(db)).toEqual([1, 2, 3, 4, 5, 6, 7]);
     expect(tables(db)).toEqual(expect.arrayContaining(["linked_fetch", "link_ref"]));
+    expect(columns(db, "source")).toContain("purged_at");
+    expect(views(db)).toEqual(["active_chunk", "active_source", "active_version"]);
+    // Media-store 5 attempt isolation fields survive alongside linked 6 and trash 7.
+    expect(columns(db, "media_download")).toEqual(
+      expect.arrayContaining(["claim_job_id", "claim_generation", "claim_token", "part_file"]),
+    );
     expect(columns(db, "job")).toContain("lease_generation");
     expect(tables(db)).toEqual(expect.arrayContaining(["blob", "media_download"]));
     expect(columns(db, "media_download")).toEqual(
@@ -330,23 +342,24 @@ describe("upgrade matrix", () => {
     return { calls, hook };
   };
 
-  it("fresh database -> [1, 2, 3, 4, 5, 6] without a backup", () => {
+  it("fresh database -> [1, 2, 3, 4, 5, 6, 7] without a backup", () => {
     const db = new Database(":memory:");
     const calls: unknown[] = [];
     const r = migrate(db, { backup: () => void calls.push(1) });
-    expect(r).toEqual({ applied: [1, 2, 3, 4, 5, 6], version: 6 });
+    expect(r).toEqual({ applied: [1, 2, 3, 4, 5, 6, 7], version: 7 });
     expect(calls).toEqual([]);
     seed(db);
     expectFullSchema(db);
   });
 
   it.each([
-    ["v1", [1], [2, 3, 4, 5, 6]],
-    ["sync-v2 (main)", [1, 2], [3, 4, 5, 6]],
-    ["historical jobs-only v3 (recorded gap)", [1, 3], [2, 4, 5, 6]],
-    ["jobs+sync v3", [1, 2, 3], [4, 5, 6]],
-    ["capture v4", [1, 2, 3, 4], [5, 6]],
-    ["media v5", [1, 2, 3, 4, 5], [6]],
+    ["v1", [1], [2, 3, 4, 5, 6, 7]],
+    ["sync-v2 (main)", [1, 2], [3, 4, 5, 6, 7]],
+    ["historical jobs-only v3 (recorded gap)", [1, 3], [2, 4, 5, 6, 7]],
+    ["jobs+sync v3", [1, 2, 3], [4, 5, 6, 7]],
+    ["capture v4", [1, 2, 3, 4], [5, 6, 7]],
+    ["media v5", [1, 2, 3, 4, 5], [6, 7]],
+    ["linked v6", [1, 2, 3, 4, 5, 6], [7]],
   ] as const)(
     "%s -> applies exactly the missing migrations after a completed backup",
     (_, from, missing) => {
@@ -361,9 +374,9 @@ describe("upgrade matrix", () => {
       const { calls, hook } = recordingBackup(db);
 
       const r = migrate(db, { backup: hook });
-      expect(r).toEqual({ applied: [...missing], version: 6 });
+      expect(r).toEqual({ applied: [...missing], version: 7 });
       expect(calls).toEqual([
-        { from: Math.max(...from), to: 6, pending: [...missing], ids: [...from] },
+        { from: Math.max(...from), to: 7, pending: [...missing], ids: [...from] },
       ]);
       expectSeedPreserved(db);
       expectFullSchema(db);
@@ -393,11 +406,11 @@ describe("upgrade matrix", () => {
       });
 
       // Idempotent: nothing pending, no further backup, every migration recorded exactly once.
-      expect(migrate(db, { backup: hook })).toEqual({ applied: [], version: 6 });
+      expect(migrate(db, { backup: hook })).toEqual({ applied: [], version: 7 });
       expect(calls).toHaveLength(1);
       expect(
         db.prepare("SELECT COUNT(*) n, COUNT(DISTINCT version) d FROM schema_migration").get(),
-      ).toEqual({ n: 6, d: 6 });
+      ).toEqual({ n: 7, d: 7 });
     },
   );
 
@@ -422,7 +435,10 @@ describe("upgrade matrix", () => {
     expect(columns(db, "sync_binding")).not.toContain("state");
     expectSeedPreserved(db);
 
-    expect(migrate(db, { backup: () => undefined })).toEqual({ applied: [2, 4, 5, 6], version: 6 });
+    expect(migrate(db, { backup: () => undefined })).toEqual({
+      applied: [2, 4, 5, 6, 7],
+      version: 7,
+    });
     expectSeedPreserved(db);
     expectFullSchema(db);
   });
@@ -500,8 +516,8 @@ describe("upgrade matrix", () => {
         (1, 'x:1', 'dup', 'legacy/a'), (2, 'x:1', 'dup', 'legacy/b');
     `);
     const { calls, hook } = recordingBackup(db);
-    expect(migrate(db, { backup: hook })).toEqual({ applied: [5, 6], version: 6 });
-    expect(calls).toEqual([{ from: 4, to: 6, pending: [5, 6], ids: [1, 2, 3, 4] }]);
+    expect(migrate(db, { backup: hook })).toEqual({ applied: [5, 6, 7], version: 7 });
+    expect(calls).toEqual([{ from: 4, to: 7, pending: [5, 6, 7], ids: [1, 2, 3, 4] }]);
     expect(db.prepare("SELECT id, content_hash, blob_path FROM media ORDER BY id").all()).toEqual([
       { id: 1, content_hash: "dup", blob_path: "legacy/a" },
       { id: 2, content_hash: "dup", blob_path: "legacy/b" },
@@ -556,8 +572,59 @@ describe("upgrade matrix", () => {
     expect(tables(db)).not.toContain("linked_fetch");
     expect(tables(db)).not.toContain("link_ref");
     expectSeedPreserved(db);
-    expect(migrate(db, { backup: () => undefined })).toEqual({ applied: [6], version: 6 });
+    expect(migrate(db, { backup: () => undefined })).toEqual({ applied: [6, 7], version: 7 });
     expectFullSchema(db);
+  });
+
+  it("refuses an unmerged PR #16 preview database that recorded trash-purge as 4", () => {
+    // PR #16's pre-integration preview numbered capture-commit 2, media-store 3 and trash-purge 4;
+    // sync-core, job-lease-generation and capture-commit own 2-4 when published.
+    const db = historical([1], [1]);
+    db.exec(`
+      ALTER TABLE source ADD COLUMN purged_at TEXT;
+      INSERT INTO schema_migration (version, name) VALUES
+        (2, 'capture-commit'), (3, 'media-store'), (4, 'trash-purge');
+    `);
+    const before = db.serialize();
+    const calls: unknown[] = [];
+    expect(() => migrate(db, { backup: () => void calls.push(1) })).toThrow(
+      /migration 2 as "capture-commit".*"sync-core"/,
+    );
+    expect(calls).toEqual([]);
+    expect(db.serialize().equals(before)).toBe(true);
+    // Each preview name is refused on its own, too.
+    for (const [v, name, owner] of [
+      [3, "media-store", "job-lease-generation"],
+      [4, "trash-purge", "capture-commit"],
+    ] as const) {
+      const one = historical([1], [1]);
+      one.prepare("INSERT INTO schema_migration (version, name) VALUES (?, ?)").run(v, name);
+      const snap = one.serialize();
+      expect(() => migrate(one, { backup: () => void calls.push(1) })).toThrow(
+        new RegExp(`migration ${v} as "${name}".*"${owner}"`),
+      );
+      expect(one.serialize().equals(snap)).toBe(true);
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it("rolls back a failed trash-purge migration and leaves 1-6 intact", () => {
+    const db = historical([1, 2, 3, 4, 5, 6]);
+    seed(db);
+    const broken: Migration[] = MIGRATIONS.map((m) =>
+      m.version === 7 ? { ...m, sql: `${m.sql}\nSELECT * FROM missing_table;` } : m,
+    );
+    expect(() => migrate(db, { migrations: broken, backup: () => undefined })).toThrow(
+      /missing_table/,
+    );
+    expect(recordedIds(db)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(columns(db, "source")).not.toContain("purged_at");
+    expect(views(db)).toEqual([]);
+    expectSeedPreserved(db);
+    expect(migrate(db, { backup: () => undefined })).toEqual({ applied: [7], version: 7 });
+    expectSeedPreserved(db);
+    expectFullSchema(db);
+    expect(migrate(db, { backup: () => undefined })).toEqual({ applied: [], version: 7 });
   });
 
   it("rolls back a failed media migration and leaves 1-4 intact", () => {
@@ -573,15 +640,15 @@ describe("upgrade matrix", () => {
     expect(tables(db)).not.toContain("blob");
     expect(tables(db)).not.toContain("media_download");
     expectSeedPreserved(db);
-    expect(migrate(db, { backup: () => undefined })).toEqual({ applied: [5, 6], version: 6 });
+    expect(migrate(db, { backup: () => undefined })).toEqual({ applied: [5, 6, 7], version: 7 });
     expectFullSchema(db);
   });
 
   it("still rejects a newer database, including one with a gap", () => {
     const db = historical([1, 3]);
-    db.prepare("INSERT INTO schema_migration (version, name) VALUES (7, 'future')").run();
+    db.prepare("INSERT INTO schema_migration (version, name) VALUES (8, 'future')").run();
     expect(() => migrate(db, { backup: () => undefined })).toThrow(/newer/);
-    expect(recordedIds(db)).toEqual([1, 3, 7]);
+    expect(recordedIds(db)).toEqual([1, 3, 8]);
     expect(tables(db)).not.toContain("sync_conflict");
   });
 });
@@ -724,7 +791,7 @@ describe("schema contracts", () => {
       },
     });
     expect(seen).toEqual([{ live: ["legacy"], copy: ["legacy"], rows: [{ payload: "preserve" }] }]);
-    expect(result).toEqual({ applied: MIGRATIONS.map((m) => m.version), version: 6 });
+    expect(result).toEqual({ applied: MIGRATIONS.map((m) => m.version), version: 7 });
     expect(db.prepare("SELECT * FROM legacy").all()).toEqual([{ payload: "preserve" }]);
   });
 
@@ -744,7 +811,7 @@ describe("schema contracts", () => {
     expect(migrate(empty, { migrations: [] })).toEqual({ applied: [], version: 0 });
     expect(tables(empty)).toEqual(["schema_migration"]);
     const fresh = new Database(":memory:");
-    expect(migrate(fresh).applied).toEqual([1, 2, 3, 4, 5, 6]);
-    expect(migrate(fresh)).toEqual({ applied: [], version: 6 });
+    expect(migrate(fresh).applied).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(migrate(fresh)).toEqual({ applied: [], version: 7 });
   });
 });

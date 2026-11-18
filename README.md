@@ -32,25 +32,34 @@ Foundation libraries merged on `main`, each with unit or property tests on synth
 - `packages/capture-x`: versioned X response parser tested against synthetic fixtures only; not validated against
   live X (M1-07)
 - `packages/store` media library: content-addressed media blobs with hashes, resumable Range downloads on fenced job
-  leases, and a storage limit that pauses downloads without eviction (M1-10; migration 5). The store applies no
-  network screening of its own and no guarded media fetcher exists or is wired yet; wiring to capture and
-  acquisition-status UI remain pending
-- `packages/core` and `packages/store` linked-source foundation (M1-11; migration 6): link extraction, reuse of saved
+  leases, and a storage limit that pauses downloads without eviction (M1-10; migration 5). The store does no network
+  screening itself and no production media fetcher is wired: the M1-11 guarded fetch covers linked text pages only,
+  with no media adapter yet; wiring to capture and acquisition-status UI remain pending
+- `packages/core` and `packages/store` linked-source library (M1-11; migration 6): link extraction, reuse of saved
   sources, a guarded fetcher for linked text pages (private-network, loopback, `file:`, DNS-pinning and per-hop
   redirect checks; size, overall-time, content-type and redirect limits), charset decoding and DOM text extraction in
-  bounded, terminable worker threads, and explicit gaps. Not usable from any app: it is not wired to capture jobs, its
-  limits are PROPOSED defaults rather than measured guarantees, and it is tested only against local synthetic servers
+  bounded, terminable worker threads, and linked-source provenance with explicit gaps. Its limits are PROPOSED
+  defaults rather than measured guarantees; tested with local servers and stubbed DNS only; no live-network
+  validation, and not wired to capture or media jobs
+- `packages/store` trash and purge library: recoverable trash with immediate exclusion through active views,
+  recapture suppression for capture pages, linked enrichment and media downloads, sync unlink with re-import
+  suppression, and purge that keeps an identity-only tombstone (M1-12; migration 7; T07 store part in
+  `packages/store/src/trash.test.ts`). Purge and empty trash commit row removal and queue file removals; a file is
+  physically erased only when a queued removal later succeeds. Failed removals stay queued and are retried only when a
+  caller runs `retryPendingFiles` (trash, purge and empty trash call it); nothing runs at startup automatically, and
+  purge does not touch vault files or backups
 - `packages/sync`: sync merge core (note identity, three-way merge, conflict records) with no vault file access yet
   (M2-04; T04 property tests in `packages/sync/src/t04.property.test.ts`)
 
-Not yet merged on main: the browser extension and live capture (M1-08), native backup and vault imports, linked
-source capture wiring, trash, the desktop app, vault file sync, backups, saved-library search and retrieval, citations, and AI
-answers. See the [traceability matrix](docs/spec/traceability.md) for per-requirement status.
+These are libraries only: no desktop app or UI uses them yet, and none is validated against live services.
+Not yet merged on main: the browser extension and live capture (M1-08), native backup and vault imports, production
+fetch wiring for linked sources and media, the desktop app, vault file sync, backups, saved-library search and
+retrieval, citations, and AI answers. M1 is not complete. See the [traceability matrix](docs/spec/traceability.md) for per-requirement status.
 
 | Milestone | Scope | Status |
 | --- | --- | --- |
 | F0/M0 | Feasibility prototypes, license inventory, architecture decisions | complete (plan approved; follow-up gates open) |
-| M1 | Data foundation: archive, capture, import, media, recoverable storage | in progress (M1-01 to M1-07 and M1-09 to M1-11 merged; M1-08, M1-12 pending) |
+| M1 | Data foundation: archive, capture, import, media, recoverable storage | in progress (M1-01 to M1-07 and M1-09 to M1-12 merged; M1-08 pending) |
 | M2 | Desktop app, pairing, two-way vault sync, backups | in progress (M2-04 sync core only) |
 | M3 | Search, OCR/transcripts, organization, graph, exact citations | not started |
 | M4 | Local and cloud answers, bounded research, plugin research UI | not started |

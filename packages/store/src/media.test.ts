@@ -295,19 +295,30 @@ describe("resumable downloads (MED-01)", () => {
       (s: number) => ({ "content-range": `bytes ${s}-9999/10000`, "content-length": 5 }),
     ],
   ])("rejects a 206 with %s and never completes from it", async (_, headers) => {
-    const { media, dl } = setup();
+    const { media, dl, db } = setup();
     const d = media.enqueue("s1", `${base}/a`);
-    dropAfter = 4_000;
-    await dl(d.id);
+    // Seed a cleanly ended earlier attempt's 4,000-byte prefix (sealed: no claim token) instead of
+    // relying on a timed connection drop, which may fail before headers and save nothing.
+    const part = `${d.id}.00000000-0000-4000-8000-000000000000.part`;
+    writeFileSync(join(root, "tmp", part), blobA.subarray(0, 4_000));
+    db.prepare(
+      `UPDATE media_download SET bytes_received = 4000, total_bytes = 10000, etag = '"v1"',
+       part_file = ? WHERE id = ?`,
+    ).run(part, d.id);
+    const seen: { range?: string; ifRange?: string }[] = [];
     handler = (req, res) => {
       const m = /^bytes=(\d+)-$/.exec(req.headers.range ?? "");
       if (!m) return false;
+      seen.push({ range: req.headers.range, ifRange: req.headers["if-range"] as string });
       const start = Number(m[1]);
       res.writeHead(206, { etag: '"v1"', ...headers(start) });
       res.end(blobA.subarray(start));
       return true;
     };
     expect(await dl(d.id)).toBe("interrupted");
+    expect(requests).toEqual(["/a"]);
+    expect(seen).toEqual([{ range: "bytes=4000-", ifRange: '"v1"' }]);
+    expect(media.getDownload(d.id)).toMatchObject({ error: "invalid content-range" });
     expect(media.getDownload(d.id)).toMatchObject({ state: "pending", bytesReceived: 0 });
     expect(media.blob(sha(blobA))).toBeUndefined();
     handler = null;
@@ -601,26 +612,40 @@ describe("download job on the job store (CAP-04 lease)", () => {
     const ttl = 1_000;
     let t = 1_000;
     const expiries: (number | null)[] = [];
+    const writes: number[] = [];
     const ref: { jobs?: JobStore } = {};
     const { media, jobs } = setup({
       leaseTtlMs: ttl,
       now: () => t,
+      // Ten explicit 1,000-byte body chunks: a loopback HTTP body may be coalesced into one
+      // read, which would leave a single write and nothing to renew across.
+      fetch: async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(c) {
+              for (let i = 0; i < 10; i++) {
+                c.enqueue(new Uint8Array(blobA.subarray(i * 1_000, (i + 1) * 1_000)));
+              }
+              c.close();
+            },
+          }),
+          { status: 200, headers: { "content-length": "10000", etag: '"v1"' } },
+        ),
       fs: {
         write: async (h, c) => {
           t += 400; // each chunk takes 0.4 TTL; ten chunks outlast the initial lease
+          writes.push(c.length);
           expiries.push(ref.jobs!.get("j").leaseExpiresAt);
           await h.write(c);
         },
       },
     });
     ref.jobs = jobs;
-    handler = (_req, res) => {
-      trickle(res, blobA, { "content-length": 10_000, etag: '"v1"' });
-      return true;
-    };
     media.enqueue("s1", `${base}/a`);
     jobs.create({ id: "j", kind: "media" });
     expect(await media.runJob(jobs, "j", "w")).toBe("complete");
+    expect(writes).toEqual(Array<number>(10).fill(1_000));
+    expect(t).toBeGreaterThan(expiries[0]!); // the transfer outlasted the initial lease
     expect(new Set(expiries).size).toBeGreaterThan(1);
     expect(Math.max(...(expiries as number[]))).toBeGreaterThan(1_000 + ttl);
   });

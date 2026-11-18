@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { captureLink, ExtractionPool } from "../../core/src/index.ts";
+import { captureLink, DEFAULT_FETCH_LIMITS, ExtractionPool } from "../../core/src/index.ts";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { gzipSync } from "node:zlib";
@@ -17,6 +17,14 @@ let pages: Record<
 
 const capture = (url: string): Promise<LinkCapture> =>
   captureLink(url, { allowAddress: (ip) => ip === "127.0.0.1" });
+
+// enrich captures links one after another, each under its own overall capture
+// deadline (DEFAULT_FETCH_LIMITS.timeoutMs, 15 s). A case that runs two real
+// captures can legitimately take up to two deadlines, so its Vitest bound must
+// exceed both plus fixture setup and assertion overhead; the 5 s default is
+// shorter than one capture deadline. This changes only the test bound, never a
+// production deadline, and a timed-out capture still fails the gap assertions.
+const twoCaptureCaseMs = 2 * DEFAULT_FETCH_LIMITS.timeoutMs + 10_000;
 
 const count = (sql: string) => (db.prepare(sql).get() as { n: number }).n;
 
@@ -288,35 +296,39 @@ describe("LinkedSourceStore", () => {
     expect(db.prepare("SELECT text FROM source_version").all()).toEqual([{ text: "Café" }]);
   });
 
-  it("captures deeply nested markup and keeps over-bound markup as a persistent gap", async () => {
-    pages["/deep"] = {
-      body: `<title>T</title>${"<div>".repeat(6000)}article${"</div>".repeat(6000)}`,
-    };
-    pages["/deeper"] = { body: `${"<div>".repeat(20_000)}article` };
-    const store = new LinkedSourceStore(db, capture);
-    const links = [
-      { url: `${base}/deep`, kind: "web" as const },
-      { url: `${base}/deeper`, kind: "web" as const },
-    ];
-    const out = await store.enrich("p1", links);
-    expect(out.map((o) => [o.status, o.gapReason])).toEqual([
-      ["captured", null],
-      ["gap", "extraction_limit"],
-    ]);
-    expect(db.prepare("SELECT text FROM source_version").all()).toEqual([{ text: "article" }]);
-    expect(
-      db
-        .prepare(
-          "SELECT source_id, gap_reason, http_status FROM linked_fetch WHERE original_url = ?",
-        )
-        .get(`${base}/deeper`),
-    ).toEqual({ source_id: null, gap_reason: "extraction_limit", http_status: 200 });
-    expect(store.gaps("p1").map((g) => g.reason)).toEqual(["extraction_limit"]);
-    const again = await store.enrich("p2", links);
-    expect(again.map((o) => o.status)).toEqual(["reused", "known_gap"]);
-    expect(hits).toEqual(["/deep", "/deeper"]);
-    expect(count("SELECT COUNT(*) n FROM source_version")).toBe(1);
-  });
+  it(
+    "captures deeply nested markup and keeps over-bound markup as a persistent gap",
+    async () => {
+      pages["/deep"] = {
+        body: `<title>T</title>${"<div>".repeat(6000)}article${"</div>".repeat(6000)}`,
+      };
+      pages["/deeper"] = { body: `${"<div>".repeat(20_000)}article` };
+      const store = new LinkedSourceStore(db, capture);
+      const links = [
+        { url: `${base}/deep`, kind: "web" as const },
+        { url: `${base}/deeper`, kind: "web" as const },
+      ];
+      const out = await store.enrich("p1", links);
+      expect(out.map((o) => [o.status, o.gapReason])).toEqual([
+        ["captured", null],
+        ["gap", "extraction_limit"],
+      ]);
+      expect(db.prepare("SELECT text FROM source_version").all()).toEqual([{ text: "article" }]);
+      expect(
+        db
+          .prepare(
+            "SELECT source_id, gap_reason, http_status FROM linked_fetch WHERE original_url = ?",
+          )
+          .get(`${base}/deeper`),
+      ).toEqual({ source_id: null, gap_reason: "extraction_limit", http_status: 200 });
+      expect(store.gaps("p1").map((g) => g.reason)).toEqual(["extraction_limit"]);
+      const again = await store.enrich("p2", links);
+      expect(again.map((o) => o.status)).toEqual(["reused", "known_gap"]);
+      expect(hits).toEqual(["/deep", "/deeper"]);
+      expect(count("SELECT COUNT(*) n FROM source_version")).toBe(1);
+    },
+    twoCaptureCaseMs,
+  );
 
   it("records explicit gaps once and keeps them visible", async () => {
     pages["/paywall"] = { status: 403, body: "" };
