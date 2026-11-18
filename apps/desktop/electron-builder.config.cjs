@@ -31,6 +31,9 @@ module.exports = {
     enableNodeOptionsEnvironmentVariable: false,
     enableNodeCliInspectArguments: false,
     onlyLoadAppFromAsar: true,
+    // macOS and Windows only: electron-builder records the asar header hash (Info.plist ElectronAsarIntegrity /
+    // the Windows Integrity resource) and Electron refuses a modified app.asar. Linux has no such check.
+    enableEmbeddedAsarIntegrityValidation: true,
     loadBrowserProcessSpecificV8Snapshot: false,
     grantFileProtocolExtraPrivileges: false,
   },

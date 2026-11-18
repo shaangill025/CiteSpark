@@ -2,8 +2,10 @@ import {
   ErrorCode,
   jsonByteLength,
   protocolError,
+  ResponseSchema,
   SUPPORTED_VERSIONS,
   UI_PROTOCOL_LIMITS,
+  UiHelloReplySchema,
   type ProtocolErrorBody,
 } from "@citspark/protocol";
 
@@ -58,6 +60,16 @@ export function parseRendererRequest(input: unknown): ParseResult {
     };
   }
   return { ok: true, value: { method, mutation, payload: payload as Json } };
+}
+
+/** The version from the core's `ui.hello` reply, or `undefined` unless it is a valid `ui.hello.ok` this shell supports. */
+export function helloVersion(body: unknown): number | undefined {
+  const parsed = UiHelloReplySchema.safeParse(body);
+  if (!parsed.success || parsed.data.type !== "ui.hello.ok") return undefined;
+  const { version } = parsed.data;
+  return version >= SUPPORTED_VERSIONS.min && version <= SUPPORTED_VERSIONS.max
+    ? version
+    : undefined;
 }
 
 type Reply = Record<string, unknown>;
@@ -148,7 +160,18 @@ export class RendererBridge {
       });
       return;
     }
-    this.#settle(envelopeId, reply);
+    // The renderer gets only replies that match the wire contract and the negotiated version.
+    const parsed = ResponseSchema.safeParse(reply);
+    if (!parsed.success || parsed.data.v !== this.#version) {
+      this.#settle(envelopeId, {
+        v: this.#version,
+        id: entry.requestId,
+        ok: false,
+        error: protocolError(ErrorCode.Internal, "The core sent an invalid reply."),
+      });
+      return;
+    }
+    this.#settle(envelopeId, parsed.data);
   }
 
   /** The core stopped or restarted: every waiting request fails now rather than at its timeout. */

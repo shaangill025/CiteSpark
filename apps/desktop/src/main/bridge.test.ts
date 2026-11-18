@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { UI_PROTOCOL_LIMITS } from "@citspark/protocol";
-import { RendererBridge, parseRendererRequest } from "./bridge.ts";
+import { RendererBridge, helloVersion, parseRendererRequest } from "./bridge.ts";
 
 describe("parseRendererRequest", () => {
   it("accepts a method name, a mutation flag and a JSON payload", () => {
@@ -114,5 +114,63 @@ describe("RendererBridge", () => {
       result: "x".repeat(UI_PROTOCOL_LIMITS.maxMessageBytes),
     });
     await expect(p).resolves.toMatchObject({ ok: false, error: { code: "frame_too_large" } });
+  });
+  it("refuses replies that break the response schema, failing the request and clearing it", async () => {
+    const malformed = (id: string): unknown[] => [
+      { v: 2, id, ok: true, result: 1 },
+      { v: "1", id, ok: true, result: 1 },
+      { id, ok: true, result: 1 },
+      { v: 1, id, ok: "yes", result: 1 },
+      { v: 1, id, ok: true },
+      { v: 1, id, ok: true, result: 1, extra: "smuggled" },
+      { v: 1, id, ok: false, error: { code: "pwned", message: "x" } },
+      { v: 1, id, ok: false, error: { code: "internal" } },
+      { v: 1, id, ok: false, error: { code: "internal", message: "x", stack: "at /Users/..." } },
+      { v: 1, id, ok: false, result: 1 },
+      { type: "ui.hello.ok", version: 1, id, core: { version: "x" } },
+    ];
+    const { bridge, sent } = make({ maxInFlight: 32 });
+    const count = malformed("probe").length;
+    for (let i = 0; i < count; i++) {
+      const p = bridge.request({ method: "a", mutation: false, payload: null });
+      const { id, body } = sent[i]!;
+      bridge.deliver(id, malformed(body.id)[i]);
+      expect(bridge.inFlight).toBe(0);
+      await expect(p).resolves.toEqual({
+        v: 1,
+        id: body.id,
+        ok: false,
+        error: { code: "internal", message: "The core sent an invalid reply." },
+      });
+    }
+  });
+
+  it("passes on a well-formed error reply unchanged", async () => {
+    const { bridge, sent } = make();
+    const p = bridge.request({ method: "a", mutation: false, payload: null });
+    const reply = {
+      v: 1,
+      id: sent[0]!.body.id,
+      ok: false,
+      error: { code: "not_found", message: "Unknown method a.", details: { n: 1 } },
+    };
+    bridge.deliver(sent[0]!.id, reply);
+    await expect(p).resolves.toEqual(reply);
+  });
+});
+
+describe("helloVersion", () => {
+  it("accepts only a well-formed ui.hello.ok within the shell's supported versions", () => {
+    expect(helloVersion({ type: "ui.hello.ok", version: 1, core: { version: "0.1.0" } })).toBe(1);
+    for (const bad of [
+      null,
+      { type: "ui.hello.ok", version: 2, core: { version: "0.1.0" } },
+      { type: "ui.hello.ok", version: 1.5, core: { version: "0.1.0" } },
+      { type: "ui.hello.ok", version: 1 },
+      { type: "ui.hello.ok", version: 1, core: { version: "0.1.0" }, extra: 1 },
+      { type: "ui.hello.error", error: { code: "incompatible", message: "x" } },
+    ]) {
+      expect(helloVersion(bad)).toBeUndefined();
+    }
   });
 });

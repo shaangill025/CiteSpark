@@ -196,6 +196,8 @@ for (const [k, want] of Object.entries({
   EnableNodeOptionsEnvironmentVariable: "disabled",
   EnableNodeCliInspectArguments: "disabled",
   OnlyLoadAppFromAsar: "enabled",
+  // Electron enforces asar integrity on macOS and Windows only; the fuse bit is set everywhere.
+  EnableEmbeddedAsarIntegrityValidation: "enabled",
 })) {
   if (report.fuses[k] !== want) fail(`fuse ${k} is ${report.fuses[k]}, expected ${want}`);
 }

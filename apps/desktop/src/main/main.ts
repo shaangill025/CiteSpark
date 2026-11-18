@@ -10,7 +10,7 @@ import {
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { SUPPORTED_VERSIONS } from "@citspark/protocol";
-import { parseRendererRequest, RendererBridge } from "./bridge.ts";
+import { helloVersion, parseRendererRequest, RendererBridge } from "./bridge.ts";
 import {
   APP_ENTRY_URL,
   APP_SCHEME,
@@ -79,10 +79,10 @@ const supervisor = new CoreSupervisor({
   },
   onReply: (id, body) => {
     if (id === helloId) {
-      const reply = body as { type?: string; version?: number };
-      if (reply?.type === "ui.hello.ok" && typeof reply.version === "number") {
-        protocolVersion = reply.version;
-        bridge.setVersion(reply.version);
+      const version = helloVersion(body);
+      if (version !== undefined) {
+        protocolVersion = version;
+        bridge.setVersion(version);
       } else {
         lastState = {
           state: "failed",

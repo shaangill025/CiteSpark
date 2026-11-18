@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { existsSync } from "node:fs";
+import { lstatSync, type Stats } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import {
   ErrorCode,
@@ -23,7 +23,8 @@ export type CoreStartFailure =
   | "library_unreadable"
   | "library_newer"
   | "library_needs_backup"
-  | "library_inconsistent";
+  | "library_inconsistent"
+  | "library_location_unsafe";
 
 const START_MESSAGES: Record<CoreStartFailure, string> = {
   data_dir_invalid: "Citspark could not use its data folder.",
@@ -32,6 +33,8 @@ const START_MESSAGES: Record<CoreStartFailure, string> = {
   library_needs_backup:
     "The library needs an upgrade. Upgrades run only after a backup, which this preview cannot take yet.",
   library_inconsistent: "The library's recorded schema does not match this build.",
+  library_location_unsafe:
+    "The library file or one of its companion files is a link to somewhere else. Citspark will not open it.",
 };
 
 /** Why the core could not start. `message` is safe to show; it never contains paths or library content. */
@@ -110,11 +113,8 @@ export class DesktopCore {
 
   /** @internal Use {@link startDesktopCore}. */
   static open(opts: DesktopCoreOptions): DesktopCore {
-    if (!isAbsolute(opts.dataDir) || !existsSync(opts.dataDir)) {
-      throw new CoreStartError("data_dir_invalid");
-    }
-    const file = join(opts.dataDir, LIBRARY_FILE);
-    const created = !existsSync(file);
+    const file = checkLibraryLocation(opts.dataDir);
+    const created = lstatOrUndefined(file) === undefined;
     let db: Database.Database;
     try {
       db = new Database(file);
@@ -122,6 +122,8 @@ export class DesktopCore {
       throw new CoreStartError("library_unreadable");
     }
     try {
+      // Re-check after open: narrows (does not close) a swap between the check and SQLite's open.
+      checkLibraryLocation(opts.dataDir);
       const recorded = recordedVersion(db);
       if (recorded > LATEST) throw new CoreStartError("library_newer");
       const result = migrate(db, {
@@ -227,6 +229,41 @@ export class DesktopCore {
 /** Opens (creating if needed) and migrates the library, then returns the running core. */
 export async function startDesktopCore(opts: DesktopCoreOptions): Promise<DesktopCore> {
   return DesktopCore.open(opts);
+}
+
+/** SQLite's companion files for a library in rollback-journal or WAL mode. */
+const SIDECARS = ["-journal", "-wal", "-shm"] as const;
+
+function lstatOrUndefined(path: string): Stats | undefined {
+  try {
+    return lstatSync(path);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw new CoreStartError("data_dir_invalid");
+  }
+}
+
+/**
+ * Keeps startup inside the data directory it was given (threat model: a link planted in that directory by
+ * another local program or by mistake, not an attacker who controls the OS). The directory must be a real
+ * directory, not a symlink or Windows junction; the library and its SQLite companion files must each be
+ * absent or a regular file with a single link. `lstat` reports symlinks and junctions as symbolic links on
+ * every platform Node supports. Runs before SQLite opens, creates or migrates anything. Returns the
+ * library path.
+ */
+function checkLibraryLocation(dataDir: string): string {
+  if (!isAbsolute(dataDir)) throw new CoreStartError("data_dir_invalid");
+  const dir = lstatOrUndefined(dataDir);
+  if (dir === undefined) throw new CoreStartError("data_dir_invalid");
+  if (dir.isSymbolicLink()) throw new CoreStartError("library_location_unsafe");
+  if (!dir.isDirectory()) throw new CoreStartError("data_dir_invalid");
+  const file = join(dataDir, LIBRARY_FILE);
+  for (const path of [file, ...SIDECARS.map((s) => file + s)]) {
+    const st = lstatOrUndefined(path);
+    if (st === undefined) continue;
+    if (!st.isFile() || st.nlink !== 1) throw new CoreStartError("library_location_unsafe");
+  }
+  return file;
 }
 
 function recordedVersion(db: Database.Database): number {

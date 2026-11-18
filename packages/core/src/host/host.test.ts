@@ -1,5 +1,15 @@
 import Database from "better-sqlite3";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  linkSync,
+  lstatSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MIGRATIONS, migrate } from "@citspark/store";
@@ -95,6 +105,109 @@ describe("startDesktopCore", () => {
     const after = new Database(join(dir, LIBRARY_FILE), { readonly: true });
     expect(after.prepare("SELECT max(version) v FROM schema_migration").get()).toEqual({ v: 1 });
     after.close();
+  });
+});
+
+/**
+ * Threat model: another local program or a confused user replaces something inside Citspark's data folder
+ * with a link that points elsewhere. Startup must not open, create or migrate anything outside the folder
+ * it was given. This is a path-boundary check, not a defence against an attacker who controls the OS.
+ */
+describe("startDesktopCore library path boundary", () => {
+  let outside: string;
+  beforeEach(() => {
+    outside = mkdtempSync(join(tmpdir(), "citspark-outside-"));
+  });
+  afterEach(() => {
+    rmSync(outside, { recursive: true, force: true });
+  });
+
+  const snapshot = (d: string) =>
+    Object.fromEntries(readdirSync(d).map((n) => [n, readFileSync(join(d, n)).toString("hex")]));
+
+  async function expectRefused(dataDir: string): Promise<void> {
+    const err = await startDesktopCore({ dataDir, coreVersion: "x" }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(CoreStartError);
+    expect(err).toMatchObject({ code: "library_location_unsafe" });
+    expect((err as Error).message).not.toContain(outside);
+  }
+
+  // Windows needs Developer Mode or elevation for file symlinks; skip there only if creation is refused.
+  function trySymlink(target: string, path: string, type?: "file" | "dir" | "junction"): boolean {
+    try {
+      symlinkSync(target, path, type);
+      return true;
+    } catch (e) {
+      if (process.platform === "win32" && (e as NodeJS.ErrnoException).code === "EPERM")
+        return false;
+      throw e;
+    }
+  }
+
+  it("refuses a library file that is a symlink to an empty database elsewhere, leaving it untouched", async (ctx) => {
+    const external = join(outside, "external.sqlite");
+    writeFileSync(external, "");
+    if (!trySymlink(external, join(dir, LIBRARY_FILE), "file")) return ctx.skip();
+    const before = snapshot(outside);
+    await expectRefused(dir);
+    expect(snapshot(outside)).toEqual(before);
+    expect(lstatSync(join(dir, LIBRARY_FILE)).isSymbolicLink()).toBe(true);
+  });
+
+  it("refuses a dangling library symlink without creating its target", async (ctx) => {
+    if (!trySymlink(join(outside, "new.sqlite"), join(dir, LIBRARY_FILE), "file"))
+      return ctx.skip();
+    await expectRefused(dir);
+    expect(readdirSync(outside)).toEqual([]);
+  });
+
+  it("refuses a library file hard-linked to a file elsewhere", async () => {
+    const external = join(outside, "external.sqlite");
+    writeFileSync(external, "");
+    linkSync(external, join(dir, LIBRARY_FILE));
+    const before = snapshot(outside);
+    await expectRefused(dir);
+    expect(snapshot(outside)).toEqual(before);
+  });
+
+  it("refuses a data directory that is itself a symlink or junction", async (ctx) => {
+    const link = join(dir, "linked-data");
+    if (!trySymlink(outside, link, process.platform === "win32" ? "junction" : "dir"))
+      return ctx.skip();
+    await expectRefused(link);
+    expect(readdirSync(outside)).toEqual([]);
+  });
+
+  it("refuses a data directory path that is a regular file", async () => {
+    const file = join(dir, "not-a-dir");
+    writeFileSync(file, "x");
+    await expect(startDesktopCore({ dataDir: file, coreVersion: "x" })).rejects.toMatchObject({
+      code: "data_dir_invalid",
+    });
+    expect(readFileSync(file, "utf8")).toBe("x");
+  });
+
+  for (const suffix of ["-wal", "-shm", "-journal"]) {
+    it(`refuses a ${suffix} sidecar that is a symlink elsewhere, leaving its target untouched`, async (ctx) => {
+      const external = join(outside, `external${suffix}`);
+      writeFileSync(external, "");
+      if (!trySymlink(external, join(dir, LIBRARY_FILE + suffix), "file")) return ctx.skip();
+      const before = snapshot(outside);
+      await expectRefused(dir);
+      expect(snapshot(outside)).toEqual(before);
+      expect(readdirSync(dir).sort()).toEqual([LIBRARY_FILE + suffix]);
+    });
+  }
+
+  it("refuses a library path that is a directory", async () => {
+    mkdirSync(join(dir, LIBRARY_FILE));
+    await expectRefused(dir);
+  });
+
+  it("still opens an ordinary existing library and keeps the backup refusal for older ones", async () => {
+    (await ready()).close();
+    core = undefined;
+    expect((await ready()).status().library.created).toBe(false);
   });
 });
 
