@@ -28,3 +28,9 @@ export {
   type IsolatedExtraction,
 } from "./extract-isolated.ts";
 export * from "./ipc/index.ts";
+export {
+  captureHandlers,
+  xAccountKey,
+  X_CAPTURE_KIND,
+  type CaptureHandlerOptions,
+} from "./capture-ipc.ts";
