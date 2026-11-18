@@ -8,6 +8,7 @@
     { "path": "packages/native-host" },
     { "path": "packages/store" },
     { "path": "packages/sync" },
-    { "path": "tools/license-check" }
+    { "path": "tools/license-check" },
+    { "path": "tools/audit-gate" }
   ]
 }
