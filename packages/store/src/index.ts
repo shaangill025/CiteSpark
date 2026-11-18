@@ -23,6 +23,7 @@ export {
 export {
   CaptureStore,
   AccountMismatchError,
+  CursorLoopError,
   CursorMismatchError,
   InvalidPageError,
   ReplayConflictError,
