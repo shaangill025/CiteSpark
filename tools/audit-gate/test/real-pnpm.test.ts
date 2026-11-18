@@ -245,3 +245,52 @@ posix(
     expect(r.status).toBe(0);
   },
 );
+
+const FULL_SCOPE: Scope = { dev: true, dep: true, opt: true };
+const PROD_SCOPE: Scope = { dev: false, dep: true, opt: true };
+
+// Settings a developer machine, CI image or repository could carry that narrow pnpm's audit scope.
+const INHERITED: [string, Inherited][] = [
+  ["none", {}],
+  [".npmrc optional=false", { npmrc: "optional=false\n" }],
+  [".npmrc dev=true", { npmrc: "dev=true\n" }],
+  [".npmrc dev=true optional=false", { npmrc: "dev=true\noptional=false\n" }],
+  [".npmrc production=true", { npmrc: "production=true\n" }],
+  [".npmrc production=false", { npmrc: "production=false\n" }],
+  [".npmrc only=dev", { npmrc: "only=dev\n" }],
+  [".npmrc only=prod", { npmrc: "only=prod\n" }],
+  ["env npm_config_only=dev", { env: { npm_config_only: "dev" } }],
+  ["env NPM_CONFIG_OPTIONAL=false", { env: { NPM_CONFIG_OPTIONAL: "false" } }],
+  ["env npm_config_production=true", { env: { npm_config_production: "true" } }],
+  ["env npm_config_omit=optional", { env: { npm_config_omit: "optional" } }],
+  ["pnpm-workspace.yaml optional: false", { workspace: "optional: false\n" }],
+  ["pnpm-workspace.yaml only: dev", { workspace: "only: dev\n" }],
+];
+
+posix.for(INHERITED)(
+  "inherited %s: the full audit sends production, development and optional dependencies and the production audit production and optional ones",
+  { timeout: 60_000 },
+  async ([, inherited]) => {
+    const r = await runGate(inherited, ["opt"]);
+    expect(r.scopes).toEqual([FULL_SCOPE, PROD_SCOPE]);
+    expect(r.stdout).toContain(
+      "blocked: high GHSA-3333-4444-5555 synthetic-opt@1.0.0 via .>synthetic-opt (reported by the production-only audit; exceptions cover development findings only)",
+    );
+    expect(r.stdout).toContain(
+      "blocked: high GHSA-3333-4444-5555 synthetic-opt@1.0.0 via .>synthetic-opt\n",
+    );
+    expect(r.stdout).toContain("Dependency audit gate FAILED.");
+    expect(r.status).toBe(1);
+  },
+);
+
+posix(
+  "inherited optional=false still passes the clean case with the full scope, so the flags do not merely fail everything",
+  { timeout: 60_000 },
+  async () => {
+    const r = await runGate({ npmrc: "optional=false\n" }, []);
+    expect(r.scopes).toEqual([FULL_SCOPE, PROD_SCOPE]);
+    expect(r.stdout).toContain("Dependency audit gate PASSED only under a temporary exception");
+    expect(r.status).toBe(0);
+  },
+);

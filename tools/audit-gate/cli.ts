@@ -1,6 +1,8 @@
-// CI entry point for the dependency audit gate (`pnpm audit-gate`). It always runs the full `pnpm audit --json`
-// and prints its report unchanged; see docs/security/dependency-audit-exceptions.md. Takes no arguments and
-// reads no environment overrides: the commands, policy path and clock are fixed.
+// CI entry point for the dependency audit gate (`pnpm audit-gate`). It runs `pnpm audit --json` over production,
+// development and optional dependencies and again over production and optional ones, with the scope set
+// explicitly on the command line, and prints both reports unchanged; see
+// docs/security/dependency-audit-exceptions.md. Takes no arguments and reads no gate overrides from the
+// environment: the commands, policy path and clock are fixed.
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";

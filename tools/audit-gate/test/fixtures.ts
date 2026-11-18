@@ -129,5 +129,6 @@ export function policy(
 
 export const ROOT_MANIFEST = {
   name: "synthetic-root",
+  packageManager: "pnpm@10.21.0",
   devDependencies: { vitest: "^4.0.0", "typescript-eslint": "8.46.4" },
 };

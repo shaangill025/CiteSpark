@@ -38,7 +38,16 @@ import path from "node:path";
 const dir = path.join(import.meta.dirname, "..", "stub");
 const args = process.argv.slice(2).join(" ");
 fs.appendFileSync(path.join(dir, "calls.log"), args + "\\n");
-const name = args === "audit --json" ? "full" : args === "audit --prod --json" ? "prod" : "unexpected";
+if (args === "--version") {
+  process.stdout.write("10.21.0\\n");
+  process.exit(0);
+}
+const name =
+  args === "audit --json --only=null --no-production --no-dev --optional"
+    ? "full"
+    : args === "audit --json --only=prod --production --no-dev --optional"
+      ? "prod"
+      : "unexpected";
 process.stdout.write(fs.readFileSync(path.join(dir, name + ".out"), "utf8"));
 process.exit(Number(fs.readFileSync(path.join(dir, name + ".exit"), "utf8")));
 `;
@@ -121,7 +130,9 @@ test.skipIf(process.platform === "win32")(
     const raw = JSON.stringify(report([advisory()]), null, 2);
     const r = runCli({ full: [1, raw] });
     expect(r.status).toBe(0);
-    expect(r.calls).toBe("audit --json\naudit --prod --json\n");
+    expect(r.calls).toBe(
+      "--version\naudit --json --only=null --no-production --no-dev --optional\naudit --json --only=prod --production --no-dev --optional\n",
+    );
     expect(r.stdout).toContain(raw);
     expect(r.stdout).toContain(
       "ACCEPTED RISK (not fixed): high GHSA-fc5q-39xc-vjpf picomatch@4.0.7 via .>vitest>picomatch",

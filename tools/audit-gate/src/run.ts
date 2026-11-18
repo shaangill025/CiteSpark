@@ -1,5 +1,6 @@
-// Runs the full pnpm audit and the production-only audit, prints the full report unchanged and applies the
-// reviewed exception policy. The command line is fixed; nothing from the environment selects what runs.
+// Runs the full pnpm audit and the production-only audit, prints both reports unchanged and applies the
+// reviewed exception policy. The command lines are fixed and set the dependency scope explicitly; other pnpm
+// settings (registry, authentication, TLS, auditConfig) are inherited as usual.
 import { evaluateAudit } from "./evaluate.ts";
 import { NOT_JSON } from "./report.ts";
 
@@ -17,10 +18,42 @@ export interface GateDeps {
   log: (line: string) => void;
 }
 
-export const FULL_AUDIT = ["audit", "--json"];
-export const PROD_AUDIT = ["audit", "--prod", "--json"];
+// pnpm 10 derives an audit's dependency scope from the only, production, dev and optional settings, which a
+// bare `pnpm audit` inherits from .npmrc files, npm_config_* environment variables and pnpm-workspace.yaml
+// (for example optional=false drops optional dependencies from both audits, and dev=true or only=dev turns the
+// "full" audit into a development-only one). Command-line settings take precedence over all of those, so both
+// audits set every one of them explicitly. In pnpm 10.21's config normalisation, only=null with production and
+// dev unset selects production and development dependencies, and only=prod selects production without
+// development ones; --optional adds optional dependencies to both. The request scope this produces is checked
+// end to end with the real pnpm in test/real-pnpm.test.ts.
+export const FULL_AUDIT = [
+  "audit",
+  "--json",
+  "--only=null",
+  "--no-production",
+  "--no-dev",
+  "--optional",
+];
+export const PROD_AUDIT = [
+  "audit",
+  "--json",
+  "--only=prod",
+  "--production",
+  "--no-dev",
+  "--optional",
+];
+export const PNPM_VERSION = ["--version"];
 
 export function runGate(deps: GateDeps): number {
+  // The scope flags above are verified against the pinned pnpm only; any other pnpm fails closed.
+  const version = deps.runPnpm(PNPM_VERSION);
+  const pinned = pinnedPnpm(readJson(deps.readManifest));
+  const actual = version.status === 0 ? version.stdout.trim() : "";
+  const versionError =
+    pinned !== undefined && actual === pinned
+      ? undefined
+      : `pnpm: version ${JSON.stringify(actual)} is not the pinned packageManager pnpm@${pinned ?? "<missing>"}; the audit scope flags are verified only for the pinned pnpm (fail closed)`;
+  if (version.stderr !== "") deps.log(version.stderr);
   const full = deps.runPnpm(FULL_AUDIT);
   deps.log(`$ pnpm ${FULL_AUDIT.join(" ")} (exit ${String(full.status)})`);
   deps.log(full.stdout);
@@ -39,6 +72,10 @@ export function runGate(deps: GateDeps): number {
     manifest: readJson(deps.readManifest),
     now: deps.now(),
   });
+  if (versionError !== undefined) {
+    result.ok = false;
+    result.errors.unshift(versionError);
+  }
   for (const r of result.reported) deps.log(r);
   for (const a of result.accepted) {
     const e = a.exception;
@@ -61,6 +98,13 @@ export function runGate(deps: GateDeps): number {
   for (const e of result.errors) deps.log(e);
   deps.log("Dependency audit gate FAILED.");
   return 1;
+}
+
+function pinnedPnpm(manifest: unknown): string | undefined {
+  if (typeof manifest !== "object" || manifest === null) return undefined;
+  const pin = (manifest as Record<string, unknown>).packageManager;
+  const match = typeof pin === "string" ? /^pnpm@(10\.\d+\.\d+)$/.exec(pin) : null;
+  return match?.[1];
 }
 
 function readJson(read: () => string): unknown {
