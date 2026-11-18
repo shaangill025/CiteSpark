@@ -2,7 +2,7 @@
 import Database from "better-sqlite3";
 import { describe, expect, test } from "vitest";
 import { CaptureMethod, ErrorCode, ProtocolException, Scope } from "@citspark/protocol";
-import { migrate } from "@citspark/store";
+import { JobStore, migrate } from "@citspark/store";
 import { captureHandlers } from "./capture-ipc.ts";
 import type { PairedClient } from "./ipc/registry.ts";
 
@@ -163,6 +163,7 @@ describe("capture over IPC: the desktop is the authority (M1-08)", () => {
     expect(
       await call(CaptureMethod.stop, {
         jobId: s.jobId,
+        passId: s.passId,
         outcome: "rate_limited",
         reason: "rate_limited",
         retryAfterSec: 90,
@@ -170,7 +171,12 @@ describe("capture over IPC: the desktop is the authority (M1-08)", () => {
     ).toEqual({ state: "rate_limited" });
     expect(job(s.jobId).stop_reason).toMatch(/rate_limited.*90/);
     await rejects(
-      call(CaptureMethod.stop, { jobId: s.jobId, outcome: "complete", reason: "user_pause" }),
+      call(CaptureMethod.stop, {
+        jobId: s.jobId,
+        passId: s.passId,
+        outcome: "complete",
+        reason: "user_pause",
+      }),
       ErrorCode.InvalidMessage,
     );
   });
@@ -180,7 +186,12 @@ describe("capture over IPC: the desktop is the authority (M1-08)", () => {
     const s = await start(call);
     const first = pages(s.jobId, s.passId, 3);
     await call(CaptureMethod.page, first[0]);
-    await call(CaptureMethod.stop, { jobId: s.jobId, outcome: "paused", reason: "user_pause" });
+    await call(CaptureMethod.stop, {
+      jobId: s.jobId,
+      passId: s.passId,
+      outcome: "paused",
+      reason: "user_pause",
+    });
     const r = await start(call);
     expect(r).toMatchObject({ jobId: s.jobId, resumed: true, committedPages: 1 });
     expect(r.passId).not.toBe(s.passId);
@@ -201,6 +212,32 @@ describe("capture over IPC: the desktop is the authority (M1-08)", () => {
     await call(CaptureMethod.page, pages(r.jobId, r.passId, 2)[0]);
   });
 
+  test("a delayed stop from a replaced pass never stops its replacement (Sol review)", async () => {
+    const { call, job } = setup();
+    const a = await start(call);
+    const b = await start(call);
+    expect(b.passId).not.toBe(a.passId);
+    await rejects(
+      call(CaptureMethod.stop, {
+        jobId: a.jobId,
+        passId: a.passId,
+        outcome: "cancelled",
+        reason: "user_cancel",
+      }),
+      ErrorCode.LeaseLost,
+    );
+    expect(job(b.jobId).state).toBe("running");
+    await call(CaptureMethod.page, pages(b.jobId, b.passId, 2)[0]);
+  });
+
+  test("a cancel during the final page is never acknowledged as complete (Sol review)", async () => {
+    const { db, call, job } = setup();
+    const s = await start(call);
+    new JobStore(db).cancel(s.jobId, 1_800_000_000_000);
+    await rejects(call(CaptureMethod.page, pages(s.jobId, s.passId, 1)[0]), ErrorCode.LeaseLost);
+    expect(job(s.jobId).state).toBe("cancelled");
+  });
+
   test("another client cannot commit into or stop a job it does not hold", async () => {
     const { call } = setup();
     const s = await start(call);
@@ -210,7 +247,11 @@ describe("capture over IPC: the desktop is the authority (M1-08)", () => {
       ErrorCode.LeaseLost,
     );
     await rejects(
-      call(CaptureMethod.stop, { jobId: s.jobId, outcome: "paused", reason: "user_pause" }, other),
+      call(
+        CaptureMethod.stop,
+        { jobId: s.jobId, passId: s.passId, outcome: "paused", reason: "user_pause" },
+        other,
+      ),
       ErrorCode.LeaseLost,
     );
     await rejects(start(call, "bookmarks", other), ErrorCode.JobBusy);
@@ -223,6 +264,7 @@ describe("capture over IPC: the desktop is the authority (M1-08)", () => {
     expect(
       await call(CaptureMethod.stop, {
         jobId: s.jobId,
+        passId: s.passId,
         outcome: "cancelled",
         reason: "user_cancel",
       }),

@@ -95,6 +95,7 @@ describe("capture wire contract (CAP-02, CAP-03, CAP-04)", () => {
     expect(
       CaptureStopPayloadSchema.safeParse({
         jobId: "job-1",
+        passId: "pass-1",
         outcome: "rate_limited",
         reason: "rate_limited",
         retryAfterSec: 60,
@@ -102,8 +103,20 @@ describe("capture wire contract (CAP-02, CAP-03, CAP-04)", () => {
     ).toBe(true);
     // A client can never declare a job complete; only a committed end page does that.
     expect(
-      CaptureStopPayloadSchema.safeParse({ jobId: "job-1", outcome: "complete", reason: "x" })
-        .success,
+      CaptureStopPayloadSchema.safeParse({
+        jobId: "job-1",
+        passId: "pass-1",
+        outcome: "complete",
+        reason: "x",
+      }).success,
+    ).toBe(false);
+    // A stop is bound to the exact pass it ends, so a delayed stop cannot end a newer pass.
+    expect(
+      CaptureStopPayloadSchema.safeParse({
+        jobId: "job-1",
+        outcome: "paused",
+        reason: "user_pause",
+      }).success,
     ).toBe(false);
   });
 

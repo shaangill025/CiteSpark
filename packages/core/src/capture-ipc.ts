@@ -147,12 +147,14 @@ export function captureHandlers(opts: CaptureHandlerOptions): Record<string, Met
           records: d.records,
           gaps: d.gaps.unavailable + d.gaps.partialThreads,
         });
-        if (r.ended) held.delete(d.jobId);
-        else if (r.cancelRequested) {
+        if (r.cancelRequested || r.outcome === "cancelled") {
+          // A cancel requested in Citspark wins, even over a final page: never acknowledge complete.
+          // The page stays committed (CAP-04); an end page already moved the job to cancelled.
           held.delete(d.jobId);
-          jobs.transition(d.jobId, h.lease, now(), "cancelled");
+          if (!r.ended) jobs.transition(d.jobId, h.lease, now(), "cancelled");
           throw new ProtocolException(ErrorCode.LeaseLost, "Capture was cancelled in Citspark.");
         }
+        if (r.ended) held.delete(d.jobId);
         return { status: r.status, seq: r.seq, outcome: r.outcome, newRecords: r.newRecords };
       } catch (e) {
         if (e instanceof ProtocolException) throw e;
@@ -197,6 +199,10 @@ export function captureHandlers(opts: CaptureHandlerOptions): Record<string, Met
       if (!p.success) throw invalid("capture.stop");
       const d = p.data;
       const h = holder(d.jobId, ctx);
+      // Fenced to the exact pass: a delayed stop from a replaced pass must not end its successor.
+      if (h.passId !== d.passId) {
+        throw new ProtocolException(ErrorCode.LeaseLost, "This capture pass was replaced.");
+      }
       held.delete(d.jobId);
       const reason =
         d.retryAfterSec === undefined ? d.reason : `${d.reason}: retry after ${d.retryAfterSec} s`;

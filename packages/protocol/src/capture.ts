@@ -112,6 +112,8 @@ export type CaptureStopReason = z.infer<typeof CaptureStopReasonSchema>;
 /** A client can stop a job but never declare it complete (T02). */
 export const CaptureStopPayloadSchema = z.strictObject({
   jobId: JobIdSchema,
+  /** The exact pass this stop ends: a delayed stop from a replaced pass cannot end its successor. */
+  passId: Opaque(128),
   outcome: z.enum(["paused", "cancelled", "auth_required", "rate_limited", "failed"]),
   reason: CaptureStopReasonSchema,
   retryAfterSec: z.int().min(0).max(86_400).optional(),

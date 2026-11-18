@@ -85,8 +85,11 @@ export interface CommitResult {
   cursor: string | null;
   /** The page carried no continuation, so the job reached its recognized end. */
   ended: boolean;
-  /** `complete` or `partial` (the pass saw gaps) once ended; `continue` before that. */
-  outcome: "continue" | "complete" | "partial";
+  /**
+   * `complete` or `partial` (the pass saw gaps) once ended; `continue` before that. `cancelled` when
+   * the end page committed after a cancel request: the job is cancelled, never complete.
+   */
+  outcome: "continue" | "complete" | "partial" | "cancelled";
   /** Records whose version this job had not observed before. Zero while a resumed pass is catching up. */
   newRecords: number;
   newSources: number;
@@ -146,6 +149,23 @@ function passGaps(checkpoint: string | null, passId: string): number {
     return v?.pass === passId && Number.isSafeInteger(v.gaps) ? (v.gaps as number) : 0;
   } catch {
     return 0;
+  }
+}
+
+/** Outcome a replayed end page of `passId` reports, from the gap tally committed with that end. */
+function endedPassOutcome(job: Job, passId: string): "complete" | "partial" {
+  if (job.state === "partial") return "partial";
+  const v = gapRecord(job.checkpoint);
+  return v?.pass === passId && v.gaps === 0 ? "complete" : "partial";
+}
+
+function gapRecord(checkpoint: string | null): { pass: unknown; gaps: unknown } | undefined {
+  if (checkpoint === null) return undefined;
+  try {
+    return (JSON.parse(checkpoint) as Record<string, unknown>)[GAP_KEY] as
+      { pass: unknown; gaps: unknown } | undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -554,8 +574,10 @@ export class CaptureStore {
       seq: prior.seq,
       cursor: prior.cursor_out,
       ended: prior.cursor_out === null,
-      outcome:
-        prior.cursor_out !== null ? "continue" : job.state === "partial" ? "partial" : "complete",
+      // The pass's own persisted gap tally decides, not the job's current state: a resumed job is
+      // running again, and its partial end must not replay as complete. An ended pass whose tally
+      // is no longer recorded (a later pass replaced it) never claims complete.
+      outcome: prior.cursor_out !== null ? "continue" : endedPassOutcome(job, page.passId),
       newRecords: 0,
       newSources: 0,
       newVersions: 0,
@@ -878,7 +900,13 @@ export class CaptureStore {
       seq,
       cursor: page.cursorOut,
       ended,
-      outcome: !ended ? "continue" : gaps > 0 ? "partial" : "complete",
+      outcome: !ended
+        ? "continue"
+        : cancelRequested
+          ? "cancelled"
+          : gaps > 0
+            ? "partial"
+            : "complete",
       newRecords,
       newSources,
       newVersions,

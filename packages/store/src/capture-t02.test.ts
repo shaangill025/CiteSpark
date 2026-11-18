@@ -67,6 +67,26 @@ describe("gaps end a pass as partial (T02, CAP-06)", () => {
     expect(jobs.get("j1").stopReason).toMatch(/1 gaps/);
   });
 
+  it("a replayed partial end stays partial after the job resumes (Sol review)", () => {
+    const { jobs, capture, lease } = setup();
+    const end = { ...pageAt("p1", 0), cursorOut: null, gaps: 1 };
+    expect(capture.commitPage("j1", lease, T0, end).outcome).toBe("partial");
+    jobs.resume("j1");
+    const again = jobs.acquire("j1", "B", T0, TTL)!;
+    const r = capture.commitPage("j1", again, T0, end);
+    expect(r).toMatchObject({ status: "replayed", outcome: "partial" });
+    expect(jobs.get("j1").state).toBe("running");
+  });
+
+  it("an end page committed after a cancel request reports cancelled, never complete (Sol review)", () => {
+    const { jobs, capture, lease } = setup();
+    jobs.cancel("j1", T0);
+    const r = capture.commitPage("j1", lease, T0, { ...pageAt("p1", 0), cursorOut: null });
+    expect(jobs.get("j1").state).toBe("cancelled");
+    expect(r.outcome).toBe("cancelled");
+    expect(r.cancelRequested).toBe(true);
+  });
+
   it("rejects an invalid gap count", () => {
     const { capture, lease } = setup();
     expect(() => capture.commitPage("j1", lease, T0, { ...pageAt("p1", 0), gaps: -1 })).toThrow(
