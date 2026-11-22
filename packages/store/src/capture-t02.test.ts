@@ -1,6 +1,12 @@
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
-import { CaptureStore, CursorLoopError, JobStore, migrate } from "./index.ts";
+import {
+  CaptureStore,
+  CheckpointCorruptError,
+  CursorLoopError,
+  JobStore,
+  migrate,
+} from "./index.ts";
 import { ACCOUNT, COLLECTION, allPages, cursorFor, pageAt } from "./testing/synthetic-feed.ts";
 
 // T02 store part (M1-08): gaps and cursor loops never become a false `complete`.
@@ -92,6 +98,48 @@ describe("gaps end a pass as partial (T02, CAP-06)", () => {
     expect(() => capture.commitPage("j1", lease, T0, { ...pageAt("p1", 0), gaps: -1 })).toThrow(
       /gaps/,
     );
+  });
+});
+
+describe("a corrupt gap checkpoint fails closed (T02, CAP-04, CAP-06)", () => {
+  // The pass already recorded a known gap; then its persisted tally became unreadable.
+  it.each([
+    ["unparseable JSON", "{not json"],
+    ["a JSON value that is not an object", "42"],
+    ["an object without the gap record", "{}"],
+    ["a gap record with a non-integer tally", '{"captureGaps":{"pass":"p1","gaps":"1"}}'],
+    ["a gap record of another pass", '{"captureGaps":{"pass":"other","gaps":0}}'],
+  ])("%s never resets to zero or completes", (_what, corrupt) => {
+    const { db, jobs, capture, lease } = setup();
+    const pages = allPages("p1");
+    capture.commitPage("j1", lease, T0, { ...pages[0]!, gaps: 1 });
+    for (const p of pages.slice(1, -1)) capture.commitPage("j1", lease, T0, p);
+    db.prepare("UPDATE job SET checkpoint = ? WHERE id = 'j1'").run(corrupt);
+    const before = { pages: count(db, "capture_page"), sources: count(db, "source") };
+    expect(() => capture.commitPage("j1", lease, T0, { ...pages.at(-1)!, gaps: 0 })).toThrow(
+      CheckpointCorruptError,
+    );
+    // Nothing of the end page was committed; the job is still running under its lease (the caller
+    // decides the needs-attention state), never complete, and the corrupt record is left for repair.
+    const job = jobs.get("j1");
+    expect(job.state).toBe("running");
+    expect(job.checkpoint).toBe(corrupt);
+    expect(job.cursor).toBe(pages.at(-2)!.cursorOut);
+    expect({ pages: count(db, "capture_page"), sources: count(db, "source") }).toEqual(before);
+  });
+
+  it("a fresh pass from the top recounts its own gaps instead of trusting the corrupt tally", () => {
+    const { db, jobs, capture, lease } = setup();
+    capture.commitPage("j1", lease, T0, { ...pageAt("p1", 0), gaps: 1 });
+    db.prepare("UPDATE job SET checkpoint = '{not json' WHERE id = 'j1'").run();
+    jobs.transition("j1", lease, T0, "paused", "user_pause");
+    jobs.resume("j1");
+    const again = jobs.acquire("j1", "B", T0, TTL)!;
+    const last = allPages("p2").map((p, i) =>
+      capture.commitPage("j1", again, T0, { ...p, gaps: i === 1 ? 1 : 0 }),
+    );
+    expect(last.at(-1)?.outcome).toBe("partial");
+    expect(jobs.get("j1").stopReason).toMatch(/1 gaps/);
   });
 });
 

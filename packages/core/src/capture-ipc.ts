@@ -14,6 +14,7 @@ import {
 import {
   AccountMismatchError,
   CaptureStore,
+  CheckpointCorruptError,
   CursorLoopError,
   CursorMismatchError,
   JobStore,
@@ -168,6 +169,21 @@ export function captureHandlers(opts: CaptureHandlerOptions): Record<string, Met
         if (e instanceof CursorLoopError) {
           settle(d.jobId, h, "failed", "cursor loop: X returned a cursor this pass already read");
           throw new ProtocolException(ErrorCode.CursorLoop, "X repeated a page. Capture stopped.");
+        }
+        if (e instanceof CheckpointCorruptError) {
+          // Fail closed (CAP-04, T02): the pass cannot prove it saw no gaps, so it never completes.
+          // The page is not saved and the corrupt record is kept for diagnosis; the job needs
+          // attention (failed), and a resume starts a fresh pass that recounts its own gaps.
+          settle(
+            d.jobId,
+            h,
+            "failed",
+            "checkpoint_corrupt: the saved gap tally of this pass is unreadable",
+          );
+          throw new ProtocolException(
+            ErrorCode.CheckpointCorrupt,
+            "Citspark could not read this capture's saved progress. Capture stopped; nothing from this page was saved.",
+          );
         }
         if (e instanceof CursorMismatchError || e instanceof ReplayConflictError) {
           throw new ProtocolException(

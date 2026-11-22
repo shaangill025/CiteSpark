@@ -21,6 +21,8 @@ export const ErrorCode = {
   CursorMismatch: "cursor_mismatch",
   JobBusy: "job_busy",
   LeaseLost: "lease_lost",
+  /** The pass's saved gap tally is unreadable; the desktop failed the job for attention. */
+  CheckpointCorrupt: "checkpoint_corrupt",
 } as const;
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
 

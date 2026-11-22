@@ -264,6 +264,27 @@ describe("capture over IPC: the desktop is the authority (M1-08)", () => {
     expect(job(a.jobId)).toMatchObject({ state: "paused", stop_reason: "user_pause" });
   });
 
+  test("a corrupt gap checkpoint after a known gap fails closed: typed error, never complete (T02, CAP-04)", async () => {
+    const { db, call, job, count } = setup();
+    const s = await start(call);
+    const ps = pages(s.jobId, s.passId, 3, 0); // The first page records a known gap.
+    await call(CaptureMethod.page, ps[0]);
+    await call(CaptureMethod.page, ps[1]);
+    db.prepare("UPDATE job SET checkpoint = '{not json' WHERE id = ?").run(s.jobId);
+    await rejects(call(CaptureMethod.page, ps[2]), "checkpoint_corrupt");
+    // Needs attention: failed with an honest reason, the end page not committed, the record kept.
+    expect(job(s.jobId).state).toBe("failed");
+    expect(job(s.jobId).stop_reason).toMatch(/checkpoint/);
+    expect(count("capture_page")).toBe(2);
+    expect(
+      (db.prepare("SELECT checkpoint FROM job WHERE id = ?").get(s.jobId) as { checkpoint: string })
+        .checkpoint,
+    ).toBe("{not json");
+    // The pass is over for this client; a resend cannot slip through as complete.
+    await rejects(call(CaptureMethod.page, ps[2]), ErrorCode.LeaseLost);
+    expect(job(s.jobId).state).toBe("failed");
+  });
+
   test("a cancel during the final page is never acknowledged as complete (Sol review)", async () => {
     const { db, call, job } = setup();
     const s = await start(call);
