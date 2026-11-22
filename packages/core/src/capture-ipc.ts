@@ -207,14 +207,16 @@ export function captureHandlers(opts: CaptureHandlerOptions): Record<string, Met
       const reason =
         d.retryAfterSec === undefined ? d.reason : `${d.reason}: retry after ${d.retryAfterSec} s`;
       try {
-        if (d.outcome === "cancelled") {
-          jobs.cancel(d.jobId, now());
-          if (jobs.get(d.jobId).state === "running") {
-            jobs.transition(d.jobId, h.lease, now(), "cancelled", reason);
-          }
-        } else {
-          jobs.transition(d.jobId, h.lease, now(), d.outcome, reason);
-        }
+        // Every outcome, cancel included, goes through the held lease: transition validates owner,
+        // generation and expiry before it writes anything. A holder whose lease expired and was
+        // reclaimed gets LeaseLost and cannot mark its successor's job cancel_requested (CAP-03).
+        jobs.transition(
+          d.jobId,
+          h.lease,
+          now(),
+          d.outcome,
+          d.outcome === "cancelled" ? "cancelled by user" : reason,
+        );
       } catch (e) {
         if (e instanceof LeaseError) {
           throw new ProtocolException(ErrorCode.LeaseLost, "This capture is no longer active.");

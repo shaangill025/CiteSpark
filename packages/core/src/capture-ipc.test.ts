@@ -50,7 +50,11 @@ function setup(db = new Database(":memory:")) {
       cursor: string | null;
       stop_reason: string | null;
     };
-  return { db, call, count, job };
+  /** Moves the injected clock forward, e.g. past a lease's TTL. */
+  const advance = (ms: number) => {
+    t += ms;
+  };
+  return { db, call, count, job, advance, now: () => t };
 }
 
 const start = (call: ReturnType<typeof setup>["call"], collection = "bookmarks", who = ext) =>
@@ -228,6 +232,36 @@ describe("capture over IPC: the desktop is the authority (M1-08)", () => {
     );
     expect(job(b.jobId).state).toBe("running");
     await call(CaptureMethod.page, pages(b.jobId, b.passId, 2)[0]);
+  });
+
+  test("a cancel from a holder whose expired lease was reclaimed never touches the successor (CAP-03, CAP-04)", async () => {
+    const { db, call, job, advance, now } = setup();
+    const a = await start(call);
+    advance(200_000); // Past the default 120 s TTL: the extension went silent and lost the lease.
+    const jobs = new JobStore(db);
+    // Another holder of the same library reclaims the expired lease (a newer generation).
+    const successor = jobs.acquire(a.jobId, "extension:ext-2", now(), 120_000);
+    expect(successor).not.toBeNull();
+    // The stale holder's delayed cancel is a typed rejection, not a mutation of the successor's job.
+    await rejects(
+      call(CaptureMethod.stop, {
+        jobId: a.jobId,
+        passId: a.passId,
+        outcome: "cancelled",
+        reason: "user_cancel",
+      }),
+      ErrorCode.LeaseLost,
+    );
+    const after = jobs.get(a.jobId);
+    expect(after).toMatchObject({
+      state: "running",
+      cancelRequested: false,
+      leaseOwner: "extension:ext-2",
+      leaseGeneration: successor!.generation,
+    });
+    // The successor still ends its own pass with its own outcome, not "cancelled by user".
+    jobs.transition(a.jobId, successor!, now(), "paused", "user_pause");
+    expect(job(a.jobId)).toMatchObject({ state: "paused", stop_reason: "user_pause" });
   });
 
   test("a cancel during the final page is never acknowledged as complete (Sol review)", async () => {
