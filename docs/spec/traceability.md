@@ -229,6 +229,21 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
   restored and database reopened) on POSIX; skipped on Windows and as root, where directory modes do
   not deny unlink (`trash.test.ts`, "purge integrity").
 
+## M1-08 integration notes
+
+- CAP-03/CAP-04: `capture.stop` sends every outcome, `cancelled` included, through
+  `JobStore.transition` with the held lease, which validates owner, generation and expiry before any
+  write. A holder whose expired lease was reclaimed gets `lease_lost` and can no longer mark its
+  successor's job `cancel_requested` (`capture-ipc.test.ts`). A cancel from a holder whose lease
+  merely expired is now also refused; the job stays reclaimable instead of being cancelled unfenced.
+- CAP-04/CAP-06 (T02): a pass that continues must find its own well-formed gap tally in the job
+  checkpoint. An unparseable, non-object, missing, malformed or other-pass tally throws
+  `CheckpointCorruptError` (nothing of the page is written; the record is kept); the core fails the
+  job (`checkpoint_corrupt`, needs attention) and the extension shows a failed run. It never resets
+  the known gaps to 0 or completes. A fresh pass from the top recounts its own gaps
+  (`capture-t02.test.ts`, `capture-ipc.test.ts`, `apps/extension/test/run.test.ts`).
+- `@citspark/protocol` adds error code `checkpoint_corrupt`.
+
 ## Status maintenance notes
 
 - README status: the milestone row for M1 reads `in progress`, matching the merged M1-01 to M1-07 and M1-09 to M1-11
@@ -248,7 +263,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | ID | Name | Milestone gate | Plan layers | Status | F0 evidence |
 | --- | --- | --- | --- | --- | --- |
 | T01 | Capture replay | M1 | M1-04 | implemented | M1-04: 18 child-process kill cases (mid-page, before-commit, after-commit × pages 0, 6, 11 × fresh or same-pass resume) in `packages/store/src/t01.test.ts`; see `docs/testing/t01-capture-replay.md`. Verified locally on macOS; CI matrix run pending. F0 prototype: `prototypes/capture-commit` |
-| T02 | Coverage honesty | M1 | M1-08 | not started | — |
+| T02 | Coverage honesty | M1 | M1-08 | in progress | M1-08 (synthetic only): `apps/extension/test/t02/t02.e2e.ts` runs the built MV3 extension in Playwright Chromium against mock X with the real native host, IPC server and store (17 cases: full pass, pause/resume, cursor loop, auth, 429, schema, disk full, partial thread, tombstone, account switch, cancel, budget, desktop loss, credential scan). Store part in `packages/store/src/capture-t02.test.ts`. Owner live full-pass and resume run and Chrome/Edge validation pending |
 | T03 | Attribution | M1, M3 | M1-07, M3-11, M4-05 | in progress | ADR 0010 |
 | T04 | Sync | M2 | M2-04, M2-05 | in progress | M2-04: seeded fast-check property tests (`packages/sync/src/t04.property.test.ts`): random concurrent edit sequences never lose user text; same-key metadata changes conflict. Filesystem harness pending (M2-05) |
 | T05 | Privacy | M3, M4 | M3-04 | not started | — |
