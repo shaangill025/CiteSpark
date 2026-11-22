@@ -21,3 +21,4 @@ coverage/
 *.csbackup
 twitter-*.zip
 *.tsbuildinfo
+dist-test/

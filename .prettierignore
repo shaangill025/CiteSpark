@@ -4,3 +4,4 @@ prototypes
 pnpm-lock.yaml
 docs
 *.md
+dist-test
