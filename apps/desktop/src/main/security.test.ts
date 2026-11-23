@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -82,7 +82,9 @@ describe("resolveAppAsset", () => {
   let root: string;
   let outside: string;
   beforeAll(() => {
-    const base = mkdtempSync(join(tmpdir(), "citspark-assets-"));
+    // resolveAppAsset returns real paths, so build expectations from the real temp dir (on macOS the
+    // default TMPDIR /var/folders/... is a symlink to /private/var/folders/...).
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "citspark-assets-")));
     root = join(base, "renderer");
     outside = join(base, "secret.txt");
     mkdirSync(join(root, "assets"), { recursive: true });

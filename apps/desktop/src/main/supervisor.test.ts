@@ -100,6 +100,22 @@ describe("CoreSupervisor", () => {
     expect(replies[1]).toMatchObject([2, { ok: true, result: { core: { pid: spawned[0]!.pid } } }]);
   });
 
+  it("survives an onReply that throws and keeps serving later replies", async () => {
+    const got: number[] = [];
+    const s = supervise("normal", {
+      onReply: (id) => {
+        got.push(id);
+        if (id === 1) throw new Error("boom");
+      },
+    });
+    s.start();
+    await until(() => s.state.state === "ready");
+    s.send(1, { v: 1, id: "a", method: "core.status", mutation: false, payload: null });
+    s.send(2, { v: 1, id: "b", method: "core.status", mutation: false, payload: null });
+    await until(() => got.length === 2);
+    expect(s.state.state).toBe("ready");
+  });
+
   it("restarts a core that crashes after it was ready", async () => {
     const s = supervise("normal");
     s.start();

@@ -145,6 +145,64 @@ describe("RendererBridge", () => {
     }
   });
 
+  it("rejects a reply that is not an object, or is nested too deeply, at once", async () => {
+    let deep: unknown = null;
+    for (let i = 0; i < 3000; i++) deep = [deep];
+    let shallowNest: unknown = null;
+    for (let i = 0; i < 40; i++) shallowNest = { a: shallowNest };
+    const replies = (id: string): unknown[] => [
+      "garbage",
+      null,
+      42,
+      true,
+      [],
+      [{ v: 1, id, ok: true, result: 1 }],
+      undefined,
+      { v: 1, id, ok: true, result: deep },
+      { v: 1, id, ok: true, result: shallowNest },
+    ];
+    const { bridge, sent } = make({ maxInFlight: 32 });
+    const count = replies("x").length;
+    for (let i = 0; i < count; i++) {
+      const p = bridge.request({ method: "a", mutation: false, payload: null });
+      const { id, body } = sent[i]!;
+      bridge.deliver(id, replies(body.id)[i]);
+      expect(bridge.inFlight, `case ${i}`).toBe(0);
+      await expect(p).resolves.toEqual({
+        v: 1,
+        id: body.id,
+        ok: false,
+        error: { code: "internal", message: "The core sent an invalid reply." },
+      });
+    }
+  });
+
+  it("never throws from deliver, even for hostile values", () => {
+    const { bridge, sent } = make();
+    void bridge.request({ method: "a", mutation: false, payload: null });
+    const hostile = {
+      get id(): string {
+        throw new Error("boom");
+      },
+    };
+    expect(() => bridge.deliver(sent[0]!.id, hostile)).not.toThrow();
+    expect(bridge.inFlight).toBe(0);
+  });
+
+  it("logs and drops replies it cannot match", () => {
+    const logged: string[] = [];
+    const sent: number[] = [];
+    const bridge = new RendererBridge({
+      send: (id) => void sent.push(id),
+      log: (m) => void logged.push(m),
+    });
+    void bridge.request({ method: "a", mutation: false, payload: null });
+    bridge.deliver(999, null);
+    bridge.deliver(sent[0]!, { v: 1, id: "other", ok: true, result: 1 });
+    expect(logged).toHaveLength(2);
+    expect(bridge.inFlight).toBe(1);
+  });
+
   it("passes on a well-formed error reply unchanged", async () => {
     const { bridge, sent } = make();
     const p = bridge.request({ method: "a", mutation: false, payload: null });

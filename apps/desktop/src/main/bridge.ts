@@ -79,6 +79,19 @@ export interface BridgeOptions {
   send(envelopeId: number, body: unknown): boolean | void;
   timeoutMs?: number;
   maxInFlight?: number;
+  /** Where dropped or unmatched core replies are noted. Defaults to the console. */
+  log?: (message: string) => void;
+}
+
+/** Deepest nesting accepted in a core reply; real replies are a few levels deep. */
+const MAX_REPLY_DEPTH = 32;
+
+/** False if `value` nests deeper than `max` (a cycle counts as infinitely deep). Recursion is bounded by `max`. */
+function withinDepth(value: unknown, max: number, depth = 0): boolean {
+  if (value === null || typeof value !== "object") return true;
+  if (depth >= max) return false;
+  const items = Array.isArray(value) ? value : Object.values(value);
+  return items.every((v) => withinDepth(v, max, depth + 1));
 }
 
 /**
@@ -99,6 +112,7 @@ export class RendererBridge {
     this.#opts = {
       timeoutMs: UI_PROTOCOL_LIMITS.requestTimeoutMs,
       maxInFlight: UI_PROTOCOL_LIMITS.maxInFlight,
+      log: (message: string) => console.warn(`[citspark] ${message}`),
       ...opts,
     };
   }
@@ -144,34 +158,54 @@ export class RendererBridge {
     });
   }
 
-  /** A reply from the core. Unknown envelopes and replies for a different request ID are ignored. */
+  /**
+   * A reply from the core. Replies for an unknown envelope, or for a different request ID, are dropped and
+   * logged. A reply for a waiting request that is malformed (not an object, too deeply nested, too large,
+   * wrong version or shape) fails that request at once. Never throws.
+   */
   deliver(envelopeId: number, body: unknown): void {
+    try {
+      this.#deliver(envelopeId, body);
+    } catch {
+      this.#reject(envelopeId, ErrorCode.Internal, "The core sent an invalid reply.");
+    }
+  }
+
+  #deliver(envelopeId: number, body: unknown): void {
     const entry = this.#pending.get(envelopeId);
-    if (!entry) return;
-    const reply = body as Reply | null;
-    if (reply === null || typeof reply !== "object" || reply.id !== entry.requestId) return;
+    if (!entry) {
+      this.#opts.log(`dropped a core reply for unknown envelope ${String(envelopeId)}`);
+      return;
+    }
+    const invalid = (): void =>
+      this.#reject(envelopeId, ErrorCode.Internal, "The core sent an invalid reply.");
+    if (body === null || typeof body !== "object" || Array.isArray(body)) return invalid();
+    if (!withinDepth(body, MAX_REPLY_DEPTH)) return invalid();
+    const reply = body as Reply;
+    if (reply.id !== entry.requestId) {
+      this.#opts.log(`dropped a core reply with the wrong request ID for envelope ${envelopeId}`);
+      return;
+    }
     const size = jsonByteLength(reply);
     if (size === undefined || size > UI_PROTOCOL_LIMITS.maxMessageBytes) {
-      this.#settle(envelopeId, {
-        v: this.#version,
-        id: entry.requestId,
-        ok: false,
-        error: protocolError(ErrorCode.FrameTooLarge, "The core's reply was too large."),
-      });
+      this.#reject(envelopeId, ErrorCode.FrameTooLarge, "The core's reply was too large.");
       return;
     }
     // The renderer gets only replies that match the wire contract and the negotiated version.
     const parsed = ResponseSchema.safeParse(reply);
-    if (!parsed.success || parsed.data.v !== this.#version) {
-      this.#settle(envelopeId, {
-        v: this.#version,
-        id: entry.requestId,
-        ok: false,
-        error: protocolError(ErrorCode.Internal, "The core sent an invalid reply."),
-      });
-      return;
-    }
+    if (!parsed.success || parsed.data.v !== this.#version) return invalid();
     this.#settle(envelopeId, parsed.data);
+  }
+
+  #reject(envelopeId: number, code: ProtocolErrorBody["code"], message: string): void {
+    const entry = this.#pending.get(envelopeId);
+    if (!entry) return;
+    this.#settle(envelopeId, {
+      v: this.#version,
+      id: entry.requestId,
+      ok: false,
+      error: protocolError(code, message),
+    });
   }
 
   /** The core stopped or restarted: every waiting request fails now rather than at its timeout. */

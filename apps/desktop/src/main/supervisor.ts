@@ -178,7 +178,12 @@ export class CoreSupervisor {
         if (!this.#stopping) this.#setState({ state: "failed", code, message });
       });
     } else if (m.type === "core.reply" && r.ready && Number.isSafeInteger(m.id)) {
-      this.#opts.onReply(m.id as number, m.body);
+      try {
+        this.#opts.onReply(m.id as number, m.body);
+      } catch {
+        // A bad reply must never take the shell down; the bridge has already settled or dropped it.
+        console.warn(`[citspark] dropped a core reply for envelope ${String(m.id)}`);
+      }
     }
   }
 
