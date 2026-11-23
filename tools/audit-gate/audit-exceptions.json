@@ -1,24 +1,4 @@
 {
   "schemaVersion": 1,
-  "exceptions": [
-    {
-      "advisory": "GHSA-fc5q-39xc-vjpf",
-      "cve": "CVE-2026-112366",
-      "module": "picomatch",
-      "severity": "high",
-      "scope": "development",
-      "findings": [
-        {
-          "version": "2.3.2",
-          "path": ".>typescript-eslint>@typescript-eslint/typescript-estree>fast-glob>micromatch>picomatch"
-        },
-        { "version": "4.0.7", "path": ".>vitest>picomatch" }
-      ],
-      "owner": "shaangill025",
-      "createdAt": "2026-11-18T03:27:59Z",
-      "expiresAt": "2026-12-02T03:27:59Z",
-      "tracking": "https://github.com/shaangill025/CiteSpark/issues/21",
-      "rationale": "Owner-approved temporary risk acceptance; the advisory is not fixed and has no patched picomatch release. picomatch is reached only through the root devDependencies vitest and typescript-eslint, absent from the production graph, and the reviewed configuration passes it fixed repository-controlled glob patterns, never archived HTML, text or other user content. See docs/security/dependency-audit-exceptions.md."
-    }
-  ]
+  "exceptions": []
 }

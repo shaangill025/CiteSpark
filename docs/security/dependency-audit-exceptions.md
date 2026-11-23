@@ -10,23 +10,34 @@ dependencies. It prints both reports unchanged and fails on every high or critic
 unless one owner-approved, time-limited exception in
 [audit-exceptions.json](../../tools/audit-gate/audit-exceptions.json) covers it exactly; the exception covers
 development findings of the full audit only. Low and moderate findings are printed and do not fail, as before. The raw command is still
-available locally: `pnpm audit` shows the full report and still exits non-zero for the advisory below.
+available locally as `pnpm audit`. No exception is currently active.
 
 ## Current exception
+
+None. `tools/audit-gate/audit-exceptions.json` holds `"exceptions": []`, so every high or critical advisory in
+either audit fails the gate.
+
+## Removed exception (history)
+
+The exception below was removed on 2026-11-22 because GitHub withdrew the advisory upstream on
+2026-11-18T15:38:56Z (`withdrawn_at`). The advisory was withdrawn, not fixed and not patched: no patched
+picomatch release exists. Once the audit stopped reporting it, the gate failed on the stale exception, as designed,
+and the entry was removed. Refs [issue #21](https://github.com/shaangill025/CiteSpark/issues/21).
 
 | Field | Value |
 | --- | --- |
 | Advisory | GHSA-fc5q-39xc-vjpf (CVE-2026-112366), high, picomatch ReDoS through single-branch repeated extglobs |
-| Affected | picomatch `<=4.0.7`; no patched release (pnpm reports `<0.0.0`; npm `latest` is 4.0.7) |
+| Affected | picomatch `<=4.0.7`; no patched release (pnpm reported `<0.0.0`; npm `latest` was 4.0.7) |
 | Reviewed findings | picomatch 2.3.2 via `.>typescript-eslint>@typescript-eslint/typescript-estree>fast-glob>micromatch>picomatch`; picomatch 4.0.7 via `.>vitest>picomatch` |
 | Scope | development only (root devDependencies `typescript-eslint` and `vitest`) |
 | Owner | shaangill025 |
 | Created | 2026-11-18T03:27:59Z |
-| Expires | 2026-12-02T03:27:59Z (14 days; CI fails at and after this instant) |
+| Expires | 2026-12-02T03:27:59Z (was never reached) |
+| Removed | 2026-11-22, advisory withdrawn upstream 2026-11-18T15:38:56Z |
 
-This is an accepted risk, not a fix. The advisory remains open and the audit is not clean.
+It was an accepted risk, not a fix. The exposure review below is kept as the historical record of that period.
 
-## Exposure review (2026-11-18, pnpm 10.21.0)
+## Exposure review (historical, 2026-11-18, pnpm 10.21.0)
 
 Evidence gathered on PR #16's branch. It shows current exposure only; development-only does not by itself make a
 dependency safe.
@@ -123,4 +134,6 @@ Limits:
 
 No automatic renewal. Extending or changing the exception needs new explicit owner approval, recorded on the
 tracking issue, and a new 14-day maximum window. When an upstream fix is released: upgrade, remove the exception
-entry, confirm `pnpm audit` passes with no exception, and only then close issue #21.
+entry, confirm `pnpm audit` passes with no exception, and only then close the tracking issue. When an advisory is
+withdrawn instead, the gate reports the exception as stale and the entry is removed (as done for GHSA-fc5q-39xc-vjpf
+on 2026-11-22).
