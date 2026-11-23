@@ -229,6 +229,50 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
   restored and database reopened) on POSIX; skipped on Windows and as root, where directory modes do
   not deny unlink (`trash.test.ts`, "purge integrity").
 
+## M1-08 integration notes
+
+- CAP-03/CAP-04: `capture.stop` sends every outcome, `cancelled` included, through
+  `JobStore.transition` with the held lease, which validates owner, generation and expiry before any
+  write. A holder whose expired lease was reclaimed gets `lease_lost` and can no longer mark its
+  successor's job `cancel_requested` (`capture-ipc.test.ts`). Review fix: a cancel from a holder
+  whose lease merely expired (same owner and generation, nobody took over) is honoured (the job is
+  cancelled) and the next start creates a new job instead of resuming it; a `cancel_requested` job
+  whose holder went silent is finished as cancelled at the next start. Other outcomes from an
+  expired holder stay `lease_lost`. A same-client `capture.start` over its own expired lease
+  reclaims cleanly, or answers `job_busy` if another client holds it; never a raw `LeaseError`.
+- CAP-03/CAP-05 (review D1): the 120 s lease TTL used to expire during legitimate pacing holds (a
+  600 s Retry-After, or three 429 backoffs). New `capture.renew` (protocol, `CaptureRenewPayload`)
+  extends the lease of the exact holder, pass and generation only; a superseded holder, a wrong
+  pass or an already expired lease gets `lease_lost` and extends nothing, and a heartbeat also
+  learns of a cancel requested in Citspark. The extension's `CaptureRun` sends it every
+  `leaseHeartbeatMs` (30 s release, 500 ms test pacing) from `begin()` until the run ends; only
+  `lease_lost` ends the run, a desktop outage is retried (`capture-ipc.test.ts` with a fake clock,
+  `apps/extension/test/run.test.ts`).
+- ADR 0006/SEC-04 (review D4): `installNativeHost`/`uninstallNativeHost` never follow a symlink,
+  write via temp file and rename, replace or remove a manifest, launcher, config or Windows key only
+  when its content proves Citspark wrote it, and throw `NativeHostInstallError` (typed `code`) for
+  an unsupported browser or platform. Windows writes the per-browser HKCU key through an injected
+  `reg.exe` runner (moved from the live kit). **Real Windows execution is unverified locally**; the
+  CI Windows runner runs the unit tests with the injected runner only.
+- Known limitation (informational): a well-formed but lower gap tally in a job checkpoint is
+  undetectable by the core; planting one requires tampering with the library database itself, which
+  is outside the threat model of this layer.
+- CAP-04/CAP-06 (T02): a pass that continues must find its own well-formed gap tally in the job
+  checkpoint. An unparseable, non-object, missing, malformed or other-pass tally throws
+  `CheckpointCorruptError` (nothing of the page is written; the record is kept); the core fails the
+  job (`checkpoint_corrupt`, needs attention) and the extension shows a failed run. It never resets
+  the known gaps to 0 or completes. A fresh pass from the top recounts its own gaps
+  (`capture-t02.test.ts`, `capture-ipc.test.ts`, `apps/extension/test/run.test.ts`).
+- `@citspark/protocol` adds error code `checkpoint_corrupt`.
+- CAP-01 to CAP-07, SEC-04, Q20, Q21 (manual), Q22, Q31, Q40, B8 (owner live kit):
+  `pnpm live-kit:setup|launch|desktop|evidence|teardown` (`apps/extension/scripts/live-kit/`) and the owner
+  checklist `docs/m1-08/live-acceptance.md`. The kit builds the extension, makes a dedicated browser profile
+  outside the repo, installs the native host (exact extension origin) for Chrome or Edge, and exports a
+  credential-free evidence JSON gated by the T02 credential scanner. Unit tests cover path logic against a
+  temporary HOME and a synthetic exporter and canary test. **The owner live run (full pass, interrupt, resume,
+  Chrome and Edge) has NOT been done**; no requirement status changes because of the kit. Windows registration
+  and Linux paths are unit-tested only, never run.
+
 ## Status maintenance notes
 
 - README status: the milestone row for M1 reads `in progress`, matching the merged M1-01 to M1-07 and M1-09 to M1-11
@@ -248,7 +292,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | ID | Name | Milestone gate | Plan layers | Status | F0 evidence |
 | --- | --- | --- | --- | --- | --- |
 | T01 | Capture replay | M1 | M1-04 | implemented | M1-04: 18 child-process kill cases (mid-page, before-commit, after-commit × pages 0, 6, 11 × fresh or same-pass resume) in `packages/store/src/t01.test.ts`; see `docs/testing/t01-capture-replay.md`. Verified locally on macOS; CI matrix run pending. F0 prototype: `prototypes/capture-commit` |
-| T02 | Coverage honesty | M1 | M1-08 | not started | — |
+| T02 | Coverage honesty | M1 | M1-08 | in progress | M1-08 (synthetic only): `apps/extension/test/t02/t02.e2e.ts` runs the built MV3 extension in Playwright Chromium against mock X with the real native host, IPC server and store (17 cases: full pass, pause/resume, cursor loop, auth, 429, schema, disk full, partial thread, tombstone, account switch, cancel, budget, desktop loss, credential scan). Store part in `packages/store/src/capture-t02.test.ts`. Owner live full-pass and resume run and Chrome/Edge validation pending (kit and checklist in `docs/m1-08/live-acceptance.md`; not yet run) |
 | T03 | Attribution | M1, M3 | M1-07, M3-11, M4-05 | in progress | ADR 0010 |
 | T04 | Sync | M2 | M2-04, M2-05 | in progress | M2-04: seeded fast-check property tests (`packages/sync/src/t04.property.test.ts`): random concurrent edit sequences never lose user text; same-key metadata changes conflict. Filesystem harness pending (M2-05) |
 | T05 | Privacy | M3, M4 | M3-04 | not started | — |

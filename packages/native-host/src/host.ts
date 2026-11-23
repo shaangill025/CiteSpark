@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { isAbsolute, join } from "node:path";
 import type { Duplex, Readable, Writable } from "node:stream";
 import { RawFrameReader, writeRawFrame } from "./frames.ts";
 
@@ -27,6 +28,12 @@ export function parseHostConfig(value: unknown): HostConfig {
     throw new Error("invalid native host config");
   }
   return { allowedOrigins: [...v.allowedOrigins], socketPath: v.socketPath };
+}
+
+/** The installer's launcher sets CITSPARK_HOST_CONFIG; otherwise the config sits beside the host. */
+export function resolveConfigPath(env: NodeJS.ProcessEnv, hostDir: string): string {
+  const p = env["CITSPARK_HOST_CONFIG"];
+  return p && isAbsolute(p) ? p : join(hostDir, "native-host.json");
 }
 
 export async function loadHostConfig(path: string): Promise<HostConfig> {

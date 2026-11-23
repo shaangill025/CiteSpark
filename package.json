@@ -8,13 +8,18 @@
     "node": ">=24"
   },
   "scripts": {
-    "build": "tsc --build",
+    "build": "tsc --build && pnpm --filter @citspark/extension build",
     "typecheck": "tsc --build",
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",
     "test": "vitest run",
     "license-check": "node --experimental-strip-types --no-warnings tools/license-check/cli.ts",
-    "audit-gate": "node --experimental-strip-types --no-warnings tools/audit-gate/cli.ts"
+    "audit-gate": "node --experimental-strip-types --no-warnings tools/audit-gate/cli.ts",
+    "live-kit:setup": "node --experimental-strip-types --no-warnings apps/extension/scripts/live-kit/cli.ts setup",
+    "live-kit:launch": "node --experimental-strip-types --no-warnings apps/extension/scripts/live-kit/cli.ts launch",
+    "live-kit:desktop": "node --experimental-strip-types --no-warnings apps/extension/scripts/live-kit/cli.ts desktop",
+    "live-kit:evidence": "node --experimental-strip-types --no-warnings apps/extension/scripts/live-kit/cli.ts evidence",
+    "live-kit:teardown": "node --experimental-strip-types --no-warnings apps/extension/scripts/live-kit/cli.ts teardown"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.0",

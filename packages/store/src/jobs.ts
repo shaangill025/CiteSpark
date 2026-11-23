@@ -337,6 +337,20 @@ export class JobStore {
     return this.get(id);
   }
 
+  /**
+   * The newest job of `kind` for this account and collection that is not `complete` or
+   * `cancelled`: the one a capture resumes (ADR 0005). Null when every earlier job finished.
+   */
+  findOpen(kind: string, accountId: string, collectionId: string): Job | null {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM job WHERE kind = ? AND account_id = ? AND collection_id = ?
+         AND state NOT IN ('complete', 'cancelled') ORDER BY rowid DESC LIMIT 1`,
+      )
+      .get(kind, accountId, collectionId) as Row | undefined;
+    return row ? toJob(row) : null;
+  }
+
   /** Jobs left `running` with an expired lease after a crash; they are reclaimed with `acquire`. */
   findExpired(nowMs: number): Job[] {
     checkTime(nowMs);

@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Citspark capture</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main>
+      <h1>Citspark capture</h1>
+      <section aria-labelledby="desktop-h">
+        <h2 id="desktop-h">Desktop</h2>
+        <p id="link" role="status" aria-live="polite" data-state="checking">Checking Citspark…</p>
+        <div id="pairing" hidden>
+          <p>
+            Type this code into the Citspark pairing dialog:
+            <strong id="client-code" aria-live="polite"></strong>
+          </p>
+          <label for="desktop-code">Then type the code Citspark shows:</label>
+          <input id="desktop-code" inputmode="numeric" autocomplete="off" maxlength="6" />
+          <button id="confirm-code" type="button">Confirm</button>
+          <button id="cancel-pair" type="button">Cancel</button>
+        </div>
+        <p id="pair-error" role="alert"></p>
+        <button id="pair" type="button">Pair with Citspark</button>
+      </section>
+      <section aria-labelledby="capture-h">
+        <h2 id="capture-h">Capture</h2>
+        <p id="account">Open x.com in a tab and sign in.</p>
+        <label for="collection">Collection</label>
+        <select id="collection">
+          <option value="bookmarks">Bookmarks</option>
+          <option value="likes">Likes</option>
+        </select>
+        <div class="row">
+          <button id="start" type="button">Start</button>
+          <button id="pause" type="button">Pause</button>
+          <button id="cancel" type="button">Cancel</button>
+        </div>
+        <p id="run" role="status" aria-live="polite" data-state="idle">No capture running.</p>
+      </section>
+      <section aria-labelledby="budget-h">
+        <h2 id="budget-h">Daily page budget</h2>
+        <p id="budget"></p>
+        <label for="budget-limit">Pages per day</label>
+        <input id="budget-limit" type="number" min="1" />
+        <button id="save-budget" type="button">Save</button>
+      </section>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>

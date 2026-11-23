@@ -88,7 +88,10 @@ beforeEach(async () => {
       // bytes from `bodies`; the request picks only the offset, nothing is echoed and no HTML is
       // served, so the Guardrails "tainted input to Express response" finding is a false positive.
       res.write(slice.subarray(0, dropAfter)); // guardrails-disable-line
-      setTimeout(() => res.destroy(), 20);
+      // Close the socket with a FIN once the prefix is flushed, not an RST: on Windows an immediate
+      // destroy() resets the connection and discards bytes the client has not read yet, so the
+      // client saw 0 bytes. The short body against content-length is still a dropped connection.
+      setTimeout(() => res.socket?.end(), 20);
       return;
     }
     res.end(slice);

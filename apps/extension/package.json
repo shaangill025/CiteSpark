@@ -1,0 +1,27 @@
+{
+  "name": "@citspark/extension",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node --experimental-strip-types --no-warnings scripts/build.ts",
+    "test:t02": "vitest run --config vitest.t02.config.ts"
+  },
+  "dependencies": {
+    "@citspark/capture-x": "workspace:*",
+    "@citspark/ipc": "workspace:*",
+    "@citspark/protocol": "workspace:*",
+    "sodium-javascript": "0.8.0"
+  },
+  "devDependencies": {
+    "@citspark/core": "workspace:*",
+    "@citspark/native-host": "workspace:*",
+    "@citspark/store": "workspace:*",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/chrome": "0.3.7",
+    "better-sqlite3": "^12.0.0",
+    "esbuild": "0.28.2",
+    "playwright": "1.65.1"
+  }
+}

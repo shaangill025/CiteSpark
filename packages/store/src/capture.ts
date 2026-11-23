@@ -68,6 +68,12 @@ export interface CapturePage {
   /** How the observations were obtained; defaults to `capture`. Importers pass `import` (MIG-01). */
   method?: "capture" | "import";
   records: readonly CaptureRecord[];
+  /**
+   * Gaps the adapter saw on this page: unavailable entries and partial threads. Counted per pass and
+   * not part of the replay fingerprint; a pass that ends with any gap ends `partial`, never
+   * `complete` (T02, CAP-06).
+   */
+  gaps?: number;
 }
 
 export interface CommitResult {
@@ -77,8 +83,13 @@ export interface CommitResult {
   seq: number;
   /** Continuation after this page. */
   cursor: string | null;
-  /** The page carried no continuation, so the job reached its recognized end and is `complete`. */
+  /** The page carried no continuation, so the job reached its recognized end. */
   ended: boolean;
+  /**
+   * `complete` or `partial` (the pass saw gaps) once ended; `continue` before that. `cancelled` when
+   * the end page committed after a cancel request: the job is cancelled, never complete.
+   */
+  outcome: "continue" | "complete" | "partial" | "cancelled";
   /** Records whose version this job had not observed before. Zero while a resumed pass is catching up. */
   newRecords: number;
   newSources: number;
@@ -125,6 +136,52 @@ export class CursorMismatchError extends Error {}
 export class ReplayConflictError extends Error {}
 export class AccountMismatchError extends Error {}
 export class InvalidPageError extends Error {}
+/** A continuation that returns to a cursor this pass already read (CAP-04). Nothing is written. */
+export class CursorLoopError extends Error {}
+
+/**
+ * The job's persisted gap tally for a pass in progress is unreadable or does not belong to that pass
+ * (CAP-04, T02). Nothing is written: the pass cannot prove it saw no gaps, so it must not complete.
+ */
+export class CheckpointCorruptError extends Error {}
+
+/** Per-pass gap tally kept in the job checkpoint, so it survives restarts with the cursor. */
+const GAP_KEY = "captureGaps";
+/**
+ * Gaps already counted by `passId`. A new pass starts at 0 (it rescans from the top and recounts its
+ * own gaps). A pass that continues must find its own well-formed tally: every committed page writes
+ * one, so anything else is corruption and fails closed instead of resetting the known gaps to 0.
+ */
+function passGaps(checkpoint: string | null, passId: string, continuing: boolean): number {
+  if (!continuing) return 0;
+  const v = gapRecord(checkpoint);
+  if (v?.pass !== passId || !Number.isSafeInteger(v.gaps) || (v.gaps as number) < 0) {
+    throw new CheckpointCorruptError(
+      `job checkpoint has no readable gap tally for pass ${passId}; refusing to assume no gaps`,
+    );
+  }
+  return v.gaps as number;
+}
+
+/** Outcome a replayed end page of `passId` reports, from the gap tally committed with that end. */
+function endedPassOutcome(job: Job, passId: string): "complete" | "partial" {
+  if (job.state === "partial") return "partial";
+  const v = gapRecord(job.checkpoint);
+  return v?.pass === passId && v.gaps === 0 ? "complete" : "partial";
+}
+
+function gapRecord(checkpoint: string | null): { pass: unknown; gaps: unknown } | undefined {
+  if (checkpoint === null) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(checkpoint);
+    if (typeof parsed !== "object" || parsed === null) return undefined;
+    const v = (parsed as Record<string, unknown>)[GAP_KEY];
+    if (typeof v !== "object" || v === null) return undefined;
+    return v as { pass: unknown; gaps: unknown };
+  } catch {
+    return undefined;
+  }
+}
 
 interface PassRow {
   cursor: string | null;
@@ -155,6 +212,7 @@ function validate(page: CapturePage): void {
     fail("method");
   }
   if (!Array.isArray(page.records)) fail("records");
+  if (page.gaps !== undefined && (!Number.isSafeInteger(page.gaps) || page.gaps < 0)) fail("gaps");
   page.records.forEach((r, i) => {
     if (!nonEmpty(r.sourceType) || !nonEmpty(r.platformId) || typeof r.text !== "string") {
       fail(`record ${i}`);
@@ -530,6 +588,10 @@ export class CaptureStore {
       seq: prior.seq,
       cursor: prior.cursor_out,
       ended: prior.cursor_out === null,
+      // The pass's own persisted gap tally decides, not the job's current state: a resumed job is
+      // running again, and its partial end must not replay as complete. An ended pass whose tally
+      // is no longer recorded (a later pass replaced it) never claims complete.
+      outcome: prior.cursor_out !== null ? "continue" : endedPassOutcome(job, page.passId),
       newRecords: 0,
       newSources: 0,
       newVersions: 0,
@@ -568,6 +630,18 @@ export class CaptureStore {
       throw new CursorMismatchError(
         `pass ${page.passId} continues at ${pass.ended_at !== null ? "its end" : pass.cursor}, page starts at ${page.cursorIn}`,
       );
+    }
+    if (page.cursorOut !== null) {
+      const loops =
+        page.cursorOut === page.cursorIn ||
+        this.db
+          .prepare("SELECT 1 FROM capture_page WHERE job_id = ? AND pass_id = ? AND page_key = ?")
+          .get(jobId, page.passId, page.cursorOut) !== undefined;
+      if (loops) {
+        throw new CursorLoopError(
+          `pass ${page.passId} continuation returns to a cursor it already read; refusing a cursor loop`,
+        );
+      }
     }
     const seq = pass?.pages ?? 0;
     const adapter = `${page.adapter.id}@${page.adapter.version}`;
@@ -812,15 +886,25 @@ export class CaptureStore {
         "UPDATE capture_pass SET cursor = ?, pages = pages + 1, ended_at = ? WHERE job_id = ? AND pass_id = ?",
       )
       .run(page.cursorOut, ended ? iso : null, jobId, page.passId);
-    const cancelRequested = this.jobs.checkpoint(jobId, lease, nowMs, { cursor: page.cursorOut });
+    const gaps = passGaps(job.checkpoint, page.passId, pass !== undefined) + (page.gaps ?? 0);
+    const cancelRequested = this.jobs.checkpoint(jobId, lease, nowMs, {
+      cursor: page.cursorOut,
+      checkpoint: JSON.stringify({ [GAP_KEY]: { pass: page.passId, gaps } }),
+    });
+    const end = `pass ${page.passId} page ${seq} returned no continuation (${adapter})`;
     if (ended) {
-      this.jobs.transition(
-        jobId,
-        lease,
-        nowMs,
-        "complete",
-        `recognized end: pass ${page.passId} page ${seq} returned no continuation (${adapter})`,
-      );
+      // Gaps (unavailable entries, partial threads) never become a false complete (T02).
+      if (gaps > 0) {
+        this.jobs.transition(
+          jobId,
+          lease,
+          nowMs,
+          "partial",
+          `recognized end with ${gaps} gaps: ${end}`,
+        );
+      } else {
+        this.jobs.transition(jobId, lease, nowMs, "complete", `recognized end: ${end}`);
+      }
     }
 
     fault("before-commit");
@@ -830,6 +914,13 @@ export class CaptureStore {
       seq,
       cursor: page.cursorOut,
       ended,
+      outcome: !ended
+        ? "continue"
+        : cancelRequested
+          ? "cancelled"
+          : gaps > 0
+            ? "partial"
+            : "complete",
       newRecords,
       newSources,
       newVersions,

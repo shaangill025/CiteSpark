@@ -596,3 +596,24 @@ describe("withLease (atomic lease-checked work for consumers such as capture)", 
     }
   });
 });
+
+describe("findOpen (capture resume lookup, M1-08)", () => {
+  it("returns the newest non-terminal job for a kind, account and collection", () => {
+    const { jobs } = setup();
+    expect(jobs.findOpen("capture", "a1", "c1")).toBeNull();
+    mk(jobs, "old");
+    jobs.cancel("old", 0);
+    mk(jobs, "j1");
+    mk(jobs, "other", "c2");
+    expect(jobs.findOpen("capture", "a1", "c1")?.id).toBe("j1");
+    expect(jobs.findOpen("import", "a1", "c1")).toBeNull();
+    expect(jobs.findOpen("capture", "a2", "c1")).toBeNull();
+  });
+
+  it("skips complete jobs, so a finished collection starts a new job", () => {
+    const { db, jobs } = setup();
+    mk(jobs, "done");
+    db.prepare("UPDATE job SET state = 'complete' WHERE id = 'done'").run();
+    expect(jobs.findOpen("capture", "a1", "c1")).toBeNull();
+  });
+});
