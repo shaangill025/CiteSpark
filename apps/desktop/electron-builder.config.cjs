@@ -24,6 +24,7 @@ module.exports = {
   nodeGypRebuild: false,
   buildDependenciesFromSource: false,
   includePdb: false,
+  afterSign: require("node:path").join(__dirname, "scripts", "adhoc-sign.cjs"),
   publish: null,
   electronFuses: {
     runAsNode: false,

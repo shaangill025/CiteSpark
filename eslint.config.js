@@ -33,6 +33,8 @@ export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommended,
   { files: ["**/*.mjs", "**/*.cjs"], languageOptions: { globals: nodeGlobals } },
+  // CommonJS files (electron-builder config and hooks) can only load modules with require().
+  { files: ["**/*.cjs"], rules: { "@typescript-eslint/no-require-imports": "off" } },
   // The packaged smoke runs some callbacks inside the renderer via page.evaluate.
   {
     files: ["apps/desktop/scripts/packaged-smoke.mjs"],
