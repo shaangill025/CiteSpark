@@ -185,6 +185,12 @@ function hardenSession(ses: Electron.Session): void {
   ses.setPermissionCheckHandler(() => false);
   ses.setDevicePermissionHandler(() => false);
   ses.setDisplayMediaRequestHandler((_req, callback) => callback({}));
+  // On Linux (and Windows) Chromium downloads Hunspell dictionaries from redirector.gvt1.com when a spellchecker
+  // starts, which is a startup connection to a third party (SEC-05). Disable spellchecking and point any
+  // dictionary download at a URL that cannot resolve off-device. Offline bundled dictionaries are a later choice.
+  ses.setSpellCheckerEnabled(false);
+  ses.setSpellCheckerLanguages([]);
+  ses.setSpellCheckerDictionaryDownloadURL("http://127.0.0.1:9/");
   ses.webRequest.onBeforeRequest((details, callback) =>
     callback({ cancel: !isAllowedRequestUrl(details.url) }),
   );
