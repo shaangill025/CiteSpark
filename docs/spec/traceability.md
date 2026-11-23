@@ -243,6 +243,14 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
   the known gaps to 0 or completes. A fresh pass from the top recounts its own gaps
   (`capture-t02.test.ts`, `capture-ipc.test.ts`, `apps/extension/test/run.test.ts`).
 - `@citspark/protocol` adds error code `checkpoint_corrupt`.
+- CAP-01 to CAP-07, SEC-04, Q20, Q21 (manual), Q22, Q31, Q40, B8 (owner live kit):
+  `pnpm live-kit:setup|launch|desktop|evidence|teardown` (`apps/extension/scripts/live-kit/`) and the owner
+  checklist `docs/m1-08/live-acceptance.md`. The kit builds the extension, makes a dedicated browser profile
+  outside the repo, installs the native host (exact extension origin) for Chrome or Edge, and exports a
+  credential-free evidence JSON gated by the T02 credential scanner. Unit tests cover path logic against a
+  temporary HOME and a synthetic exporter and canary test. **The owner live run (full pass, interrupt, resume,
+  Chrome and Edge) has NOT been done**; no requirement status changes because of the kit. Windows registration
+  and Linux paths are unit-tested only, never run.
 
 ## Status maintenance notes
 
@@ -263,7 +271,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | ID | Name | Milestone gate | Plan layers | Status | F0 evidence |
 | --- | --- | --- | --- | --- | --- |
 | T01 | Capture replay | M1 | M1-04 | implemented | M1-04: 18 child-process kill cases (mid-page, before-commit, after-commit × pages 0, 6, 11 × fresh or same-pass resume) in `packages/store/src/t01.test.ts`; see `docs/testing/t01-capture-replay.md`. Verified locally on macOS; CI matrix run pending. F0 prototype: `prototypes/capture-commit` |
-| T02 | Coverage honesty | M1 | M1-08 | in progress | M1-08 (synthetic only): `apps/extension/test/t02/t02.e2e.ts` runs the built MV3 extension in Playwright Chromium against mock X with the real native host, IPC server and store (17 cases: full pass, pause/resume, cursor loop, auth, 429, schema, disk full, partial thread, tombstone, account switch, cancel, budget, desktop loss, credential scan). Store part in `packages/store/src/capture-t02.test.ts`. Owner live full-pass and resume run and Chrome/Edge validation pending |
+| T02 | Coverage honesty | M1 | M1-08 | in progress | M1-08 (synthetic only): `apps/extension/test/t02/t02.e2e.ts` runs the built MV3 extension in Playwright Chromium against mock X with the real native host, IPC server and store (17 cases: full pass, pause/resume, cursor loop, auth, 429, schema, disk full, partial thread, tombstone, account switch, cancel, budget, desktop loss, credential scan). Store part in `packages/store/src/capture-t02.test.ts`. Owner live full-pass and resume run and Chrome/Edge validation pending (kit and checklist in `docs/m1-08/live-acceptance.md`; not yet run) |
 | T03 | Attribution | M1, M3 | M1-07, M3-11, M4-05 | in progress | ADR 0010 |
 | T04 | Sync | M2 | M2-04, M2-05 | in progress | M2-04: seeded fast-check property tests (`packages/sync/src/t04.property.test.ts`): random concurrent edit sequences never lose user text; same-key metadata changes conflict. Filesystem harness pending (M2-05) |
 | T05 | Privacy | M3, M4 | M3-04 | not started | — |
