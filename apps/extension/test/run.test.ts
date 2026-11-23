@@ -8,7 +8,13 @@ import type {
 } from "@citspark/protocol";
 import { CaptureStopPayloadSchema } from "@citspark/protocol";
 import { CaptureRun, type DesktopApi, type Observation } from "../src/background/run.ts";
-import { DailyBudget, memoryKv, TEST_PACING } from "../src/background/pacer.ts";
+import {
+  DailyBudget,
+  memoryKv,
+  RELEASE_PACING,
+  TEST_PACING,
+  type PacerConfig,
+} from "../src/background/pacer.ts";
 import {
   OTHER_ACCOUNT,
   SYNTH_ACCOUNT,
@@ -52,7 +58,18 @@ const flush = async () => {
 
 type PageReply = CapturePageResult | Error | (() => Promise<CapturePageResult>);
 
-function harness(opts: { resumed?: boolean; replies?: PageReply[]; budget?: number } = {}) {
+type RenewReply = (() => Promise<unknown>) | undefined;
+
+function harness(
+  opts: {
+    resumed?: boolean;
+    replies?: PageReply[];
+    budget?: number;
+    pacing?: PacerConfig;
+    renew?: () => RenewReply;
+  } = {},
+) {
+  const renews: number[] = [];
   const timers = new FakeTimers();
   const pages: { p: CapturePagePayload; id: string }[] = [];
   const stops: CaptureStopPayload[] = [];
@@ -80,6 +97,12 @@ function harness(opts: { resumed?: boolean; replies?: PageReply[]; budget?: numb
         }
       );
     },
+    renew: async () => {
+      renews.push(timers.now);
+      const r = opts.renew?.();
+      if (r) await r();
+      return { renewed: true };
+    },
     stop: async (p) => {
       // The desktop refuses a stop that does not name the exact pass it ends (Sol review).
       if (!CaptureStopPayloadSchema.safeParse(p).success)
@@ -99,7 +122,7 @@ function harness(opts: { resumed?: boolean; replies?: PageReply[]; budget?: numb
     timers: { set: timers.set, clear: timers.clear },
     now: () => timers.now,
     random: () => 0.5,
-    pacing: TEST_PACING,
+    pacing: opts.pacing ?? TEST_PACING,
     budget,
   });
   const page = (spec: PageSpec, cursor: string | null, extra: Partial<Observation> = {}) =>
@@ -128,6 +151,7 @@ function harness(opts: { resumed?: boolean; replies?: PageReply[]; budget?: numb
     timers,
     pages,
     stops,
+    renews,
     budget,
     page,
     status,
@@ -394,5 +418,91 @@ describe("passive capture run (ADR 0005, CAP-03, CAP-05)", () => {
     expect(h.stops).toEqual([
       { jobId: "job-1", passId: "pass-1", outcome: "paused", reason: "tab_closed" },
     ]);
+  });
+});
+
+describe("lease heartbeat during waits (M1-08 D1, CAP-03, CAP-05)", () => {
+  const HOLD = {
+    ...TEST_PACING,
+    leaseHeartbeatMs: 30_000,
+    maxRetryAfterHoldMs: 30 * 60_000,
+    noProgressMs: 20 * 60_000, // keep no_progress out of these heartbeat tests
+  };
+  const LEASE_TTL_MS = 120_000; // The desktop's lease TTL (packages/core/src/capture-ipc.ts).
+
+  test("release pacing heartbeats well inside the lease TTL", () => {
+    expect(RELEASE_PACING.leaseHeartbeatMs).toBeGreaterThan(0);
+    expect(RELEASE_PACING.leaseHeartbeatMs * 3).toBeLessThanOrEqual(LEASE_TTL_MS);
+  });
+
+  test("a 600 s Retry-After hold renews the lease so it never goes 120 s silent", async () => {
+    const h = harness({ pacing: HOLD });
+    await h.run.begin();
+    await h.page(C[0]!, null);
+    await h.status(429, C[0]!.next, "600");
+    expect(h.run.status.state).toBe("backing_off");
+    const start = h.timers.now;
+    await h.timers.advance(610_000);
+    expect(h.renews.length).toBeGreaterThanOrEqual(19);
+    const marks = [start, ...h.renews, start + 610_000];
+    for (let i = 1; i < marks.length; i++) {
+      expect(marks[i]! - marks[i - 1]!).toBeLessThan(LEASE_TTL_MS);
+    }
+    expect(h.scrolls).toBeGreaterThan(0); // the hold ended and the run went on
+  });
+
+  test("the heartbeat also covers the wait for X to answer a scroll", async () => {
+    const h = harness({ pacing: HOLD });
+    await h.run.begin();
+    await h.timers.advance(2 * HOLD.leaseHeartbeatMs + 1);
+    expect(h.renews.length).toBeGreaterThanOrEqual(2);
+  });
+
+  test("a lease_lost heartbeat ends the run as failed and stops all timers", async () => {
+    const lost = new RequestError({ code: "lease_lost", message: "gone" } as never);
+    const h = harness({
+      pacing: HOLD,
+      renew: () => async () => {
+        throw lost;
+      },
+    });
+    await h.run.begin();
+    await h.page(C[0]!, null);
+    await h.timers.advance(HOLD.leaseHeartbeatMs + 1);
+    expect(h.run.status).toMatchObject({ state: "failed", reason: "lease_lost" });
+    const n = h.renews.length;
+    const scrolls = h.scrolls;
+    await h.timers.advance(10 * 60_000);
+    expect(h.renews.length).toBe(n);
+    expect(h.scrolls).toBe(scrolls);
+  });
+
+  test("a temporary desktop outage does not end the run; the next heartbeat retries", async () => {
+    let fail = true;
+    const h = harness({
+      pacing: HOLD,
+      renew: () =>
+        fail
+          ? async () => {
+              fail = false;
+              throw new TransportClosedError();
+            }
+          : undefined,
+    });
+    await h.run.begin();
+    await h.timers.advance(3 * HOLD.leaseHeartbeatMs);
+    expect(h.renews.length).toBeGreaterThanOrEqual(3);
+    expect(h.run.terminal).toBe(false);
+  });
+
+  test("no heartbeat after the run ended or before it started", async () => {
+    const h = harness({ pacing: HOLD });
+    await h.timers.advance(5 * HOLD.leaseHeartbeatMs);
+    expect(h.renews).toEqual([]);
+    await h.run.begin();
+    await h.run.cancel();
+    const n = h.renews.length;
+    await h.timers.advance(5 * HOLD.leaseHeartbeatMs);
+    expect(h.renews.length).toBe(n);
   });
 });

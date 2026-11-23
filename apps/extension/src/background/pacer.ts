@@ -20,6 +20,12 @@ export interface PacerConfig {
   noProgressMs: number;
   /** Scrolls without any response before the job pauses with `no_progress`. */
   maxNoProgressScrolls: number;
+  /**
+   * While a capture is active the extension tells the desktop it is alive this often, so a
+   * legitimate wait (429 backoff, Retry-After hold, slow scroll) never lets the lease run out.
+   * Must stay well below the desktop's lease TTL (120 s).
+   */
+  leaseHeartbeatMs: number;
   defaultDailyPageBudget: number;
   maxDailyPageBudget: number;
 }
@@ -34,6 +40,7 @@ export const RELEASE_PACING: PacerConfig = Object.freeze({
   maxRetryAfterHoldMs: 30 * 60_000,
   noProgressMs: 30_000,
   maxNoProgressScrolls: 3,
+  leaseHeartbeatMs: 30_000,
   defaultDailyPageBudget: 300,
   maxDailyPageBudget: 1000,
 });
@@ -47,6 +54,7 @@ export const TEST_PACING: PacerConfig = Object.freeze({
   maxBackoffMs: 2000,
   maxRetryAfterHoldMs: 5000,
   noProgressMs: 1500,
+  leaseHeartbeatMs: 500,
 });
 
 export function nextScrollDelay(cfg: PacerConfig, random: () => number): number {

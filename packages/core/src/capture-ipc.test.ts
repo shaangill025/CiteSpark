@@ -336,3 +336,138 @@ describe("capture over IPC: the desktop is the authority (M1-08)", () => {
     );
   });
 });
+
+describe("lease renewal and expired-holder handling (M1-08 review defects D1-D3, CAP-03, CAP-04)", () => {
+  const TTL = 120_000;
+  const renew = (
+    call: ReturnType<typeof setup>["call"],
+    s: { jobId: string; passId: string },
+    who = ext,
+  ) => call(CaptureMethod.renew, { jobId: s.jobId, passId: s.passId }, who);
+  const stopCancel = (
+    call: ReturnType<typeof setup>["call"],
+    s: { jobId: string; passId: string },
+    who = ext,
+  ) =>
+    call(
+      CaptureMethod.stop,
+      { jobId: s.jobId, passId: s.passId, outcome: "cancelled", reason: "user_cancel" },
+      who,
+    );
+
+  test("D1: a heartbeat every 30 s keeps the lease through a 600 s Retry-After hold", async () => {
+    const { call, advance, job } = setup();
+    const s = await start(call);
+    await call(CaptureMethod.page, pages(s.jobId, s.passId, 3)[0]);
+    for (let i = 0; i < 20; i++) {
+      advance(30_000);
+      expect(await renew(call, s)).toEqual({ renewed: true });
+    }
+    const r = await call(CaptureMethod.page, pages(s.jobId, s.passId, 3)[1]);
+    expect(r).toMatchObject({ outcome: "continue" });
+    expect(job(s.jobId).state).toBe("running");
+  });
+
+  test("D1: without a heartbeat the same hold still loses the lease (TTL unchanged)", async () => {
+    const { call, advance } = setup();
+    const s = await start(call);
+    await call(CaptureMethod.page, pages(s.jobId, s.passId, 3)[0]);
+    advance(TTL + 1000);
+    await rejects(call(CaptureMethod.page, pages(s.jobId, s.passId, 3)[1]), ErrorCode.LeaseLost);
+  });
+
+  test("D1: renew is fenced to the exact holder, pass and generation", async () => {
+    const { db, call, advance, now } = setup();
+    const a = await start(call);
+    await rejects(renew(call, { ...a, passId: "pass-other" }), ErrorCode.LeaseLost);
+    await rejects(renew(call, a, client("ext-2")), ErrorCode.LeaseLost);
+    await rejects(renew(call, { jobId: "capture-none", passId: a.passId }), ErrorCode.LeaseLost);
+    // A superseded holder cannot extend the successor's lease.
+    advance(TTL + 1000);
+    const jobs = new JobStore(db);
+    const succ = jobs.acquire(a.jobId, "extension:ext-2", now(), TTL);
+    const expiry = jobs.get(a.jobId).leaseExpiresAt;
+    await rejects(renew(call, a), ErrorCode.LeaseLost);
+    expect(jobs.get(a.jobId).leaseExpiresAt).toBe(expiry);
+    expect(jobs.get(a.jobId).leaseGeneration).toBe(succ!.generation);
+  });
+
+  test("D1: renew after the lease already expired is refused (no silent resurrection)", async () => {
+    const { call, advance } = setup();
+    const a = await start(call);
+    advance(TTL + 1000);
+    await rejects(renew(call, a), ErrorCode.LeaseLost);
+  });
+
+  test("D1: a heartbeat learns of a cancel requested in Citspark and ends the pass", async () => {
+    const { db, call, job, now } = setup();
+    const a = await start(call);
+    new JobStore(db).cancel(a.jobId, now());
+    await rejects(renew(call, a), ErrorCode.LeaseLost);
+    expect(job(a.jobId).state).toBe("cancelled");
+  });
+
+  test("D2: an expired holder that nobody superseded can still cancel; the next start does not resume it", async () => {
+    const { call, advance, job } = setup();
+    const a = await start(call);
+    await call(CaptureMethod.page, pages(a.jobId, a.passId, 3)[0]);
+    advance(TTL + 1000);
+    expect(await stopCancel(call, a)).toEqual({ state: "cancelled" });
+    expect(job(a.jobId).state).toBe("cancelled");
+    const n = await start(call);
+    expect(n.jobId).not.toBe(a.jobId);
+    expect(n.resumed).toBe(false);
+  });
+
+  test("D2: a cancel recorded while the lease was live is honoured at the next start after expiry", async () => {
+    const { db, call, advance, job, now } = setup();
+    const a = await start(call);
+    new JobStore(db).cancel(a.jobId, now()); // cancel_requested = 1 under a live lease
+    advance(TTL + 1000);
+    const n = await start(call);
+    expect(job(a.jobId).state).toBe("cancelled");
+    expect(n.jobId).not.toBe(a.jobId);
+  });
+
+  test("D2: a superseded holder still gets lease_lost and the successor is untouched", async () => {
+    const { db, call, advance, now } = setup();
+    const a = await start(call);
+    advance(TTL + 1000);
+    const jobs = new JobStore(db);
+    const succ = jobs.acquire(a.jobId, "extension:ext-2", now(), TTL)!;
+    await rejects(stopCancel(call, a), ErrorCode.LeaseLost);
+    expect(jobs.get(a.jobId)).toMatchObject({
+      state: "running",
+      cancelRequested: false,
+      leaseGeneration: succ.generation,
+    });
+  });
+
+  test("D3: a same-client start while it still holds an expired lease reclaims cleanly", async () => {
+    const { call, advance, job } = setup();
+    const a = await start(call);
+    await call(CaptureMethod.page, pages(a.jobId, a.passId, 3)[0]);
+    advance(TTL + 1000);
+    const b = await start(call);
+    expect(b).toMatchObject({ jobId: a.jobId, resumed: true, committedPages: 1 });
+    expect(b.passId).not.toBe(a.passId);
+    expect(job(a.jobId).state).toBe("running");
+    await rejects(call(CaptureMethod.page, pages(a.jobId, a.passId, 3)[1]), ErrorCode.LeaseLost);
+    expect(await call(CaptureMethod.page, pages(b.jobId, b.passId, 3)[0])).toMatchObject({
+      outcome: "continue",
+    });
+  });
+
+  test("D3: a start that cannot reclaim returns a typed error, never a raw LeaseError", async () => {
+    const { db, call, advance, now } = setup();
+    const a = await start(call);
+    advance(TTL + 1000);
+    new JobStore(db).acquire(a.jobId, "extension:ext-2", now(), TTL); // superseded by another client
+    const e = await start(call).then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    expect(e).toBeInstanceOf(ProtocolException);
+    expect((e as ProtocolException).code).toBe(ErrorCode.JobBusy);
+  });
+});

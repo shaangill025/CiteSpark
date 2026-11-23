@@ -4,6 +4,7 @@ import {
   CapturePagePayloadSchema,
   type CapturePagePayload,
   type CapturePageResult,
+  type CaptureRenewPayload,
   type CaptureStartPayload,
   type CaptureStartResult,
   type CaptureStopPayload,
@@ -34,6 +35,8 @@ export interface DesktopApi {
   start(p: CaptureStartPayload): Promise<CaptureStartResult>;
   /** `requestId` is stable per pass and page, so a retry after reconnect replays the stored outcome. */
   page(p: CapturePagePayload, requestId: string): Promise<CapturePageResult>;
+  /** Lease heartbeat for the exact pass; extends the desktop lease and carries no data. */
+  renew(p: CaptureRenewPayload): Promise<unknown>;
   stop(p: CaptureStopPayload): Promise<unknown>;
 }
 
@@ -113,6 +116,7 @@ export class CaptureRun {
   #transient = 0;
   #noProgress = 0;
   #timer: unknown;
+  #beat: unknown;
   #chain: Promise<void> = Promise.resolve();
   /** Observations queued or being committed; no scroll happens while one is unacknowledged. */
   #pending = 0;
@@ -153,6 +157,7 @@ export class CaptureRun {
     this.#set({ state: started.resumed ? "catching_up" : "capturing", jobId: started.jobId });
     this.#o.tab.load?.();
     this.#armNoProgress();
+    this.#scheduleBeat();
     return this.status;
   }
 
@@ -336,6 +341,37 @@ export class CaptureRun {
     }, this.#o.pacing.noProgressMs);
   }
 
+  /**
+   * Keeps the desktop lease alive through pacing holds and long scrolls (D1). Only lease_lost ends
+   * the run; a temporary outage is retried on the next beat and a page commit still proves liveness.
+   */
+  #scheduleBeat(): void {
+    if (this.#beat !== undefined) this.#o.timers.clear(this.#beat);
+    this.#beat = this.#o.timers.set(() => {
+      this.#beat = undefined;
+      void this.#heartbeat();
+    }, this.#o.pacing.leaseHeartbeatMs);
+  }
+
+  async #heartbeat(): Promise<void> {
+    if (this.terminal || this.#jobId === "") return;
+    try {
+      await this.#o.desktop.renew({ jobId: this.#jobId, passId: this.#passId });
+    } catch (e) {
+      if (e instanceof RequestError && e.error.code === "lease_lost" && !this.terminal) {
+        this.#clearTimer();
+        this.#set({ state: "failed", reason: "lease_lost" });
+        return;
+      }
+    }
+    if (!this.terminal) this.#scheduleBeat();
+  }
+
+  #clearBeat(): void {
+    if (this.#beat !== undefined) this.#o.timers.clear(this.#beat);
+    this.#beat = undefined;
+  }
+
   #clearTimer(): void {
     if (this.#timer !== undefined) this.#o.timers.clear(this.#timer);
     this.#timer = undefined;
@@ -369,6 +405,7 @@ export class CaptureRun {
       delete next.reason;
     }
     this.#status = next;
+    if (TERMINAL.has(next.state)) this.#clearBeat();
     this.#o.onUpdate?.(this.status);
   }
 }

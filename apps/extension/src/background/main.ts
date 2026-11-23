@@ -188,6 +188,7 @@ async function start(tabId: number, key: string): Promise<void> {
       start: async (p) =>
         (await link.request(CaptureMethod.start, p, crypto.randomUUID())) as CaptureStartResult,
       page: async (p, rid) => (await link.request(CaptureMethod.page, p, rid)) as CapturePageResult,
+      renew: (p) => link.request(CaptureMethod.renew, p, crypto.randomUUID()),
       stop: (p) => link.request(CaptureMethod.stop, p, crypto.randomUUID()),
     },
     tab: {

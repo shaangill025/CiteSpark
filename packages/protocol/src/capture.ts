@@ -9,6 +9,8 @@ export const CaptureMethod = {
   start: "capture.start",
   page: "capture.page",
   stop: "capture.stop",
+  /** Lease heartbeat while the extension waits (pacing holds, long scrolls); extends the lease only. */
+  renew: "capture.renew",
 } as const;
 
 /** Records per page; X pages hold about 20 entries, so this only bounds a hostile or broken page. */
@@ -121,3 +123,13 @@ export const CaptureStopPayloadSchema = z.strictObject({
 export type CaptureStopPayload = z.infer<typeof CaptureStopPayloadSchema>;
 
 export const CaptureStopResultSchema = z.strictObject({ state: Opaque(32) });
+
+/** Heartbeat for the exact pass that holds the lease; it carries no capture data. */
+export const CaptureRenewPayloadSchema = z.strictObject({
+  jobId: JobIdSchema,
+  passId: Opaque(128),
+});
+export type CaptureRenewPayload = z.infer<typeof CaptureRenewPayloadSchema>;
+
+export const CaptureRenewResultSchema = z.strictObject({ renewed: z.literal(true) });
+export type CaptureRenewResult = z.infer<typeof CaptureRenewResultSchema>;

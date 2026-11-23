@@ -4,6 +4,7 @@ import {
   CaptureMethod,
   CapturePagePayloadSchema,
   CapturePageResultSchema,
+  CaptureRenewPayloadSchema,
   CaptureStartPayloadSchema,
   CaptureStopPayloadSchema,
   ErrorCode,
@@ -37,7 +38,19 @@ describe("capture wire contract (CAP-02, CAP-03, CAP-04)", () => {
       start: "capture.start",
       page: "capture.page",
       stop: "capture.stop",
+      renew: "capture.renew",
     });
+  });
+
+  test("renew names the exact pass and carries nothing else", () => {
+    expect(CaptureRenewPayloadSchema.safeParse({ jobId: "job-1", passId: "pass-1" }).success).toBe(
+      true,
+    );
+    expect(CaptureRenewPayloadSchema.safeParse({ jobId: "job-1" }).success).toBe(false);
+    expect(
+      CaptureRenewPayloadSchema.safeParse({ jobId: "job-1", passId: "pass-1", records: [] })
+        .success,
+    ).toBe(false);
   });
 
   test("accepts a parsed page bound to an account and collection", () => {
