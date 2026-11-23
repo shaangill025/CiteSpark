@@ -55,11 +55,11 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | SEC-03 | Local-only limitation explanation and explicit local rerun | M4 | T05 | M3-04 | not started |  |
 | SEC-04 | OS credential storage; credentials excluded from logs/backups | M2 | T05, T08 | M1-06, M1-08, M2-03, M2-12 | in progress | F0: ADR 0006 (key storage), ADR 0008. M1-06: no shared secrets; core registry holds only client public keys; client static key wrapped by a non-extractable WebCrypto key (ADR 0011, unit tests). Desktop `safeStorage` and credential scanner pending |
 | SEC-05 | No telemetry; redacted previewable support bundle | M5 | T05 | M2-03 | not started |  |
-| SEC-06 | Escaping, CSV neutralization, path traversal, quotas, isolation | M1, M5 | T09 | M1-01, M1-09, M2-01, M2-12, M5-02, M5-04 | in progress | M1-01 adds CI dependency audit and license allowlist; signed updates in M5. CI maintenance: `actions/checkout` bumped to v7.0.1, still pinned to an immutable commit SHA. Dev dependency maintenance: a bounded pnpm override moves only `minimatch@>=7.0.0 <11.0.1` (transitive via typescript-eslint) to the patched 11.x line for GHSA-g3hv-75wg-m249; minimatch 3.x used by ESLint is unaffected. The temporary audit exception for GHSA-fc5q-39xc-vjpf (picomatch ReDoS, owner-approved, tracked in issue #21) was removed on 2026-11-22 because GitHub withdrew the advisory on 2026-11-18T15:38:56Z; it was withdrawn, not fixed or patched, and no patched picomatch release exists. `audit-exceptions.json` now has no exceptions. CI's ubuntu `Dependency audit` step runs `pnpm audit-gate` (`tools/audit-gate`), which runs a full (production, development and optional) and a production-only (production and optional) `pnpm audit --json` with the scope set explicitly on the command line so inherited `.npmrc`, environment or workspace settings cannot narrow it, prints both reports unchanged, and fails closed on every high or critical advisory in either report, a production-only report not covered by the full one, an unpinned pnpm, expiry, stale or malformed policy, network or parse errors, repeated findings and inconsistent exit codes or counts (`tools/audit-gate/src/*.test.ts`, `tools/audit-gate/test/*.test.ts`, including real-pnpm request-scope tests against a local synthetic registry). The exception history and the exposure review are kept in [dependency-audit-exceptions.md](../security/dependency-audit-exceptions.md). M1-09: an xarchive import source must be a regular `.json` file checked with `lstat` before opening (symlinks, FIFOs, devices and directories refused without blocking), opened with no-follow/non-blocking flags and re-checked by device and inode; size (default 128 MiB), record-count (500,000), text-length (200,000 characters) and nesting (64) limits reject oversized input; invalid UTF-8 is rejected; ZIP or other archives are never expanded (a real ZIP with a traversal entry and an 8 MiB bomb entry is rejected, `xarchive.test.ts`); handles and IDs are validated before URLs are built. CSV neutralization and renderer escaping pending |
+| SEC-06 | Escaping, CSV neutralization, path traversal, quotas, isolation | M1, M5 | T09 | M1-01, M1-09, M2-01, M2-12, M5-02, M5-04 | in progress | M1-01 adds CI dependency audit and license allowlist; signed updates in M5. CI maintenance: `actions/checkout` bumped to v7.0.1, still pinned to an immutable commit SHA. Dev dependency maintenance: a bounded pnpm override moves only `minimatch@>=7.0.0 <11.0.1` (transitive via typescript-eslint) to the patched 11.x line for GHSA-g3hv-75wg-m249; minimatch 3.x used by ESLint is unaffected. The temporary audit exception for GHSA-fc5q-39xc-vjpf (picomatch ReDoS, owner-approved, tracked in issue #21) was removed on 2026-11-22 because GitHub withdrew the advisory on 2026-11-18T15:38:56Z; it was withdrawn, not fixed or patched, and no patched picomatch release exists. `audit-exceptions.json` now has no exceptions. CI's ubuntu `Dependency audit` step runs `pnpm audit-gate` (`tools/audit-gate`), which runs a full (production, development and optional) and a production-only (production and optional) `pnpm audit --json` with the scope set explicitly on the command line so inherited `.npmrc`, environment or workspace settings cannot narrow it, prints both reports unchanged, and fails closed on every high or critical advisory in either report, a production-only report not covered by the full one, an unpinned pnpm, expiry, stale or malformed policy, network or parse errors, repeated findings and inconsistent exit codes or counts (`tools/audit-gate/src/*.test.ts`, `tools/audit-gate/test/*.test.ts`, including real-pnpm request-scope tests against a local synthetic registry). The exception history and the exposure review are kept in [dependency-audit-exceptions.md](../security/dependency-audit-exceptions.md). M1-09: an xarchive import source must be a regular `.json` file checked with `lstat` before opening (symlinks, FIFOs, devices and directories refused without blocking), opened with no-follow/non-blocking flags and re-checked by device and inode; size (default 128 MiB), record-count (500,000), text-length (200,000 characters) and nesting (64) limits reject oversized input; invalid UTF-8 is rejected; ZIP or other archives are never expanded (a real ZIP with a traversal entry and an 8 MiB bomb entry is rejected, `xarchive.test.ts`); handles and IDs are validated before URLs are built. CSV neutralization and renderer escaping pending. M2-01 (desktop shell): sandboxed, context-isolated renderer with no Node integration and a strict CSP; navigation, new-window and permission requests denied; main-process validation of renderer IPC (type, size and method checks) and of core replies (a reply for a waiting request that is not an object, is nested deeper than 32 levels, is oversized or has the wrong version or shape fails that request at once with an invalid-reply error; unmatched replies are dropped and logged); Electron fuses disable RunAsNode, `NODE_OPTIONS` and inspect arguments and require loading from the asar; unsigned installers with `--publish never` and no update feed. Covered by the desktop E2E suite and packaged smoke (`apps/desktop/e2e/shell.spec.ts`, `apps/desktop/scripts/packaged-smoke.mjs`), passed locally on macOS arm64 only; the new desktop workflow includes a guard step that fails on `--no-sandbox` or other sandbox opt-outs in the desktop app. Four-platform CI ([desktop.yml](../../.github/workflows/desktop.yml)) not yet run; signing and signed updates remain M5-02 |
 | SEC-07 | Threat model | F0, M5 | T05, T06 | M1-06, M5-04 | in progress | Security review in M5. F0: ADR 0006 IPC threat analysis. M1-06: unauthorized local clients covered by the T06 suite (ADR 0011); full threat model in M5-04 |
 | SEC-08 | No at-rest encryption promise; documented | M5 | T08 | M2-08, M5-05 | not started | Documentation check |
 | DAT-01 | 100,000-post capacity target; incremental indexing | M1, M3 | T11 | M1-02, M3-01 | in progress | M1-02: schema and 19-digit ID round-trip (`packages/store`); capacity and incremental indexing pending. F0 100k-post search test. F0: 100k-post FTS5 benchmark on macOS (`docs/f0/benchmarks.md`); Windows run pending (B3) |
-| DAT-02 | 8 GB RAM target for core; bounded batches | M1, M3 | T11 | M4-01 | not started | F0: Core search peak RSS 123 MB on M1 8 GB; Electron memory pending (B11) |
+| DAT-02 | 8 GB RAM target for core; bounded batches | M1, M3 | T11 | M4-01 | not started | F0: Core search peak RSS 123 MB on M1 8 GB. M2-01: the E2E suite and packaged smoke write idle memory readings for the host they run on (`unpackaged-memory.json`, `packaged-smoke-<platform>-<arch>.json`); these are not reference-machine measurements. Electron memory on the 8 GB reference machine pending (B11) |
 | DAT-03 | Recoverable trash; immediate exclusion; recapture suppression; purge | M1 | T07 | M1-12, M3-02 | in progress | M1-12: trash/restore; `active_source`/`active_version`/`active_chunk` views (migration 7) exclude trashed and purged sources at once; recapture suppressed for capture pages (canonical identity), linked enrichment (`suppressed` outcome, no fetch-to-store, no new version or edge) and media downloads (waiting and newly enqueued downloads held until restore); explicit purge removes media, derivations, chunks, versions, observations, membership, annotations, relationships (including ones evidenced by its versions), link references and unshared gap rows, partial downloads and unshared blobs (reference count validated against remaining media rows), refuses while a live lease holds a download, and queues file removals in `purge_file` for retry after a failed unlink or crash (`packages/store/src/trash.ts`). Search/AI query use pending M3-02; UI disclosure of vault and backup copies pending |
 | DAT-04 | Unavailable-evidence reporting after deletion | M1, M3 | T07 | M1-12, M3-07 | in progress | M1-12: `TrashStore.status` reports `trashed`/`purged`/`unknown`; purge leaves a tombstone (identity only) so IDs and linked URLs resolve to it as unavailable, never to another source. Purge never touches vault files or backups. Citation UI in M3-07 |
 | BKP-01 | Manual and scheduled backups; verification; restore | M2 | T08, T15 | M2-08 | not started | F0: ADR 0008 |
@@ -67,8 +67,8 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | BKP-03 | Full portable backups; manifests; media-excluded disclosure | M2 | T08 | M2-08 | not started | F0: ADR 0008 (hashed manifest) |
 | MIG-01 | Import native backups, owner vault, xarchive; dry-run | M1 | T09, T15 | M1-09, M2-02, M2-07, M5-03 | in progress | F0: xarchive = `sytelus/xarchive` (Q2). M1-09: xarchive importer (`packages/store/src/xarchive.ts`) with dry-run counts, mapping, duplicates, warnings, and conflicts; commit through `CaptureStore.commitPage` with method `import`; deterministic per-file job so a repeat is a no-op, and a page plan that depends only on the file so an interrupted import resumes even if other jobs stored content meanwhile; the weaker-content rule (empty or truncated text never adds a version over a fuller stored copy, account membership still recorded) is decided inside each commit transaction; unavailable status is carried to the observation; the retained lease is renewed with a fresh clock before every page and a cancel request stops at the next page boundary (CAP-03, CAP-04); unsupported schemas rejected. Tested against `sytelus/xarchive` 1.1.0 (`ae9d026`), schema 1 and 2, synthetic fixtures in `fixtures/xarchive/`. Folder assignments are reported, not stored; native backup and owner-vault importers pending |
 | MIG-02 | Pre-migration backup; candidate indexes; no destructive generator | M2 | T08, T09 | M1-02, M2-07, M2-10, M3-01, M5-03 | in progress | M1-02: numbered transactional migrations and pre-migration backup hook; every recorded migration ID and name is validated, and a recorded gap (jobs-only databases at [1, 3]) receives the order-independent sync-core migration 2 exactly once after backup (`migrate.test.ts` upgrade matrix); M1-04 adds additive `capture-commit` as migration 4 after published 2 and 3; upgrades from fresh, [1], [1, 2], [1, 3] and [1, 2, 3] keep legacy repeated observations (capture de-duplication indexes capture rows only); M1-10 adds additive `media-store` as migration 5 (upgrades from every earlier state, legacy duplicate media rows kept while new duplicates are refused, the unmerged PR #9 preview that recorded it as 2 is refused by name); M1-11 adds additive `linked-sources` as migration 6 (the unmerged PR #13 preview that recorded it as 3 is refused by name); M1-12 adds additive `trash-purge` as migration 7 (the unmerged PR #16 preview that recorded it as 4 is refused by name); candidate indexes pending. Migration trials in M5 |
-| ACC-01 | Keyboard, screen reader, contrast, reduced motion (WCAG 2.2 AA) | M5 | T13 | M2-02, M2-06, M3-02, M3-09, M5-01 | not started | Incremental from M2 onward |
-| ACC-02 | Names, focus order, announcements, scalable text | M5 | T13 | M2-02, M5-01 | not started | Assistive-technology testing |
+| ACC-01 | Keyboard, screen reader, contrast, reduced motion (WCAG 2.2 AA) | M5 | T13 | M2-02, M2-06, M3-02, M3-09, M5-01 | not started | Incremental from M2 onward. M2-01 shell renderer uses React Aria components and named roles (core status, details region, alerts) that the E2E suite queries; no WCAG audit, keyboard-only or screen-reader testing yet |
+| ACC-02 | Names, focus order, announcements, scalable text | M5 | T13 | M2-02, M5-01 | not started | Assistive-technology testing. M2-01 shell renderer uses React Aria components and named roles (core status, details region, alerts) that the E2E suite queries; no WCAG audit, keyboard-only or screen-reader testing yet |
 | LAN-01 | English UI/AI quality; Unicode preserved; documented limits | M5 | T10, T13 | M3-01, M5-05 | not started |  |
 
 ## M1-03 integration notes
@@ -229,6 +229,30 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
   restored and database reopened) on POSIX; skipped on Windows and as root, where directory modes do
   not deny unlink (`trash.test.ts`, "purge integrity").
 
+## M2-01 integration notes
+
+- Scope: Electron shell (`apps/desktop`) hosting the core in a supervised utility process, a hardened renderer that
+  shows core health only, and unsigned electron-builder installers (Q09, Q23, SEC-06; owner decision Q1). No capture,
+  import, search, sync, pairing, backup or AI screens. M1-08 is not merged and the owner-run live capture gate is still
+  pending, so the shell does not depend on it.
+- Local evidence (macOS arm64, Node v26.12.1, ABI 147, pnpm 10.21.0): frozen install, `pnpm build`, `pnpm lint`,
+  `pnpm test` (784 passed, 1 skipped), `pnpm license-check`, `pnpm audit-gate`, desktop build, desktop E2E (8 passed),
+  unsigned `dist` and packaged smoke all exited 0 on the implementation worktree and again on the CI worktree. The
+  ad-hoc signed app passes `codesign --verify --deep --strict`. CI parity uses Node 24 (`.nvmrc`); the SQLite addon is
+  an N-API prebuild, so its binary does not depend on the Node ABI.
+- CI: [desktop.yml](../../.github/workflows/desktop.yml) adds a `desktop` job on `ubuntu-latest`, `macos-latest`,
+  `macos-15-intel` and `windows-latest` (desktop build, E2E, unsigned installers with `--publish never`, installer
+  checks and checksums, packaged smoke, synthetic report upload). It is additive: every `ci.yml` gate is unchanged.
+  Workflow syntax was checked locally with actionlint; the workflow itself has not run on GitHub yet, so no
+  cross-platform result is claimed.
+- Linux CI sandbox: the hosted Ubuntu image restricts unprivileged user namespaces through AppArmor. The job loads an
+  AppArmor profile granting `userns` to the pinned Electron binary and the smoke test's app copy only; it does not
+  change the system-wide setting and never passes `--no-sandbox`. This is test fixture setup. It does not show that
+  installed Linux builds start sandboxed on a user's machine; that remains an open risk documented in the
+  [desktop preview guide](../desktop/preview-install.md) until clean-machine testing (B1, T14).
+- Not yet done: clean-VM installs without developer tools, idle memory on the 8 GB reference machine (B11, DAT-02),
+  screen-reader testing (T13), Developer ID signing, notarization, Windows signing and update channel (M5-02).
+
 ## Status maintenance notes
 
 - README status: the milestone row for M1 reads `in progress`, matching the merged M1-01 to M1-07 and M1-09 to M1-11
@@ -242,6 +266,10 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
   foundations as library-only code. This claims no app or UI, no live-network validation, no production fetch wiring (capture or
   media jobs), and no automatic startup cleanup: queued file removals are retried only when a caller runs
   `retryPendingFiles` (or trash, purge or `emptyTrash`, which call it).
+- M2-01 (in review): README and the M2 milestone row list the desktop shell as in review with a health screen only.
+  Q09 and Q23 move to `in progress` because shell and packaging code with tests exist; they are not verified until
+  installers pass on all four CI platforms and clean machines. README claims no published download, no clean-VM,
+  reference-machine, screen-reader or signing results, and no CI run of the desktop workflow.
 
 ## Acceptance tests
 
@@ -260,7 +288,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | T11 | Performance | M3 | M3-02, M3-03 | not started | F0 keyword and vector benchmarks on M1 8 GB; Windows reference run pending (Q5, B3) |
 | T12 | Quality | M4 | M4-06, M5-07 | not started | ADR 0010; frozen set pending (B4) |
 | T13 | Accessibility | M5 | M2-06, M5-01 | not started | — |
-| T14 | Clean install | M5 | M5-02 | not started | Packaging pending (B1) |
+| T14 | Clean install | M5 | M5-02 | not started | M2-01: unsigned installers and packaged smoke passed locally on macOS arm64 only; four-platform CI workflow added but not yet run; no clean-VM install yet (B1) |
 | T15 | End-to-end | M5 | M5-06 | not started | — |
 
 ## Milestones
@@ -269,7 +297,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | --- | --- | --- | --- | --- |
 | M0 | Feasibility | Measured prototypes, licence inventory, architecture decisions, capability matrix; owner-reviewed plan | complete | [ADRs 0001–0010](../adr/README.md), [F0 results](../f0/README.md), [owner decisions](../f0/owner-decisions.md); plan approved 2026-11-16 |
 | M1 | Data foundation | Archive, versioning, jobs, capture, import, media, recoverable storage (preview only) | in progress | M1-01 to M1-12 (M1-01 to M1-07 and M1-09 to M1-11 merged, M1-12 once this PR lands; M1-08 pending) |
-| M2 | Desktop and vault | Packaged apps, pairing, two-way sync, conflicts, plugin controls, backups, restore | in progress | M2-01 to M2-12 (M2-04 sync core in progress) |
+| M2 | Desktop and vault | Packaged apps, pairing, two-way sync, conflicts, plugin controls, backups, restore | in progress | M2-01 to M2-12 (M2-04 sync core in progress; M2-01 desktop shell in review, health screen only) |
 | M3 | Knowledge layer | Search, OCR/transcripts, organization, graph/list, exact citations, privacy filtering | not started | M3-01 to M3-11 |
 | M4 | Intelligence | Local runtime, cloud adapters, quick answers, bounded research, plugin research UI, frozen evaluation | not started | M4-01 to M4-08 |
 | M5 | Release hardening | Accessibility, compatibility, migration trials, security review, docs, demo, clean-machine acceptance | not started | M5-01 to M5-07 |
@@ -286,7 +314,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | Q06 | SYN-03 | M2 | M2-04 | in progress |
 | Q07 | SYN-01 | M2 | M2-05 | not started |
 | Q08 | SYN-01 | M2 | M2-05 | not started |
-| Q09 | T14 | M5 | M2-01, M5-02 | not started |
+| Q09 | T14 | M5 | M2-01, M5-02 | in progress |
 | Q10 | SEC-01, DAT-01 | M1 | M1-02 | in progress |
 | Q11 | AI-01, SEC-01 | M4 | M4-02 | not started |
 | Q12 | AI-01, AI-04 | M4 | M4-04 | not started |
@@ -300,7 +328,7 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 | Q20 | T14 | M5 | M1-08, M5-02 | not started |
 | Q21 | CAP-04 | M1 | M1-08, M2-11 | not started |
 | Q22 | CAP-02 | M1 | M1-08 | not started |
-| Q23 | T14 | M2, M5 | M2-01 | not started |
+| Q23 | T14 | M2, M5 | M2-01 | in progress |
 | Q24 | AI-01, MED-05 | M4 | M4-01 | not started |
 | Q25 | SEC-01, SEC-02 | M3, M4 | M3-03 | not started |
 | Q26 | DAT-01 | M1, M3 | M1-02 | in progress |

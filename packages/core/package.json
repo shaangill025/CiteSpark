@@ -6,9 +6,24 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./host": {
+      "types": "./dist/host/index.d.ts",
+      "default": "./dist/host/index.js"
+    }
+  },
   "dependencies": {
     "@citspark/ipc": "workspace:*",
     "@citspark/protocol": "workspace:*",
+    "@citspark/store": "workspace:*",
+    "better-sqlite3": "13.2.0",
     "parse5": "8.0.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13"
   }
 }

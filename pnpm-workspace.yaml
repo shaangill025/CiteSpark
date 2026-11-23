@@ -3,8 +3,16 @@ packages:
   - packages/*
   - tools/*
 onlyBuiltDependencies:
+  - esbuild
+# better-sqlite3 13 is an N-API addon that ships prebuilt binaries for every CI platform and runs unchanged
+# under Node and Electron, so its node-gyp build is not run. electron-winstaller is unused (NSIS target).
+ignoredBuiltDependencies:
   - better-sqlite3
+  - electron-winstaller
 overrides:
   # GHSA-g3hv-75wg-m249: only the vulnerable minimatch range (>=7.0.0 <11.0.1) moves to the patched
   # line; minimatch 3.x used by ESLint is outside the range and stays as resolved.
   "minimatch@>=7.0.0 <11.0.1": "^11.0.1"
+  # truncate-utf8-bytes@1.0.2 is WTFPL, outside the license allowlist. electron-builder (build-time only) reaches
+  # it through sanitize-filename; an Apache-2.0 drop-in with the same contract replaces it (M2-01).
+  "truncate-utf8-bytes": "link:./tools/truncate-utf8-bytes"

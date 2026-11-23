@@ -1,0 +1,55 @@
+:root {
+  color-scheme: light dark;
+  font-family:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    sans-serif;
+  line-height: 1.5;
+}
+
+body {
+  margin: 0;
+  padding: 2rem;
+  max-width: 48rem;
+}
+
+.preview {
+  padding: 0.5rem 0.75rem;
+  border-left: 4px solid #b45309;
+  background: color-mix(in srgb, #b45309 12%, transparent);
+}
+
+.status {
+  font-weight: 600;
+  margin-bottom: 0.75rem;
+}
+
+.error {
+  color: #b91c1c;
+}
+
+button {
+  font: inherit;
+  padding: 0.4rem 0.9rem;
+  border-radius: 6px;
+  border: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+button[data-focus-visible] {
+  outline: 3px solid #2563eb;
+  outline-offset: 2px;
+}
+
+.details dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 1rem;
+}
+
+.details dd {
+  margin: 0;
+}

@@ -1,0 +1,8 @@
+{
+  "name": "truncate-utf8-bytes",
+  "version": "1.0.2-citspark.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "description": "Apache-2.0 drop-in for truncate-utf8-bytes, used only by electron-builder at build time.",
+  "main": "index.cjs"
+}
