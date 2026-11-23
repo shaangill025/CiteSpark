@@ -809,12 +809,32 @@ describe("download integrity (MED-01, CAP-03 fencing)", () => {
   const blobFile = (hash: string) => join(root, "blobs", hash.slice(0, 2), hash);
 
   it("rejects a 206 whose validator changed and never joins two representations", async () => {
-    const { media, dl, db } = setup();
+    // The first response is an explicit 4,000-byte prefix followed by a stream error. A loopback
+    // server that writes then destroys the socket can lose the prefix (a reset before the client
+    // reads), leaving nothing to resume: the retry then sends no Range and legitimately completes.
+    let first = true;
+    let sent = false;
+    const { media, dl, db } = setup({
+      fetch: async (url, init) => {
+        if (!first) return testFetch(url, init);
+        first = false;
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            // error() discards queued chunks, so fail on the next pull, after the prefix was read.
+            pull(c) {
+              if (sent) return c.error(new Error("connection reset"));
+              sent = true;
+              c.enqueue(new Uint8Array(blobA.subarray(0, 4_000)));
+            },
+          }),
+          { status: 200, headers: { "content-length": "10000", etag: '"v1"' } },
+        );
+      },
+    });
     const d = media.enqueue("s1", `${base}/a`);
-    dropAfter = 4_000;
     expect(await dl(d.id)).toBe("interrupted");
-    dropAfter = null;
     const have = media.getDownload(d.id).bytesReceived;
+    expect(have).toBe(4_000); // precondition: a saved prefix exists, so the retry must send Range
     handler = (req, res) => {
       if (!req.headers.range) return false;
       res
