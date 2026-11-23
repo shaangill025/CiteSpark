@@ -194,8 +194,3 @@ export function launchCommand(exe: string, profileDir: string, platform: NodeJS.
     ? `& "${exe}" ${args.join(" ")}`
     : `${quote(exe, platform)} ${args.join(" ")}`;
 }
-
-export const REGISTRY_KEY: Record<KitBrowser, string> = {
-  chrome: "HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\com.citspark.native_host",
-  edge: "HKCU\\Software\\Microsoft\\Edge\\NativeMessagingHosts\\com.citspark.native_host",
-};

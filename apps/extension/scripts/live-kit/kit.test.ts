@@ -13,8 +13,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { EXTENSION_ID } from "../../src/identity.ts";
-import { defaultDeps, installWindowsHost, setup, teardown, type SetupDeps } from "./kit.ts";
-import { MARKER, REGISTRY_KEY, type Env } from "./paths.ts";
+import { WINDOWS_REGISTRY_KEY } from "@citspark/native-host";
+import { defaultDeps, setup, teardown, type SetupDeps } from "./kit.ts";
+import { MARKER, type Env } from "./paths.ts";
 
 // A Unix socket path must stay under ~100 bytes, and macOS TMPDIR paths are long: use /tmp when present.
 const shortTmp = () => (existsSync("/tmp") ? "/tmp" : tmpdir());
@@ -164,40 +165,16 @@ describe("setup refusals", () => {
   });
 });
 
-describe("Windows registration (injected runner; Windows itself is unverified)", () => {
-  test("writes a .cmd launcher and registers then removes only our key", async () => {
-    const f = fixture("win32");
-    // Windows path strings cannot be created on this OS, so exercise the host writer directly.
-    const hostDir = join(f.home, "hostdir");
-    mkdirSync(hostDir);
-    const w = installWindowsHost({
-      hostDir,
-      nodePath: "C:\\node\\node.exe",
-      cliPath: "C:\\k\\cli.mjs",
-      socketPath: "\\\\.\\pipe\\citspark-live-kit-edge-1",
-    });
-    const launcher = readFileSync(w.launcherPath, "utf8");
-    expect(launcher).toContain('"C:\\node\\node.exe" "C:\\k\\cli.mjs" %*');
-    expect(launcher).toContain("CITSPARK_HOST_CONFIG=");
-    const m = JSON.parse(readFileSync(w.manifestPath, "utf8")) as {
-      allowed_origins: string[];
-      path: string;
-    };
-    expect(m.allowed_origins).toEqual([`chrome-extension://${EXTENSION_ID}/`]);
-    expect(m.path).toBe(w.launcherPath);
-    expect(REGISTRY_KEY.edge).toBe(
+describe("Windows registration", () => {
+  test("lives in the native-host installer (reg.exe via an injected runner, HKCU only); see install.test.ts", () => {
+    // Windows paths cannot be created on this OS, so the kit delegates and the installer's own
+    // tests cover the .cmd launcher, per-browser HKCU keys, ownership checks and removal.
+    // Real Windows execution is unverified locally; CI's windows runner runs the unit tests.
+    expect(WINDOWS_REGISTRY_KEY.edge).toBe(
       "HKCU\\Software\\Microsoft\\Edge\\NativeMessagingHosts\\com.citspark.native_host",
     );
-    expect(REGISTRY_KEY.chrome).toBe(
+    expect(WINDOWS_REGISTRY_KEY.chrome).toBe(
       "HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\com.citspark.native_host",
     );
-    expect(() =>
-      installWindowsHost({
-        hostDir,
-        nodePath: 'C:\\a"b\\node.exe',
-        cliPath: "x",
-        socketPath: "\\\\.\\pipe\\p",
-      }),
-    ).toThrow(/unsafe/);
   });
 });

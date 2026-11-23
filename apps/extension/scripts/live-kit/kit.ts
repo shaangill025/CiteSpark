@@ -18,9 +18,9 @@ import { build } from "esbuild";
 import {
   hostManifestDir,
   installNativeHost,
-  NATIVE_HOST_NAME,
-  parseHostConfig,
+  realRegRunner,
   uninstallNativeHost,
+  type RegRunner,
 } from "@citspark/native-host";
 import { EXTENSION_ID } from "../../src/identity.ts";
 import {
@@ -31,7 +31,6 @@ import {
   launchCommand,
   layout,
   MARKER,
-  REGISTRY_KEY,
   type Env,
   type KitBrowser,
   type KitLayout,
@@ -53,9 +52,7 @@ export interface KitState {
   registryKey: string | null;
 }
 
-export type RegRunner = (args: string[]) => string;
-const realReg: RegRunner = (args) =>
-  execFileSync("reg", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+export type { RegRunner };
 
 export interface SetupDeps {
   env: Env;
@@ -77,7 +74,7 @@ export function defaultDeps(repoRoot: string, env: Env): SetupDeps {
     nodePath: process.execPath,
     now: () => new Date(),
     exists: existsSync,
-    reg: realReg,
+    reg: realRegRunner,
     buildExtension: () => {
       const run = (a: string[]) =>
         execFileSync("pnpm", a, {
@@ -164,16 +161,20 @@ export async function setup(o: SetupOptions, d: SetupDeps): Promise<SetupResult>
   let paths: { launcherPath: string; manifestPath: string; configPath: string };
   let manifestDir: string;
   let registryKey: string | null = null;
+  const common = {
+    extensionIds: [EXTENSION_ID],
+    socketPath: l.socketPath,
+    nodePath: d.nodePath,
+    cliPath: hostCli,
+    installDir: l.hostDir,
+    platform: d.env.platform,
+  };
   if (d.env.platform === "win32") {
+    // The installer writes the .cmd launcher, the manifest and the HKCU registry key (ADR 0006).
     manifestDir = l.hostDir;
-    paths = installWindowsHost({
-      hostDir: l.hostDir,
-      nodePath: d.nodePath,
-      cliPath: hostCli,
-      socketPath: l.socketPath,
-    });
-    registryKey = REGISTRY_KEY[o.browser];
-    d.reg(["add", registryKey, "/ve", "/t", "REG_SZ", "/d", paths.manifestPath, "/f"]);
+    const r = await installNativeHost({ ...common, browser: o.browser, reg: d.reg });
+    registryKey = r.registryKey ?? null;
+    paths = r;
   } else {
     manifestDir = hostManifestDir({
       browser: o.browser,
@@ -181,14 +182,7 @@ export async function setup(o: SetupOptions, d: SetupDeps): Promise<SetupResult>
       home: d.env.home,
       userDataDir: l.profileDir,
     });
-    paths = await installNativeHost({
-      extensionIds: [EXTENSION_ID],
-      socketPath: l.socketPath,
-      nodePath: d.nodePath,
-      cliPath: hostCli,
-      installDir: l.hostDir,
-      manifestDir,
-    });
+    paths = await installNativeHost({ ...common, manifestDir });
   }
 
   const state: KitState = {
@@ -208,43 +202,6 @@ export async function setup(o: SetupOptions, d: SetupDeps): Promise<SetupResult>
   const executable = browserExecutable(o.browser, d.env, d.exists);
   const launch = executable ? launchCommand(executable, l.profileDir, d.env.platform) : null;
   return { state, executable, launch, instructions: instructions(state, launch) };
-}
-
-/** Windows: a .cmd launcher, the relay config, the manifest; the caller adds the registry key. */
-export function installWindowsHost(o: {
-  hostDir: string;
-  nodePath: string;
-  cliPath: string;
-  socketPath: string;
-}): { launcherPath: string; manifestPath: string; configPath: string } {
-  const origin = `chrome-extension://${EXTENSION_ID}/`;
-  const config = parseHostConfig({ allowedOrigins: [origin], socketPath: o.socketPath });
-  for (const p of [o.nodePath, o.cliPath, o.hostDir]) {
-    if (/["%\r\n\0]/.test(p)) throw new Error("unsafe path for a Windows launcher");
-  }
-  const configPath = join(o.hostDir, "native-host.json");
-  const launcherPath = join(o.hostDir, "citspark-native-host.cmd");
-  const manifestPath = join(o.hostDir, `${NATIVE_HOST_NAME}.json`);
-  writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
-  writeFileSync(
-    launcherPath,
-    `@echo off\r\nset "CITSPARK_HOST_CONFIG=${configPath}"\r\n"${o.nodePath}" "${o.cliPath}" %*\r\n`,
-  );
-  writeFileSync(
-    manifestPath,
-    JSON.stringify(
-      {
-        name: NATIVE_HOST_NAME,
-        description: "Citspark desktop bridge for the Citspark capture extension",
-        path: launcherPath,
-        type: "stdio",
-        allowed_origins: [origin],
-      },
-      null,
-      2,
-    ) + "\n",
-  );
-  return { launcherPath, manifestPath, configPath };
 }
 
 export function instructions(s: KitState, launch: string | null): string[] {
@@ -296,26 +253,18 @@ export async function teardown(o: TeardownOptions, d: SetupDeps): Promise<string
   const s = JSON.parse(readFileSync(l.statePath, "utf8")) as KitState;
   if (s.version !== 1 || s.browser !== o.browser) throw new Error("unrecognised kit state");
   const done: string[] = [];
-  if (s.registryKey) {
-    let current = "";
-    try {
-      current = d.reg(["query", s.registryKey, "/ve"]);
-    } catch {
-      current = "";
-    }
-    if (current.includes(s.manifestPath)) {
-      d.reg(["delete", s.registryKey, "/f"]);
-      done.push(`registry ${s.registryKey}`);
-    } else {
-      done.push(`registry ${s.registryKey} left alone (not ours)`);
-    }
-  }
-  await uninstallNativeHost({ installDir: s.layout.hostDir, manifestDir: s.manifestDir });
-  rmSync(s.manifestPath, { force: true });
-  rmSync(s.launcherPath, { force: true });
-  rmSync(s.configPath, { force: true });
+  // The installer removes the manifest, launcher, config and registry key, and only those that prove
+  // they are ours; anything else of the same name is left and reported.
+  const un = await uninstallNativeHost({
+    installDir: s.layout.hostDir,
+    manifestDir: s.manifestDir,
+    platform: s.platform,
+    browser: s.browser,
+    reg: d.reg,
+  });
+  for (const r of un.removed) done.push(`removed ${r}`);
+  for (const r of un.skipped) done.push(`left alone (not ours): ${r}`);
   rmSync(join(s.layout.hostDir, "cli.mjs"), { force: true });
-  done.push("native host manifest, launcher, config, bundled host");
   rmEmpty(s.layout.hostDir);
   if (s.platform !== "win32") rmEmpty(s.manifestDir);
   rmSync(s.layout.extensionDir, { recursive: true, force: true });
