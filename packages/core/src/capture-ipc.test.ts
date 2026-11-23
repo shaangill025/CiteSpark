@@ -419,6 +419,19 @@ describe("lease renewal and expired-holder handling (M1-08 review defects D1-D3,
     expect(n.resumed).toBe(false);
   });
 
+  test("D2: retrying a cancel that was already honoured succeeds instead of lease_lost", async () => {
+    const { call, advance, job } = setup();
+    const a = await start(call);
+    advance(TTL + 1000);
+    expect(await stopCancel(call, a)).toEqual({ state: "cancelled" });
+    expect(await stopCancel(call, a)).toEqual({ state: "cancelled" });
+    expect(job(a.jobId).state).toBe("cancelled");
+    // A retry changes nothing and never reaches a successor's running job.
+    const n = await start(call);
+    expect(await stopCancel(call, a)).toEqual({ state: "cancelled" });
+    expect(job(n.jobId).state).toBe("running");
+  });
+
   test("D2: a cancel recorded while the lease was live is honoured at the next start after expiry", async () => {
     const { db, call, advance, job, now } = setup();
     const a = await start(call);

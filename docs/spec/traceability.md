@@ -234,8 +234,29 @@ Update `Status` in the PR that changes it. Allowed values: `not started`, `in pr
 - CAP-03/CAP-04: `capture.stop` sends every outcome, `cancelled` included, through
   `JobStore.transition` with the held lease, which validates owner, generation and expiry before any
   write. A holder whose expired lease was reclaimed gets `lease_lost` and can no longer mark its
-  successor's job `cancel_requested` (`capture-ipc.test.ts`). A cancel from a holder whose lease
-  merely expired is now also refused; the job stays reclaimable instead of being cancelled unfenced.
+  successor's job `cancel_requested` (`capture-ipc.test.ts`). Review fix: a cancel from a holder
+  whose lease merely expired (same owner and generation, nobody took over) is honoured (the job is
+  cancelled) and the next start creates a new job instead of resuming it; a `cancel_requested` job
+  whose holder went silent is finished as cancelled at the next start. Other outcomes from an
+  expired holder stay `lease_lost`. A same-client `capture.start` over its own expired lease
+  reclaims cleanly, or answers `job_busy` if another client holds it; never a raw `LeaseError`.
+- CAP-03/CAP-05 (review D1): the 120 s lease TTL used to expire during legitimate pacing holds (a
+  600 s Retry-After, or three 429 backoffs). New `capture.renew` (protocol, `CaptureRenewPayload`)
+  extends the lease of the exact holder, pass and generation only; a superseded holder, a wrong
+  pass or an already expired lease gets `lease_lost` and extends nothing, and a heartbeat also
+  learns of a cancel requested in Citspark. The extension's `CaptureRun` sends it every
+  `leaseHeartbeatMs` (30 s release, 500 ms test pacing) from `begin()` until the run ends; only
+  `lease_lost` ends the run, a desktop outage is retried (`capture-ipc.test.ts` with a fake clock,
+  `apps/extension/test/run.test.ts`).
+- ADR 0006/SEC-04 (review D4): `installNativeHost`/`uninstallNativeHost` never follow a symlink,
+  write via temp file and rename, replace or remove a manifest, launcher, config or Windows key only
+  when its content proves Citspark wrote it, and throw `NativeHostInstallError` (typed `code`) for
+  an unsupported browser or platform. Windows writes the per-browser HKCU key through an injected
+  `reg.exe` runner (moved from the live kit). **Real Windows execution is unverified locally**; the
+  CI Windows runner runs the unit tests with the injected runner only.
+- Known limitation (informational): a well-formed but lower gap tally in a job checkpoint is
+  undetectable by the core; planting one requires tampering with the library database itself, which
+  is outside the threat model of this layer.
 - CAP-04/CAP-06 (T02): a pass that continues must find its own well-formed gap tally in the job
   checkpoint. An unparseable, non-object, missing, malformed or other-pass tally throws
   `CheckpointCorruptError` (nothing of the page is written; the record is kept); the core fails the

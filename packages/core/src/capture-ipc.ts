@@ -247,6 +247,16 @@ export function captureHandlers(opts: CaptureHandlerOptions): Record<string, Met
       const p = CaptureStopPayloadSchema.safeParse(payload);
       if (!p.success) throw invalid("capture.stop");
       const d = p.data;
+      const mine = held.get(d.jobId);
+      if (d.outcome === "cancelled" && mine?.clientId !== ctx.client.id) {
+        // A retry of a cancel that was already honoured (the holder was forgotten when it ended):
+        // idempotent, so the user's cancel is never reported as lost. It changes nothing.
+        try {
+          if (jobs.get(d.jobId).state === "cancelled") return { state: "cancelled" };
+        } catch {
+          // Unknown job: fall through to lease_lost.
+        }
+      }
       const h = holder(d.jobId, ctx);
       // Fenced to the exact pass: a delayed stop from a replaced pass must not end its successor.
       if (h.passId !== d.passId) {
