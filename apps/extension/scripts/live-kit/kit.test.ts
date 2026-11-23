@@ -19,14 +19,16 @@ import { MARKER, type Env } from "./paths.ts";
 
 // A Unix socket path must stay under ~100 bytes, and macOS TMPDIR paths are long: use /tmp when present.
 const shortTmp = () => (existsSync("/tmp") ? "/tmp" : tmpdir());
+const onWindows = process.platform === "win32";
+// The macOS/Linux flow writes POSIX paths (profile-local NativeMessagingHosts, unix sockets) through the
+// real filesystem, which a Windows host cannot hold; the Windows flow has its own test below.
+const posixOnly = "[skipped on Windows: POSIX paths on the real filesystem]";
 const temps: string[] = [];
 afterEach(() => {
   for (const t of temps.splice(0)) rmSync(t, { recursive: true, force: true });
 });
 
-function fixture(
-  platform: NodeJS.Platform = process.platform === "win32" ? "linux" : process.platform,
-) {
+function fixture(platform: NodeJS.Platform = process.platform) {
   const home = mkdtempSync(join(shortTmp(), "cs-lk-"));
   temps.push(home);
   const dist = join(home, "fake-dist");
@@ -57,77 +59,80 @@ const real = (home: string) => [
   join(home, ".config", "microsoft-edge"),
 ];
 
-describe.each(["chrome", "edge"] as const)("setup and teardown (%s)", (browser) => {
-  test("installs only inside the kit, with the exact extension origin, and removes only that", async () => {
-    const f = fixture("darwin");
-    const r = await setup({ browser }, f.deps);
-    const kit = join(f.home, ".citspark-live-kit", browser);
-    expect(r.state.layout.profileDir).toBe(join(kit, "profile"));
-    const manifestPath = join(
-      kit,
-      "profile",
-      "NativeMessagingHosts",
-      "com.citspark.native_host.json",
-    );
-    expect(r.state.manifestPath).toBe(manifestPath);
-    const m = JSON.parse(readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
-    expect(m["allowed_origins"]).toEqual([`chrome-extension://${EXTENSION_ID}/`]);
-    expect(m["name"]).toBe("com.citspark.native_host");
-    expect(existsSync(m["path"] as string)).toBe(true);
-    const cfg = JSON.parse(readFileSync(join(kit, "host", "native-host.json"), "utf8")) as {
-      allowedOrigins: string[];
-      socketPath: string;
-    };
-    expect(cfg.allowedOrigins).toEqual([`chrome-extension://${EXTENSION_ID}/`]);
-    expect(cfg.socketPath).toBe(join(kit, "ipc", "core.sock"));
-    expect(existsSync(join(kit, "extension", "manifest.json"))).toBe(true);
-    // The real browser directories were never created.
-    for (const d of real(f.home)) expect(existsSync(d)).toBe(false);
-    expect(r.instructions.join("\n")).toContain(EXTENSION_ID);
-    expect(r.launch).toContain(`--user-data-dir='${join(kit, "profile")}'`);
+describe.skipIf(onWindows).each(["chrome", "edge"] as const)(
+  `setup and teardown (%s) ${posixOnly}`,
+  (browser) => {
+    test("installs only inside the kit, with the exact extension origin, and removes only that", async () => {
+      const f = fixture("darwin");
+      const r = await setup({ browser }, f.deps);
+      const kit = join(f.home, ".citspark-live-kit", browser);
+      expect(r.state.layout.profileDir).toBe(join(kit, "profile"));
+      const manifestPath = join(
+        kit,
+        "profile",
+        "NativeMessagingHosts",
+        "com.citspark.native_host.json",
+      );
+      expect(r.state.manifestPath).toBe(manifestPath);
+      const m = JSON.parse(readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
+      expect(m["allowed_origins"]).toEqual([`chrome-extension://${EXTENSION_ID}/`]);
+      expect(m["name"]).toBe("com.citspark.native_host");
+      expect(existsSync(m["path"] as string)).toBe(true);
+      const cfg = JSON.parse(readFileSync(join(kit, "host", "native-host.json"), "utf8")) as {
+        allowedOrigins: string[];
+        socketPath: string;
+      };
+      expect(cfg.allowedOrigins).toEqual([`chrome-extension://${EXTENSION_ID}/`]);
+      expect(cfg.socketPath).toBe(join(kit, "ipc", "core.sock"));
+      expect(existsSync(join(kit, "extension", "manifest.json"))).toBe(true);
+      // The real browser directories were never created.
+      for (const d of real(f.home)) expect(existsSync(d)).toBe(false);
+      expect(r.instructions.join("\n")).toContain(EXTENSION_ID);
+      expect(r.launch).toContain(`--user-data-dir='${join(kit, "profile")}'`);
 
-    const done = await teardown({ browser }, f.deps);
-    expect(done.join("\n")).toMatch(/kept: profile/);
-    expect(existsSync(manifestPath)).toBe(false);
-    expect(existsSync(join(kit, "host"))).toBe(false);
-    expect(existsSync(join(kit, "extension"))).toBe(false);
-    expect(existsSync(join(kit, "state.json"))).toBe(false);
-    // Profile and library survive a plain teardown.
-    expect(existsSync(join(kit, "profile", MARKER))).toBe(true);
-    expect(existsSync(join(kit, "library"))).toBe(true);
-    for (const d of real(f.home)) expect(existsSync(d)).toBe(false);
-  });
+      const done = await teardown({ browser }, f.deps);
+      expect(done.join("\n")).toMatch(/kept: profile/);
+      expect(existsSync(manifestPath)).toBe(false);
+      expect(existsSync(join(kit, "host"))).toBe(false);
+      expect(existsSync(join(kit, "extension"))).toBe(false);
+      expect(existsSync(join(kit, "state.json"))).toBe(false);
+      // Profile and library survive a plain teardown.
+      expect(existsSync(join(kit, "profile", MARKER))).toBe(true);
+      expect(existsSync(join(kit, "library"))).toBe(true);
+      for (const d of real(f.home)) expect(existsSync(d)).toBe(false);
+    });
 
-  test("--purge after a plain teardown still removes the kit directory, only when marked", async () => {
-    const f = fixture("linux");
-    await setup({ browser }, f.deps);
-    await teardown({ browser }, f.deps);
-    await teardown({ browser, purge: true }, f.deps);
-    expect(existsSync(join(f.home, ".citspark-live-kit", browser))).toBe(false);
-    mkdirSync(join(f.home, ".citspark-live-kit", browser), { recursive: true });
-    await expect(teardown({ browser, purge: true }, f.deps)).rejects.toThrow(/no live kit state/);
-  });
+    test("--purge after a plain teardown still removes the kit directory, only when marked", async () => {
+      const f = fixture("linux");
+      await setup({ browser }, f.deps);
+      await teardown({ browser }, f.deps);
+      await teardown({ browser, purge: true }, f.deps);
+      expect(existsSync(join(f.home, ".citspark-live-kit", browser))).toBe(false);
+      mkdirSync(join(f.home, ".citspark-live-kit", browser), { recursive: true });
+      await expect(teardown({ browser, purge: true }, f.deps)).rejects.toThrow(/no live kit state/);
+    });
 
-  test("--purge removes the kit's own profile and library, never a pre-existing profile dir", async () => {
-    const f = fixture("linux");
-    await setup({ browser }, f.deps);
-    await teardown({ browser, purge: true }, f.deps);
-    expect(existsSync(join(f.home, ".citspark-live-kit", browser))).toBe(false);
+    test("--purge removes the kit's own profile and library, never a pre-existing profile dir", async () => {
+      const f = fixture("linux");
+      await setup({ browser }, f.deps);
+      await teardown({ browser, purge: true }, f.deps);
+      expect(existsSync(join(f.home, ".citspark-live-kit", browser))).toBe(false);
 
-    // A user-supplied, pre-existing but empty profile dir is not deleted by purge.
-    const own = join(f.home, "mine");
-    mkdirSync(own);
-    await setup({ browser, profileDir: own }, f.deps);
-    expect(existsSync(join(own, "NativeMessagingHosts", "com.citspark.native_host.json"))).toBe(
-      true,
-    );
-    await teardown({ browser, profileDir: own, purge: true }, f.deps);
-    expect(existsSync(own)).toBe(true);
-    expect(existsSync(join(own, "NativeMessagingHosts"))).toBe(false);
-  });
-});
+      // A user-supplied, pre-existing but empty profile dir is not deleted by purge.
+      const own = join(f.home, "mine");
+      mkdirSync(own);
+      await setup({ browser, profileDir: own }, f.deps);
+      expect(existsSync(join(own, "NativeMessagingHosts", "com.citspark.native_host.json"))).toBe(
+        true,
+      );
+      await teardown({ browser, profileDir: own, purge: true }, f.deps);
+      expect(existsSync(own)).toBe(true);
+      expect(existsSync(join(own, "NativeMessagingHosts"))).toBe(false);
+    });
+  },
+);
 
-describe("setup refusals", () => {
+describe.skipIf(onWindows)(`setup refusals ${posixOnly}`, () => {
   test("refuses the real browser profile and a non-empty foreign directory", async () => {
     const f = fixture("darwin");
     const realChrome = join(f.home, "Library", "Application Support", "Google", "Chrome");
@@ -164,6 +169,41 @@ describe("setup refusals", () => {
     );
   });
 });
+
+describe.runIf(onWindows)(
+  "setup and teardown on a Windows host (registry via an injected runner)",
+  () => {
+    test.each(["chrome", "edge"] as const)(
+      "%s: .cmd launcher, one HKCU key, removed on teardown",
+      async (browser) => {
+        const f = fixture("win32");
+        let added = "";
+        f.deps.nodePath = process.execPath;
+        f.deps.reg = (a) => {
+          f.regCalls.push(a);
+          if (a[0] === "add") added = a[a.indexOf("/d") + 1] ?? "";
+          if (a[0] === "query" && added === "") throw new Error("not found");
+          return a[0] === "query" ? `    (Default)    REG_SZ    ${added}\r\n` : "";
+        };
+        const r = await setup({ browser }, f.deps);
+        const key = WINDOWS_REGISTRY_KEY[browser];
+        expect(f.regCalls.find((c) => c[0] === "add")?.[1]).toBe(key);
+        expect(r.state.registryKey).toBe(key);
+        expect(r.state.launcherPath.endsWith("citspark-native-host.cmd")).toBe(true);
+        expect(existsSync(r.state.launcherPath)).toBe(true);
+        expect(existsSync(r.state.manifestPath)).toBe(true);
+        const m = JSON.parse(readFileSync(r.state.manifestPath, "utf8")) as Record<string, unknown>;
+        expect(m["allowed_origins"]).toEqual([`chrome-extension://${EXTENSION_ID}/`]);
+        expect(r.state.layout.socketPath).toMatch(/^\\\\\.\\pipe\\citspark-live-kit-/);
+
+        await teardown({ browser }, f.deps);
+        expect(f.regCalls.at(-1)).toEqual(["delete", key, "/f"]);
+        expect(existsSync(r.state.manifestPath)).toBe(false);
+        expect(existsSync(r.state.layout.statePath)).toBe(false);
+      },
+    );
+  },
+);
 
 describe("Windows registration", () => {
   test("lives in the native-host installer (reg.exe via an injected runner, HKCU only); see install.test.ts", () => {

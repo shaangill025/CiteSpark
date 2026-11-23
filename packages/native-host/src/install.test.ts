@@ -13,6 +13,10 @@ import {
 } from "./install.ts";
 
 const ID = "a".repeat(32);
+const onWindows = process.platform === "win32";
+// POSIX-only: these exercise the macOS/Linux flow against the real filesystem (a POSIX launcher with
+// mode bits, symlinks that need no privilege). A Windows host runs the Windows-flow equivalents below.
+const posixOnly = onWindows ? "POSIX filesystem semantics (mode bits, unprivileged symlinks)" : "";
 const dirs: string[] = [];
 afterEach(async () => {
   for (const d of dirs.splice(0)) await rm(d, { recursive: true, force: true });
@@ -48,38 +52,41 @@ describe("native host manifest locations (ADR 0006)", () => {
 });
 
 describe("installing the host", () => {
-  test("writes the config, an executable launcher, and a manifest listing exact origins", async () => {
-    const install = await tmp();
-    const manifests = await tmp();
-    const r = await installNativeHost({
-      extensionIds: [ID],
-      socketPath: "/tmp/citspark/core.sock",
-      nodePath: "/opt/node/bin/node",
-      cliPath: "/opt/citspark/cli.js",
-      installDir: install,
-      manifestDir: manifests,
-    });
-    const manifest = JSON.parse(
-      await readFile(join(manifests, `${NATIVE_HOST_NAME}.json`), "utf8"),
-    );
-    expect(manifest).toEqual({
-      name: NATIVE_HOST_NAME,
-      description: "Citspark desktop bridge for the Citspark capture extension",
-      path: r.launcherPath,
-      type: "stdio",
-      allowed_origins: [`chrome-extension://${ID}/`],
-    });
-    const config = JSON.parse(await readFile(join(install, "native-host.json"), "utf8"));
-    expect(config).toEqual({
-      allowedOrigins: [`chrome-extension://${ID}/`],
-      socketPath: "/tmp/citspark/core.sock",
-    });
-    const launcher = await readFile(r.launcherPath, "utf8");
-    expect(launcher).toContain("exec '/opt/node/bin/node' '/opt/citspark/cli.js' \"$@\"");
-    expect((await stat(r.launcherPath)).mode & 0o111).not.toBe(0);
-    await uninstallNativeHost({ installDir: install, manifestDir: manifests });
-    await expect(stat(join(manifests, `${NATIVE_HOST_NAME}.json`))).rejects.toThrow();
-  });
+  test.skipIf(onWindows)(
+    "writes the config, an executable launcher, and a manifest listing exact origins",
+    async () => {
+      const install = await tmp();
+      const manifests = await tmp();
+      const r = await installNativeHost({
+        extensionIds: [ID],
+        socketPath: "/tmp/citspark/core.sock",
+        nodePath: "/opt/node/bin/node",
+        cliPath: "/opt/citspark/cli.js",
+        installDir: install,
+        manifestDir: manifests,
+      });
+      const manifest = JSON.parse(
+        await readFile(join(manifests, `${NATIVE_HOST_NAME}.json`), "utf8"),
+      );
+      expect(manifest).toEqual({
+        name: NATIVE_HOST_NAME,
+        description: "Citspark desktop bridge for the Citspark capture extension",
+        path: r.launcherPath,
+        type: "stdio",
+        allowed_origins: [`chrome-extension://${ID}/`],
+      });
+      const config = JSON.parse(await readFile(join(install, "native-host.json"), "utf8"));
+      expect(config).toEqual({
+        allowedOrigins: [`chrome-extension://${ID}/`],
+        socketPath: "/tmp/citspark/core.sock",
+      });
+      const launcher = await readFile(r.launcherPath, "utf8");
+      expect(launcher).toContain("exec '/opt/node/bin/node' '/opt/citspark/cli.js' \"$@\"");
+      expect((await stat(r.launcherPath)).mode & 0o111).not.toBe(0);
+      await uninstallNativeHost({ installDir: install, manifestDir: manifests });
+      await expect(stat(join(manifests, `${NATIVE_HOST_NAME}.json`))).rejects.toThrow();
+    },
+  );
 
   test("refuses wildcard IDs and paths that would break the launcher quoting", async () => {
     const base = {
@@ -99,13 +106,13 @@ describe("installing the host", () => {
 describe("host config location", () => {
   test("the launcher's CITSPARK_HOST_CONFIG wins over the file beside the host", async () => {
     const { resolveConfigPath } = await import("./host.ts");
+    // The host resolves paths with the OS it runs on, so the expectations use that OS's separator.
+    const beside = join("/opt/h", "native-host.json");
     expect(resolveConfigPath({ CITSPARK_HOST_CONFIG: "/etc/c.json" }, "/opt/h")).toBe(
       "/etc/c.json",
     );
-    expect(resolveConfigPath({}, "/opt/h")).toBe("/opt/h/native-host.json");
-    expect(resolveConfigPath({ CITSPARK_HOST_CONFIG: "relative.json" }, "/opt/h")).toBe(
-      "/opt/h/native-host.json",
-    );
+    expect(resolveConfigPath({}, "/opt/h")).toBe(beside);
+    expect(resolveConfigPath({ CITSPARK_HOST_CONFIG: "relative.json" }, "/opt/h")).toBe(beside);
   });
 });
 
@@ -135,108 +142,113 @@ const exists = (p: string) =>
     () => false,
   );
 
-describe("installer safety (M1-08 review D4, ADR 0006)", () => {
-  test("unsupported browser or platform is a typed error, not a TypeError or a Linux fallthrough", () => {
-    const bad = (o: object) => () => hostManifestDir({ home: "/h", ...o } as never);
-    expect(bad({ browser: "brave", platform: "linux" })).toThrow(NativeHostInstallError);
-    expect(bad({ browser: "chrome", platform: "freebsd" })).toThrow(/unsupported platform/);
-    expect(bad({ browser: "chrome", platform: "freebsd" })).toThrow(NativeHostInstallError);
-  });
-
-  test("install refuses an unsupported browser (Windows) or platform with a typed error", async () => {
-    const a = await posixArgs();
-    await rejectsWith(installNativeHost({ ...a, platform: "freebsd" }), "unsupported_platform");
-    await rejectsWith(
-      installNativeHost({ ...a, platform: "win32", browser: "brave" as Browser, reg: () => "" }),
-      "unsupported_browser",
-    );
-    await rejectsWith(installNativeHost({ ...a, manifestDir: undefined }), "missing_option");
-  });
-
-  test.each(["manifest", "launcher", "config"] as const)(
-    "a symlink at the %s path is refused and its target is never written",
-    async (which) => {
-      const a = await posixArgs();
-      const victim = join(await tmp(), "victim.txt");
-      await writeFile(victim, "ORIGINAL");
-      const name = {
-        manifest: join(a.manifestDir, `${NATIVE_HOST_NAME}.json`),
-        launcher: join(a.installDir, "citspark-native-host"),
-        config: join(a.installDir, "native-host.json"),
-      }[which];
-      await symlink(victim, name);
-      await rejectsWith(installNativeHost(a), "symlink_refused");
-      expect(await readFile(victim, "utf8")).toBe("ORIGINAL");
-      expect((await lstat(name)).isSymbolicLink()).toBe(true);
-    },
-  );
-
-  test("another app's manifest with the same name is not overwritten, and nothing partial is left", async () => {
-    const a = await posixArgs();
-    const mp = join(a.manifestDir, `${NATIVE_HOST_NAME}.json`);
-    const foreign = JSON.stringify({
-      name: NATIVE_HOST_NAME,
-      path: "/other/app/host",
-      type: "stdio",
+describe.skipIf(onWindows)(
+  `installer safety (M1-08 review D4, ADR 0006) [skipped on Windows: ${posixOnly}]`,
+  () => {
+    test("unsupported browser or platform is a typed error, not a TypeError or a Linux fallthrough", () => {
+      const bad = (o: object) => () => hostManifestDir({ home: "/h", ...o } as never);
+      expect(bad({ browser: "brave", platform: "linux" })).toThrow(NativeHostInstallError);
+      expect(bad({ browser: "chrome", platform: "freebsd" })).toThrow(/unsupported platform/);
+      expect(bad({ browser: "chrome", platform: "freebsd" })).toThrow(NativeHostInstallError);
     });
-    await writeFile(mp, foreign);
-    await rejectsWith(installNativeHost(a), "not_ours");
-    expect(await readFile(mp, "utf8")).toBe(foreign);
-    expect(await readdir(a.installDir)).toEqual([]);
-  });
 
-  test("a foreign native-host.json in the install directory is not overwritten", async () => {
-    const a = await posixArgs();
-    await writeFile(join(a.installDir, "native-host.json"), '{"other":"app"}');
-    await rejectsWith(installNativeHost(a), "not_ours");
-    expect(await readFile(join(a.installDir, "native-host.json"), "utf8")).toBe('{"other":"app"}');
-    expect(await readdir(a.manifestDir)).toEqual([]);
-  });
+    test("install refuses an unsupported browser (Windows) or platform with a typed error", async () => {
+      const a = await posixArgs();
+      await rejectsWith(installNativeHost({ ...a, platform: "freebsd" }), "unsupported_platform");
+      await rejectsWith(
+        installNativeHost({ ...a, platform: "win32", browser: "brave" as Browser, reg: () => "" }),
+        "unsupported_browser",
+      );
+      await rejectsWith(installNativeHost({ ...a, manifestDir: undefined }), "missing_option");
+    });
 
-  test("reinstalling over our own files (same or new install directory, new IDs) works and leaves no temp files", async () => {
-    const a = await posixArgs();
-    await installNativeHost(a);
-    await installNativeHost({ ...a, extensionIds: ["p".repeat(32)] });
-    const m = JSON.parse(await readFile(join(a.manifestDir, `${NATIVE_HOST_NAME}.json`), "utf8"));
-    expect(m.allowed_origins).toEqual([`chrome-extension://${"p".repeat(32)}/`]);
-    await installNativeHost({ ...a, installDir: await tmp() }); // moved: the old manifest is still ours
-    expect(await readdir(a.installDir)).toEqual(["citspark-native-host", "native-host.json"]);
-  });
-
-  test("uninstall removes only files that prove they are ours", async () => {
-    const a = await posixArgs();
-    const mp = join(a.manifestDir, `${NATIVE_HOST_NAME}.json`);
-    const foreign = JSON.stringify({ name: NATIVE_HOST_NAME, path: "/other/app/host" });
-    await writeFile(mp, foreign);
-    await writeFile(join(a.installDir, "native-host.json"), '{"other":"app config"}');
-    const r = await uninstallNativeHost(a);
-    expect(r.removed).toEqual([]);
-    expect(r.skipped).toHaveLength(2);
-    expect(await readFile(mp, "utf8")).toBe(foreign);
-    expect(await readFile(join(a.installDir, "native-host.json"), "utf8")).toBe(
-      '{"other":"app config"}',
+    test.each(["manifest", "launcher", "config"] as const)(
+      "a symlink at the %s path is refused and its target is never written",
+      async (which) => {
+        const a = await posixArgs();
+        const victim = join(await tmp(), "victim.txt");
+        await writeFile(victim, "ORIGINAL");
+        const name = {
+          manifest: join(a.manifestDir, `${NATIVE_HOST_NAME}.json`),
+          launcher: join(a.installDir, "citspark-native-host"),
+          config: join(a.installDir, "native-host.json"),
+        }[which];
+        await symlink(victim, name);
+        await rejectsWith(installNativeHost(a), "symlink_refused");
+        expect(await readFile(victim, "utf8")).toBe("ORIGINAL");
+        expect((await lstat(name)).isSymbolicLink()).toBe(true);
+      },
     );
-  });
 
-  test("uninstall never deletes through or over a symlink, and removes ours when present", async () => {
-    const a = await posixArgs();
-    await installNativeHost(a);
-    const mp = join(a.manifestDir, `${NATIVE_HOST_NAME}.json`);
-    const real = await readFile(mp, "utf8");
-    await rm(mp);
-    const victim = join(await tmp(), "v.json");
-    await writeFile(victim, real); // even content that looks ours, behind a symlink
-    await symlink(victim, mp);
-    const r = await uninstallNativeHost(a);
-    expect(r.skipped).toContain(mp);
-    expect((await lstat(mp)).isSymbolicLink()).toBe(true);
-    expect(await readFile(victim, "utf8")).toBe(real);
-    expect(r.removed).toHaveLength(2); // launcher and config were ours
-    expect(await exists(join(a.installDir, "native-host.json"))).toBe(false);
-    await rm(mp);
-    expect(await readdir(a.manifestDir)).toEqual([]);
-  });
-});
+    test("another app's manifest with the same name is not overwritten, and nothing partial is left", async () => {
+      const a = await posixArgs();
+      const mp = join(a.manifestDir, `${NATIVE_HOST_NAME}.json`);
+      const foreign = JSON.stringify({
+        name: NATIVE_HOST_NAME,
+        path: "/other/app/host",
+        type: "stdio",
+      });
+      await writeFile(mp, foreign);
+      await rejectsWith(installNativeHost(a), "not_ours");
+      expect(await readFile(mp, "utf8")).toBe(foreign);
+      expect(await readdir(a.installDir)).toEqual([]);
+    });
+
+    test("a foreign native-host.json in the install directory is not overwritten", async () => {
+      const a = await posixArgs();
+      await writeFile(join(a.installDir, "native-host.json"), '{"other":"app"}');
+      await rejectsWith(installNativeHost(a), "not_ours");
+      expect(await readFile(join(a.installDir, "native-host.json"), "utf8")).toBe(
+        '{"other":"app"}',
+      );
+      expect(await readdir(a.manifestDir)).toEqual([]);
+    });
+
+    test("reinstalling over our own files (same or new install directory, new IDs) works and leaves no temp files", async () => {
+      const a = await posixArgs();
+      await installNativeHost(a);
+      await installNativeHost({ ...a, extensionIds: ["p".repeat(32)] });
+      const m = JSON.parse(await readFile(join(a.manifestDir, `${NATIVE_HOST_NAME}.json`), "utf8"));
+      expect(m.allowed_origins).toEqual([`chrome-extension://${"p".repeat(32)}/`]);
+      await installNativeHost({ ...a, installDir: await tmp() }); // moved: the old manifest is still ours
+      expect(await readdir(a.installDir)).toEqual(["citspark-native-host", "native-host.json"]);
+    });
+
+    test("uninstall removes only files that prove they are ours", async () => {
+      const a = await posixArgs();
+      const mp = join(a.manifestDir, `${NATIVE_HOST_NAME}.json`);
+      const foreign = JSON.stringify({ name: NATIVE_HOST_NAME, path: "/other/app/host" });
+      await writeFile(mp, foreign);
+      await writeFile(join(a.installDir, "native-host.json"), '{"other":"app config"}');
+      const r = await uninstallNativeHost(a);
+      expect(r.removed).toEqual([]);
+      expect(r.skipped).toHaveLength(2);
+      expect(await readFile(mp, "utf8")).toBe(foreign);
+      expect(await readFile(join(a.installDir, "native-host.json"), "utf8")).toBe(
+        '{"other":"app config"}',
+      );
+    });
+
+    test("uninstall never deletes through or over a symlink, and removes ours when present", async () => {
+      const a = await posixArgs();
+      await installNativeHost(a);
+      const mp = join(a.manifestDir, `${NATIVE_HOST_NAME}.json`);
+      const real = await readFile(mp, "utf8");
+      await rm(mp);
+      const victim = join(await tmp(), "v.json");
+      await writeFile(victim, real); // even content that looks ours, behind a symlink
+      await symlink(victim, mp);
+      const r = await uninstallNativeHost(a);
+      expect(r.skipped).toContain(mp);
+      expect((await lstat(mp)).isSymbolicLink()).toBe(true);
+      expect(await readFile(victim, "utf8")).toBe(real);
+      expect(r.removed).toHaveLength(2); // launcher and config were ours
+      expect(await exists(join(a.installDir, "native-host.json"))).toBe(false);
+      await rm(mp);
+      expect(await readdir(a.manifestDir)).toEqual([]);
+    });
+  },
+);
 
 describe("Windows registry registration (reg.exe injected; real Windows execution is unverified here)", () => {
   function win(reg: (a: string[]) => string) {
@@ -329,10 +341,54 @@ describe("Windows registry registration (reg.exe injected; real Windows executio
     await rejectsWith(installNativeHost(a), "registry_failed");
   });
 
-  test("macOS and Linux never call reg", async () => {
+  test.skipIf(onWindows)("macOS and Linux never call reg", async () => {
     const calls: string[][] = [];
     const a = await posixArgs();
     await installNativeHost({ ...a, reg: (c) => (calls.push(c), "") });
     expect(calls).toEqual([]);
+  });
+});
+
+// The Windows flow against the real filesystem (the manifest lives in the install directory; the
+// registry is an injected runner). Runs on every OS; it is the only installer-safety coverage a
+// Windows host gets for the file checks, so it mirrors the POSIX refusals that apply there.
+describe("Windows install safety on the real filesystem", () => {
+  const noKey = (c: string[]): string => {
+    if (c[0] === "query") throw new Error("not found");
+    return "";
+  };
+  const args = async () => ({
+    extensionIds: [ID],
+    socketPath: "\\\\.\\pipe\\citspark",
+    nodePath: "C:\\node\\node.exe",
+    cliPath: "C:\\k\\cli.mjs",
+    installDir: await tmp(),
+    platform: "win32" as NodeJS.Platform,
+    browser: "chrome" as Browser,
+    reg: noKey,
+  });
+
+  test("a foreign manifest or config with our file names is not overwritten", async () => {
+    for (const name of [`${NATIVE_HOST_NAME}.json`, "native-host.json"]) {
+      const a = await args();
+      const foreign = JSON.stringify({ name: NATIVE_HOST_NAME, path: "C:\\other\\host.exe" });
+      await writeFile(join(a.installDir, name), foreign);
+      await rejectsWith(installNativeHost(a), "not_ours");
+      expect(await readFile(join(a.installDir, name), "utf8")).toBe(foreign);
+    }
+  });
+
+  test("reinstalling over our own files works, leaves no temp files, and uninstall removes them", async () => {
+    const a = await args();
+    await installNativeHost(a);
+    await installNativeHost({ ...a, extensionIds: ["p".repeat(32)] });
+    expect((await readdir(a.installDir)).sort()).toEqual([
+      "citspark-native-host.cmd",
+      `${NATIVE_HOST_NAME}.json`,
+      "native-host.json",
+    ]);
+    const r = await uninstallNativeHost({ ...a, reg: () => "" });
+    expect(r.removed).toHaveLength(3);
+    expect(await readdir(a.installDir)).toEqual([]);
   });
 });

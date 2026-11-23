@@ -1,7 +1,7 @@
 // Path and launch logic for the owner live-acceptance kit (M1-08, B8). Pure functions: every
 // platform, home and environment input is a parameter, so tests never touch a real browser directory.
 import { homedir } from "node:os";
-import { isAbsolute, join, relative, resolve, win32 } from "node:path";
+import { isAbsolute, posix, win32 } from "node:path";
 
 export type KitBrowser = "chrome" | "edge";
 export const KIT_BROWSERS: readonly KitBrowser[] = ["chrome", "edge"];
@@ -24,7 +24,7 @@ export function parseBrowser(v: string | undefined): KitBrowser {
   throw new Error("--browser must be chrome or edge");
 }
 
-const pathApi = (e: Env) => (e.platform === "win32" ? win32 : { join, resolve, relative });
+const pathApi = (e: Env) => (e.platform === "win32" ? win32 : posix);
 
 /** Root of everything the kit creates. Outside the repo; never a browser's real data directory. */
 export function defaultKitDir(e: Env): string {
@@ -156,11 +156,11 @@ export function executableCandidates(browser: KitBrowser, e: Env): string[] {
     return browser === "chrome"
       ? [
           "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-          join(e.home, "Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+          posix.join(e.home, "Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
         ]
       : [
           "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-          join(e.home, "Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+          posix.join(e.home, "Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
         ];
   }
   if (e.platform === "win32") {

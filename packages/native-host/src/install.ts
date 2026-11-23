@@ -89,7 +89,8 @@ export function hostManifestDir(o: {
       `unsupported platform ${o.platform}; supported: macOS, Linux, Windows`,
     );
   }
-  if (o.userDataDir) return join(o.userDataDir, "NativeMessagingHosts");
+  // macOS and Linux locations are POSIX paths whatever OS computes them: never the host's separator.
+  if (o.userDataDir) return posix.join(o.userDataDir, "NativeMessagingHosts");
   const mac = {
     chrome: "Google/Chrome",
     edge: "Microsoft Edge",
@@ -97,8 +98,8 @@ export function hostManifestDir(o: {
   } as const;
   const linux = { chrome: "google-chrome", edge: "microsoft-edge", chromium: "chromium" } as const;
   return o.platform === "darwin"
-    ? join(o.home, "Library", "Application Support", mac[o.browser], "NativeMessagingHosts")
-    : join(o.home, ".config", linux[o.browser], "NativeMessagingHosts");
+    ? posix.join(o.home, "Library", "Application Support", mac[o.browser], "NativeMessagingHosts")
+    : posix.join(o.home, ".config", linux[o.browser], "NativeMessagingHosts");
 }
 
 const shellSafe = (p: string, what: string, windows: boolean) => {
